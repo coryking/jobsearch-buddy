@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from jobbuddy.embeddings import MODEL_REGISTRY, embed_texts_iter, serialize_f32
+from jobbuddy.embeddings import MODEL_REGISTRY, embed_texts_iter, serialize_f32, unload_models
 
 if TYPE_CHECKING:
     from jobbuddy.store import JobStore
@@ -27,7 +27,13 @@ class EmbedPhase:
 
     def run(self) -> None:
         """Generate embeddings for all models sequentially."""
-        for config in MODEL_REGISTRY.values():
+        for i, config in enumerate(MODEL_REGISTRY.values()):
+            # Free GPU memory from the previous model before loading the next
+            if i > 0:
+                prev_config = list(MODEL_REGISTRY.values())[i - 1]
+                if self.cb.on_model_unload:
+                    self.cb.on_model_unload(prev_config.model_key, prev_config.model_name)
+                unload_models()
             # Count jobs needing embeddings across synced companies
             total = 0
             for slug in self.slugs:
@@ -39,6 +45,8 @@ class EmbedPhase:
                 self.cb.on_embed_start(total, config.model_name, config.dimensions)
 
             if total > 0:
+                if self.cb.on_model_load:
+                    self.cb.on_model_load(config.model_key, config.model_name)
                 self._embed_model(config.model_key, total)
 
             if self.cb.on_embed_done:

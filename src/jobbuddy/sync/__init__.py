@@ -28,6 +28,7 @@ type CountCallback = Callable[[int], None]
 type ProgressCallback = Callable[[int, int], None]
 type DoneCallback = Callable[[], None]
 type EmbedStartCallback = Callable[[int, str, int], None]  # (total, model_name, dimensions)
+type ModelEventCallback = Callable[[str, str], None]  # (model_key, model_name)
 
 
 @dataclass
@@ -44,6 +45,8 @@ class SyncCallbacks:
     on_embed_start: EmbedStartCallback | None = None
     on_embed_progress: ProgressCallback | None = None
     on_embed_done: DoneCallback | None = None
+    on_model_load: ModelEventCallback | None = None
+    on_model_unload: ModelEventCallback | None = None
 
 
 # ---------------------------------------------------------------------------

@@ -4,11 +4,14 @@ Model registry + lazy-loaded models. Adding a new model = one dataclass entry.
 Models are cached in a dict so each is loaded at most once per process.
 """
 
+import logging
 import struct
 from collections.abc import Generator
 from dataclasses import dataclass
 
 import numpy as np
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -58,16 +61,45 @@ def list_models() -> list[EmbeddingModelConfig]:
     return list(MODEL_REGISTRY.values())
 
 
+def unload_models() -> None:
+    """Unload all cached models and free GPU/MPS memory.
+
+    Called between model runs in the embed phase so only one model
+    occupies GPU memory at a time.
+    """
+    if not _models:
+        return
+    keys = list(_models.keys())
+    log.info("Unloading models: %s", ", ".join(keys))
+    _models.clear()
+    import gc
+
+    gc.collect()
+    try:
+        import torch
+
+        if hasattr(torch, "mps") and torch.backends.mps.is_available():
+            torch.mps.empty_cache()
+            log.info("MPS cache cleared")
+        elif torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            log.info("CUDA cache cleared")
+    except ImportError:
+        pass
+
+
 def get_model(model_key: str = DEFAULT_MODEL_KEY) -> "SentenceTransformer":
     """Load an embedding model (cached per model_key, lazy)."""
     if model_key not in _models:
         from sentence_transformers import SentenceTransformer
 
         config = get_config(model_key)
+        log.info("Loading model %s (%s, %dd)", model_key, config.model_name, config.dimensions)
         _models[model_key] = SentenceTransformer(
             config.model_name,
             trust_remote_code=config.trust_remote_code,
         )
+        log.info("Model %s loaded (device: %s)", model_key, _models[model_key].device)
     return _models[model_key]
 
 

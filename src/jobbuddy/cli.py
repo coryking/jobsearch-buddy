@@ -318,6 +318,12 @@ def sync(
             embed_progress.stop()
         console.print("[green]✓[/green] Embeddings complete.")
 
+    def on_model_load(model_key: str, model_name: str) -> None:
+        console.print(f"  [dim]Loading model {model_key} ({model_name})...[/dim]")
+
+    def on_model_unload(model_key: str, model_name: str) -> None:
+        console.print(f"  [dim]Unloading {model_key} and freeing GPU memory...[/dim]")
+
     callbacks = SyncCallbacks(
         on_start=on_start,
         on_result=on_result,
@@ -329,6 +335,8 @@ def sync(
         on_embed_start=on_embed_start,
         on_embed_progress=on_embed_progress,
         on_embed_done=on_embed_done,
+        on_model_load=on_model_load,
+        on_model_unload=on_model_unload,
     )
 
     progress.start()
@@ -539,10 +547,18 @@ def embed(
             embed_progress.stop()
         console.print("[green]✓[/green] Embeddings complete.")
 
+    def on_model_load(model_key: str, model_name: str) -> None:
+        console.print(f"  [dim]Loading model {model_key} ({model_name})...[/dim]")
+
+    def on_model_unload(model_key: str, model_name: str) -> None:
+        console.print(f"  [dim]Unloading {model_key} and freeing GPU memory...[/dim]")
+
     callbacks = SyncCallbacks(
         on_embed_start=on_embed_start,
         on_embed_progress=on_embed_progress,
         on_embed_done=on_embed_done,
+        on_model_load=on_model_load,
+        on_model_unload=on_model_unload,
     )
 
     try:
