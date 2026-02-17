@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 
 import httpx
 
-from jobbuddy.fetchers.base import ATSFetcher
+from jobbuddy.fetchers.base import ATSFetcher, ProgressCallback
 from jobbuddy.models import Job, strip_html
 
 
@@ -83,7 +83,7 @@ class LeverFetcher(ATSFetcher):
             description=description.strip() if description else None,
         )
 
-    def list_jobs(self) -> list[Job]:
+    def list_jobs(self, *, on_progress: ProgressCallback | None = None) -> list[Job]:
         url = f"https://api.lever.co/v0/postings/{self.board}?mode=json"
         resp = self.client.get(url)
         resp.raise_for_status()

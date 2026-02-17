@@ -1,6 +1,6 @@
 """Rippling ATS fetcher."""
 
-from jobbuddy.fetchers.base import ATSFetcher
+from jobbuddy.fetchers.base import ATSFetcher, ProgressCallback
 from jobbuddy.models import Job, strip_html
 
 _BASE = "https://api.rippling.com/platform/api/ats/v1"
@@ -65,7 +65,7 @@ class RipplingFetcher(ATSFetcher):
             description=description,
         )
 
-    def list_jobs(self) -> list[Job]:
+    def list_jobs(self, *, on_progress: ProgressCallback | None = None) -> list[Job]:
         url = f"{_BASE}/board/{self.board}/jobs"
         resp = self.client.get(url)
         resp.raise_for_status()

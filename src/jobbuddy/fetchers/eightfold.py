@@ -1,16 +1,16 @@
 """Eightfold AI ATS fetcher."""
 
 import logging
-import time
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
-from jobbuddy.fetchers.base import ATSFetcher
+from jobbuddy.fetchers.base import ATSFetcher, JobList, ProgressCallback
 from jobbuddy.models import Job, strip_html
 
 log = logging.getLogger(__name__)
 
 PAGE_SIZE = 10  # Eightfold returns exactly 10 per page, not configurable
-PAGE_DELAY = 0.3  # seconds between paginated requests
 
 
 class EightfoldFetcher(ATSFetcher):
@@ -74,27 +74,39 @@ class EightfoldFetcher(ATSFetcher):
             department=pos.get("department"),
         )
 
-    def list_jobs(self) -> list[Job]:
+    def list_jobs(self, *, on_progress: ProgressCallback | None = None) -> JobList:
         self._require_config()
-        params = self._build_search_params()
-        jobs: list[Job] = []
-        start = 0
+        base_params = self._build_search_params()
 
-        while True:
-            params["start"] = start
-            resp = self.client.get(self._api_url("search"), params=params)
-            resp.raise_for_status()
-            data = resp.json().get("data", {})
+        # Fetch page 0 to learn count
+        resp = self.client.get(self._api_url("search"), params={**base_params, "start": 0})
+        resp.raise_for_status()
+        data = resp.json().get("data", {})
+        count = data.get("count", 0)
+        jobs: JobList = [self._position_to_job(pos) for pos in data.get("positions", [])]
+        if on_progress:
+            on_progress(len(jobs), count)
 
-            count = data.get("count", 0)
-            positions = data.get("positions", [])
-            for pos in positions:
-                jobs.append(self._position_to_job(pos))
+        remaining_starts = list(range(PAGE_SIZE, count, PAGE_SIZE))
+        if not remaining_starts:
+            return jobs
 
-            start += PAGE_SIZE
-            if start >= count:
-                break
-            time.sleep(PAGE_DELAY)
+        lock = threading.Lock()
+
+        def _fetch_page(start: int) -> list[Job]:
+            page_resp = self.client.get(self._api_url("search"), params={**base_params, "start": start})
+            page_resp.raise_for_status()
+            return [self._position_to_job(pos) for pos in page_resp.json().get("data", {}).get("positions", [])]
+
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            futures = {executor.submit(_fetch_page, s): s for s in remaining_starts}
+            for future in as_completed(futures):
+                page_jobs = future.result()
+                with lock:
+                    jobs.extend(page_jobs)
+                    current = len(jobs)
+                if on_progress:
+                    on_progress(current, count)
 
         return jobs
 

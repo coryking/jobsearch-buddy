@@ -10,7 +10,7 @@ list_jobs() enriches each job with its v2 description using concurrent requests.
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from jobbuddy.fetchers.base import ATSFetcher
+from jobbuddy.fetchers.base import ATSFetcher, ProgressCallback
 from jobbuddy.models import Job, strip_html
 
 log = logging.getLogger(__name__)
@@ -80,7 +80,7 @@ class WorkableFetcher(ATSFetcher):
             log.warning("Failed to fetch v2 detail for %s: %s", shortcode, exc)
             return None
 
-    def list_jobs(self) -> list[Job]:
+    def list_jobs(self, *, on_progress: ProgressCallback | None = None) -> list[Job]:
         # Get the job list from v1 (fast, no descriptions)
         resp = self.client.get(f"{_V1_BASE}/{self.board}")
         resp.raise_for_status()

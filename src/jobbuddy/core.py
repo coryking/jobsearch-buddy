@@ -7,6 +7,7 @@ No Rich/Typer dependencies.
 import logging
 import random
 import re
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date
 from pathlib import Path
@@ -18,6 +19,14 @@ from jobbuddy.fetchers import SUPPORTED_ATS_TYPES, create_fetcher, get_fetcher
 from jobbuddy.models import Company, FetchResult, Job, slugify
 from jobbuddy.registry import list_companies, lookup_by_board, lookup_by_name, lookup_by_slug, register_company
 from jobbuddy.url import parse_url
+
+# Callback type aliases for sync pipeline
+type StartCallback = Callable[[str], None]           # (slug)
+type SkipCallback = Callable[[str, str], None]       # (slug, reason)
+type FetchProgressCallback = Callable[[str, int, int], None]  # (slug, fetched, total)
+type CountCallback = Callable[[int], None]            # (total)
+type ProgressCallback = Callable[[int, int], None]   # (done, total)
+type DoneCallback = Callable[[], None]
 
 
 def fetch_from_url(url: str) -> FetchResult:
@@ -247,13 +256,25 @@ class SyncResult:
         return self.error is None
 
 
-def _fetch_company_jobs(company: Company, on_start: "callable | None" = None) -> tuple[str, list[Job] | str]:
+type ResultCallback = Callable[[SyncResult], None]   # (sync_result)
+
+
+def _fetch_company_jobs(
+    company: Company,
+    on_start: StartCallback | None = None,
+    on_fetch_progress: FetchProgressCallback | None = None,
+) -> tuple[str, list[Job] | str]:
     """Worker function: fetch jobs for a company. Returns (slug, jobs) or (slug, error_string)."""
     if on_start:
         on_start(company.slug)
     try:
         fetcher = get_fetcher(company)
-        jobs = fetcher.list_jobs()
+
+        def _progress(fetched: int, total: int) -> None:
+            if on_fetch_progress:
+                on_fetch_progress(company.slug, fetched, total)
+
+        jobs = fetcher.list_jobs(on_progress=_progress if on_fetch_progress else None)
         return (company.slug, jobs)
     except Exception as e:
         return (company.slug, str(e))
@@ -263,15 +284,16 @@ def sync_jobs(
     company_slug: str | None = None,
     stale_hours: float | None = None,
     max_workers: int = 5,
-    on_start: "callable | None" = None,
-    on_result: "callable | None" = None,
-    on_skip: "callable | None" = None,
-    on_enrich_start: "callable | None" = None,
-    on_enrich_progress: "callable | None" = None,
-    on_enrich_done: "callable | None" = None,
-    on_embed_start: "callable | None" = None,
-    on_embed_progress: "callable | None" = None,
-    on_embed_done: "callable | None" = None,
+    on_start: StartCallback | None = None,
+    on_result: ResultCallback | None = None,
+    on_skip: SkipCallback | None = None,
+    on_fetch_progress: FetchProgressCallback | None = None,
+    on_enrich_start: CountCallback | None = None,
+    on_enrich_progress: ProgressCallback | None = None,
+    on_enrich_done: DoneCallback | None = None,
+    on_embed_start: CountCallback | None = None,
+    on_embed_progress: ProgressCallback | None = None,
+    on_embed_done: DoneCallback | None = None,
     db_path: "Path | str | None" = None,
 ) -> list[SyncResult]:
     """Sync job listings from ATS boards into the SQLite cache.
@@ -283,6 +305,7 @@ def sync_jobs(
         on_start: Callback(slug) when a company fetch begins (called from worker thread).
         on_result: Callback(SyncResult) for each completed company.
         on_skip: Callback(slug, reason) for skipped companies.
+        on_fetch_progress: Callback(slug, fetched, total) for paginating fetchers, called per page.
         db_path: Override DB path (for testing).
 
     Returns list of SyncResult for companies that were actually synced.
@@ -329,7 +352,7 @@ def sync_jobs(
         start_times: dict[str, float] = {}
         for company in targets:
             start_times[company.slug] = monotonic()
-            future = executor.submit(_fetch_company_jobs, company, on_start)
+            future = executor.submit(_fetch_company_jobs, company, on_start, on_fetch_progress)
             future_to_slug[future] = company.slug
 
         for future in as_completed(future_to_slug):

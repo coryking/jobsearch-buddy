@@ -1,12 +1,9 @@
 """Oracle HCM Cloud (Oracle Recruiting Cloud) fetcher."""
 
-import time
-
-from jobbuddy.fetchers.base import ATSFetcher
+from jobbuddy.fetchers.base import ATSFetcher, ProgressCallback
 from jobbuddy.models import Job, strip_html
 
 PAGE_SIZE = 25
-PAGE_DELAY = 0.3
 MAX_RESULTS = 75  # cap per keyword query — relevancy drops fast past ~50 results
 
 
@@ -105,11 +102,10 @@ class OracleHCMFetcher(ATSFetcher):
             offset += PAGE_SIZE
             if (total is not None and offset >= total) or len(jobs) >= MAX_RESULTS:
                 break
-            time.sleep(PAGE_DELAY)
 
         return jobs
 
-    def list_jobs(self) -> list[Job]:
+    def list_jobs(self, *, on_progress: ProgressCallback | None = None) -> list[Job]:
         self._require_config()
         location = self.default_filters.get("location", "")
 

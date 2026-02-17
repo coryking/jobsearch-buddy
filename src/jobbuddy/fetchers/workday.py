@@ -1,9 +1,10 @@
 """Workday ATS fetcher."""
 
 import logging
-import time
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from jobbuddy.fetchers.base import ATSFetcher
+from jobbuddy.fetchers.base import ATSFetcher, JobList, ProgressCallback
 from jobbuddy.models import Job, strip_html
 
 log = logging.getLogger(__name__)
@@ -32,46 +33,59 @@ class WorkdayFetcher(ATSFetcher):
                 "These are normally set from the company registry."
             )
 
-    def list_jobs(self) -> list[Job]:
+    def list_jobs(self, *, on_progress: ProgressCallback | None = None) -> JobList:
         self._require_config()
         base = _wd_base(self.wd_company, self.wd_instance)
         api_url = f"{base}/wday/cxs/{self.wd_company}/{self.board}/jobs"
-
-        jobs = []
-        offset = 0
         limit = 20
-        total = None
-        while True:
-            body: dict = {"limit": limit, "offset": offset, **self.default_filters}
-            resp = self.client.post(api_url, json=body)
-            resp.raise_for_status()
-            data = resp.json()
-            postings = data.get("jobPostings", [])
-            if not postings:
-                break
-            # Workday only returns total on the first page
-            if total is None:
-                total = data.get("total", 0)
-            for p in postings:
-                ext_path = p.get("externalPath", "")
-                job_id = p.get("bulletFields", [""])[0] if p.get("bulletFields") else ext_path
-                jobs.append(
-                    Job(
-                        id=job_id,
-                        title=p.get("title", ""),
-                        location=p.get("locationsText", ""),
-                        url=f"{base}/{self.board}{ext_path}",
-                        apply_url=f"{base}/{self.board}{ext_path}",
-                        published_at=p.get("postedOn"),
-                        department=None,
-                        team=None,
-                        ats_metadata={"ext_path": ext_path} if ext_path else None,
-                    )
-                )
-            offset += limit
-            if offset >= total:
-                break
-            time.sleep(0.5)
+
+        def _parse_posting(p: dict) -> Job:
+            ext_path = p.get("externalPath", "")
+            job_id = p.get("bulletFields", [""])[0] if p.get("bulletFields") else ext_path
+            return Job(
+                id=job_id,
+                title=p.get("title", ""),
+                location=p.get("locationsText", ""),
+                url=f"{base}/{self.board}{ext_path}",
+                apply_url=f"{base}/{self.board}{ext_path}",
+                published_at=p.get("postedOn"),
+                department=None,
+                team=None,
+                ats_metadata={"ext_path": ext_path} if ext_path else None,
+            )
+
+        # Fetch page 0 to learn total
+        body: dict = {"limit": limit, "offset": 0, **self.default_filters}
+        resp = self.client.post(api_url, json=body)
+        resp.raise_for_status()
+        data = resp.json()
+        total = data.get("total", 0)
+        jobs: JobList = [_parse_posting(p) for p in data.get("jobPostings", [])]
+        if on_progress:
+            on_progress(len(jobs), total)
+
+        remaining_offsets = list(range(limit, total, limit))
+        if not remaining_offsets:
+            return jobs
+
+        lock = threading.Lock()
+
+        def _fetch_page(offset: int) -> list[Job]:
+            page_body: dict = {"limit": limit, "offset": offset, **self.default_filters}
+            page_resp = self.client.post(api_url, json=page_body)
+            page_resp.raise_for_status()
+            return [_parse_posting(p) for p in page_resp.json().get("jobPostings", [])]
+
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            futures = {executor.submit(_fetch_page, off): off for off in remaining_offsets}
+            for future in as_completed(futures):
+                page_jobs = future.result()
+                with lock:
+                    jobs.extend(page_jobs)
+                    current = len(jobs)
+                if on_progress:
+                    on_progress(current, total)
+
         return jobs
 
     def fetch_job(self, job_id: str) -> Job:

@@ -231,6 +231,12 @@ def sync(
             progress.advance(overall_task)
         progress.console.print(f"  [dim]↷ {slug:<24} skipped ({reason})[/dim]")
 
+    def on_fetch_progress(slug: str, fetched: int, total: int) -> None:
+        with lock:
+            task_id = active_slugs.get(slug)
+            if task_id is not None:
+                progress.update(task_id, total=total, completed=fetched)
+
     # Enrichment progress — for stub fetchers that need individual description fetches
     enrich_progress: Progress | None = None
     enrich_task_id: int | None = None
@@ -316,6 +322,7 @@ def sync(
             on_start=on_start,
             on_result=on_result,
             on_skip=on_skip,
+            on_fetch_progress=on_fetch_progress,
             on_enrich_start=on_enrich_start,
             on_enrich_progress=on_enrich_progress,
             on_enrich_done=on_enrich_done,

@@ -3,7 +3,7 @@
 import json
 import re
 
-from jobbuddy.fetchers.base import ATSFetcher
+from jobbuddy.fetchers.base import ATSFetcher, ProgressCallback
 from jobbuddy.models import Job, strip_html
 
 
@@ -72,7 +72,7 @@ class PaylocityFetcher(ATSFetcher):
             description=description.strip() if description else None,
         )
 
-    def list_jobs(self) -> list[Job]:
+    def list_jobs(self, *, on_progress: ProgressCallback | None = None) -> list[Job]:
         resp = self.client.get(self._listing_url())
         resp.raise_for_status()
         page_data = self._extract_page_data(resp.text)

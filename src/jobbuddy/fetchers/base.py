@@ -9,6 +9,10 @@ import httpx
 
 from jobbuddy.models import Job
 
+type ProgressCallback = Callable[[int, int], None]   # (fetched, total)
+type FetchedCallback = Callable[[str, str], None]    # (job_id, description)
+type JobList = list[Job]
+
 log = logging.getLogger(__name__)
 
 _DEFAULT_HEADERS = {
@@ -47,7 +51,7 @@ class ATSFetcher(ABC):
         )
 
     @abstractmethod
-    def list_jobs(self) -> list[Job]: ...
+    def list_jobs(self, *, on_progress: ProgressCallback | None = None) -> JobList: ...
 
     @abstractmethod
     def fetch_job(self, job_id: str) -> Job: ...
@@ -71,7 +75,7 @@ class ATSFetcher(ABC):
         job_ids: list[str],
         *,
         metadata: dict[str, dict] | None = None,
-        on_fetched: Callable[[str, str], None] | None = None,
+        on_fetched: FetchedCallback | None = None,
     ) -> dict[str, str | None]:
         """Fetch descriptions for a batch of job IDs with retry/backoff.
 
