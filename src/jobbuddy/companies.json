@@ -1,0 +1,866 @@
+{
+  "adobe": {
+    "ats": "workday",
+    "board": "external_experienced",
+    "default_filters": {
+      "appliedFacets": {
+        "jobFamilyGroup": [
+          "591af8b812fa10737af39db3d96eed9f"
+        ]
+      }
+    },
+    "name": "Adobe",
+    "wd_company": "adobe",
+    "wd_instance": 5
+  },
+  "aftership": {
+    "ats": "greenhouse",
+    "board": "aftership",
+    "name": "AfterShip"
+  },
+  "ai2": {
+    "ats": null,
+    "board": null,
+    "name": "AI2"
+  },
+  "aim-consulting": {
+    "ats": null,
+    "board": null,
+    "name": "AIM Consulting"
+  },
+  "airtable": {
+    "ats": "greenhouse",
+    "board": "airtable",
+    "name": "Airtable"
+  },
+  "akasa": {
+    "ats": "ashby",
+    "board": "akasa",
+    "name": "Akasa"
+  },
+  "amazon": {
+    "ats": null,
+    "board": null,
+    "name": "Amazon"
+  },
+  "amperity": {
+    "ats": "greenhouse",
+    "board": "amperity",
+    "name": "Amperity"
+  },
+  "anduril": {
+    "ats": "greenhouse",
+    "board": "andurilindustries",
+    "name": "Anduril"
+  },
+  "anthropic": {
+    "ats": "greenhouse",
+    "board": "anthropic",
+    "name": "Anthropic"
+  },
+  "apple": {
+    "ats": null,
+    "board": null,
+    "name": "Apple"
+  },
+  "authenticx": {
+    "ats": null,
+    "board": null,
+    "name": "Authenticx"
+  },
+  "autofi": {
+    "ats": null,
+    "board": null,
+    "name": "AutoFi"
+  },
+  "automattic": {
+    "ats": null,
+    "board": null,
+    "name": "Automattic"
+  },
+  "axon": {
+    "ats": "greenhouse",
+    "board": "axon",
+    "name": "Axon"
+  },
+  "baseten": {
+    "ats": "ashby",
+    "board": "baseten",
+    "name": "Baseten"
+  },
+  "blueorigin": {
+    "ats": "workday",
+    "board": "BlueOrigin",
+    "default_filters": {
+      "appliedFacets": {
+        "jobFamilyGroup": [
+          "5f32d2b8465201de6df43ce63e17db4f",
+          "5f32d2b8465201d3591aab963e17074f"
+        ]
+      }
+    },
+    "name": "BlueOrigin",
+    "wd_company": "blueorigin",
+    "wd_instance": 5
+  },
+  "blurb": {
+    "ats": null,
+    "board": null,
+    "name": "Blurb"
+  },
+  "boston-consulting-group": {
+    "ats": null,
+    "board": null,
+    "name": "Boston Consulting Group"
+  },
+  "checkr": {
+    "ats": "greenhouse",
+    "board": "checkr",
+    "name": "Checkr"
+  },
+  "chronicle-of-higher-education": {
+    "ats": null,
+    "board": null,
+    "name": "Chronicle of Higher Education"
+  },
+  "cisco": {
+    "ats": null,
+    "board": null,
+    "name": "Cisco"
+  },
+  "clear": {
+    "ats": "greenhouse",
+    "board": "clear",
+    "name": "CLEAR"
+  },
+  "cloudflare": {
+    "ats": "greenhouse",
+    "board": "cloudflare",
+    "name": "Cloudflare"
+  },
+  "coinbase": {
+    "ats": "greenhouse",
+    "board": "coinbase",
+    "name": "Coinbase"
+  },
+  "column": {
+    "ats": null,
+    "board": null,
+    "name": "Column"
+  },
+  "convoy": {
+    "ats": null,
+    "board": null,
+    "name": "Convoy"
+  },
+  "creditkarma": {
+    "ats": "greenhouse",
+    "board": "creditkarma",
+    "name": "Credit Karma"
+  },
+  "crown-castle": {
+    "ats": null,
+    "board": null,
+    "name": "Crown Castle"
+  },
+  "crusoe": {
+    "ats": "ashby",
+    "board": "Crusoe",
+    "name": "Crusoe"
+  },
+  "curate-partners": {
+    "ats": null,
+    "board": null,
+    "name": "Curate Partners"
+  },
+  "databricks": {
+    "ats": "greenhouse",
+    "board": "databricks",
+    "name": "Databricks"
+  },
+  "datadog": {
+    "ats": "greenhouse",
+    "board": "datadog",
+    "name": "Datadog"
+  },
+  "datarobot": {
+    "ats": "workday",
+    "board": "DataRobot_External_Careers",
+    "name": "DataRobot",
+    "wd_company": "datarobot",
+    "wd_instance": 1
+  },
+  "deepmind": {
+    "ats": "greenhouse",
+    "board": "deepmind",
+    "name": "DeepMind"
+  },
+  "dice": {
+    "ats": null,
+    "board": null,
+    "name": "Dice"
+  },
+  "disney": {
+    "ats": null,
+    "board": null,
+    "name": "Disney"
+  },
+  "docusign": {
+    "ats": null,
+    "board": null,
+    "name": "Docusign"
+  },
+  "doordash": {
+    "ats": "greenhouse",
+    "board": "doordashusa",
+    "name": "DoorDash"
+  },
+  "dronedeploy": {
+    "ats": null,
+    "board": null,
+    "name": "DroneDeploy"
+  },
+  "dropbox": {
+    "ats": null,
+    "board": null,
+    "name": "Dropbox"
+  },
+  "duolingo": {
+    "ats": "greenhouse",
+    "board": "duolingo",
+    "name": "Duolingo"
+  },
+  "duranta": {
+    "ats": "lever",
+    "board": "getduranta",
+    "name": "Duranta"
+  },
+  "ebay": {
+    "ats": null,
+    "board": null,
+    "name": "eBay"
+  },
+  "expedia": {
+    "ats": "workday",
+    "board": "search",
+    "default_filters": {
+      "appliedFacets": {
+        "locations": [
+          "0210e11067580172e7b490ef4646e32e",
+          "d9ad289ce9b701609c73e2940536397b",
+          "c553432013ba103bbc581be7de044d12",
+          "224ce31cd34310005ee2350cbe2d0000",
+          "c553432013ba103bbc5bf87895d3521e",
+          "c553432013ba103bbc5a737343d54f66"
+        ]
+      }
+    },
+    "name": "Expedia",
+    "wd_company": "expedia",
+    "wd_instance": 108
+  },
+  "ey": {
+    "ats": null,
+    "board": null,
+    "name": "EY"
+  },
+  "f5": {
+    "ats": "workday",
+    "board": "f5jobs",
+    "name": "F5",
+    "wd_company": "ffive",
+    "wd_instance": 5
+  },
+  "financialforce": {
+    "ats": null,
+    "board": null,
+    "name": "FinancialForce"
+  },
+  "flexport": {
+    "ats": null,
+    "board": null,
+    "name": "FlexPort"
+  },
+  "float": {
+    "ats": null,
+    "board": null,
+    "name": "Float"
+  },
+  "fluidstack": {
+    "ats": null,
+    "board": null,
+    "name": "Fluidstack"
+  },
+  "friends-of-kexp": {
+    "ats": "paylocity",
+    "board": "a5fc1657-6a0e-4279-b56f-f2c46121f3f5",
+    "company_slug": "Friends-of-KEXP",
+    "name": "Friends of KEXP"
+  },
+  "fusionbox": {
+    "ats": null,
+    "board": null,
+    "name": "Fusionbox"
+  },
+  "glean": {
+    "ats": "greenhouse",
+    "board": "gleanwork",
+    "name": "Glean"
+  },
+  "google": {
+    "ats": null,
+    "board": null,
+    "name": "Google"
+  },
+  "graphite": {
+    "ats": null,
+    "board": null,
+    "name": "Graphite"
+  },
+  "gsk-onyx": {
+    "ats": null,
+    "board": null,
+    "name": "GSK / Onyx"
+  },
+  "headway": {
+    "ats": "greenhouse",
+    "board": "headway",
+    "name": "Headway"
+  },
+  "highspot": {
+    "ats": "lever",
+    "board": "highspot",
+    "name": "Highspot"
+  },
+  "hp": {
+    "ats": "workday",
+    "board": "EXTEU-AC-CareerSite",
+    "default_filters": {
+      "appliedFacets": {
+        "Location_Country": [
+          "bc33aa3152ec42d4995f4791a106ed09"
+        ],
+        "jobFamilyGroup": [
+          "80667f5f2da3010ee8417a74cf4b0000",
+          "98cbd30d374e10333e000e782ca45e69",
+          "98cbd30d374e10333e0004dccb145e5f"
+        ]
+      }
+    },
+    "name": "HP",
+    "wd_company": "hp",
+    "wd_instance": 5
+  },
+  "hs": {
+    "ats": "greenhouse",
+    "board": "hs",
+    "name": "Headspace"
+  },
+  "huggingface": {
+    "ats": "workable",
+    "board": "huggingface",
+    "name": "Hugging Face"
+  },
+  "ifm": {
+    "ats": "lever",
+    "board": "ifm-us",
+    "name": "Institute of Foundation Models"
+  },
+  "imprint": {
+    "ats": "ashby",
+    "board": "imprint",
+    "name": "Imprint"
+  },
+  "incode": {
+    "ats": null,
+    "board": null,
+    "name": "Incode"
+  },
+  "intuit": {
+    "ats": null,
+    "board": null,
+    "name": "Intuit"
+  },
+  "koidra": {
+    "ats": null,
+    "board": null,
+    "name": "Koidra"
+  },
+  "lambda": {
+    "ats": "ashby",
+    "board": "lambda",
+    "name": "Lambda"
+  },
+  "levelten-energy": {
+    "ats": null,
+    "board": null,
+    "name": "LevelTen Energy"
+  },
+  "liveramp": {
+    "ats": "workday",
+    "board": "LiveRampCareers",
+    "name": "LiveRamp",
+    "wd_company": "liveramp",
+    "wd_instance": 5
+  },
+  "mason": {
+    "ats": null,
+    "board": null,
+    "name": "Mason"
+  },
+  "meta": {
+    "ats": null,
+    "board": null,
+    "name": "Meta"
+  },
+  "metropolis": {
+    "ats": "greenhouse",
+    "board": "metropolis",
+    "name": "Metropolis"
+  },
+  "microsoft": {
+    "ats": "eightfold",
+    "base_url": "https://apply.careers.microsoft.com",
+    "board": "microsoft",
+    "default_filters": {
+      "filter_career_discipline": [
+        "Product Management",
+        "Technical Program Management"
+      ],
+      "filter_include_remote": 1,
+      "filter_profession": [
+        "program management",
+        "product management"
+      ],
+      "filter_seniority": [
+        "Mid-Level",
+        "Senior"
+      ],
+      "location": "United States"
+    },
+    "domain": "microsoft.com",
+    "name": "Microsoft"
+  },
+  "mithril": {
+    "ats": "greenhouse",
+    "board": "mithril",
+    "name": "Mithril"
+  },
+  "moderna": {
+    "ats": null,
+    "board": null,
+    "name": "Moderna"
+  },
+  "moloco": {
+    "ats": "greenhouse",
+    "board": "moloco",
+    "name": "Moloco"
+  },
+  "moment": {
+    "ats": "greenhouse",
+    "board": "momentmarkets",
+    "name": "Moment"
+  },
+  "moody-s": {
+    "ats": null,
+    "board": null,
+    "name": "Moody's"
+  },
+  "moody-s-nw-consulting": {
+    "ats": null,
+    "board": null,
+    "name": "Moody's NW Consulting"
+  },
+  "morgan-morgan": {
+    "ats": "greenhouse",
+    "board": "morganmorganjobsapplynow",
+    "name": "Morgan & Morgan"
+  },
+  "nimbus": {
+    "ats": null,
+    "board": null,
+    "name": "Nimbus"
+  },
+  "nvidia": {
+    "ats": "workday",
+    "board": "NVIDIAExternalCareerSite",
+    "name": "NVIDIA",
+    "wd_company": "nvidia",
+    "wd_instance": 5
+  },
+  "openai": {
+    "ats": "ashby",
+    "board": "openai",
+    "name": "OpenAI"
+  },
+  "oracle": {
+    "ats": "oracle_hcm",
+    "board": "eeho",
+    "default_filters": {
+      "keyword": "product manager",
+      "location": "United States"
+    },
+    "name": "Oracle",
+    "ohcm_region": "us2",
+    "site_number": "CX_1",
+    "site_slug": "jobsearch"
+  },
+  "otter": {
+    "ats": "greenhouse",
+    "board": "otter",
+    "name": "Otter"
+  },
+  "oura": {
+    "ats": "greenhouse",
+    "board": "oura",
+    "name": "Oura"
+  },
+  "outreach": {
+    "ats": "lever",
+    "board": "outreach",
+    "name": "Outreach"
+  },
+  "palantir": {
+    "ats": "lever",
+    "board": "palantir",
+    "name": "Palantir"
+  },
+  "paylocity": {
+    "ats": "paylocity",
+    "ats_prefix": "2000",
+    "board": "e2bcef5a-b6e5-4c5a-8fdd-c4da179dd98c",
+    "company_slug": "Paylocity",
+    "name": "Paylocity"
+  },
+  "paypal": {
+    "ats": null,
+    "board": null,
+    "name": "Paypal"
+  },
+  "peregrine": {
+    "ats": "greenhouse",
+    "board": "peregrinetechnologies",
+    "name": "Peregrine"
+  },
+  "phillips": {
+    "ats": null,
+    "board": null,
+    "name": "Phillips"
+  },
+  "pioneer-square-labs": {
+    "ats": null,
+    "board": null,
+    "name": "Pioneer Square Labs"
+  },
+  "pitchbook": {
+    "ats": "greenhouse",
+    "board": "pitchbookdata",
+    "name": "Pitchbook"
+  },
+  "plaid": {
+    "ats": "lever",
+    "board": "plaid",
+    "name": "Plaid"
+  },
+  "posthog": {
+    "ats": "ashby",
+    "board": "posthog",
+    "name": "PostHog"
+  },
+  "prophecy": {
+    "ats": "greenhouse",
+    "board": "prophecysimpledatalabs",
+    "name": "Prophecy"
+  },
+  "pwc": {
+    "ats": null,
+    "board": null,
+    "name": "PwC"
+  },
+  "qualtrics": {
+    "ats": "greenhouse",
+    "board": "qualtrics",
+    "name": "Qualtrics"
+  },
+  "qumulo": {
+    "ats": null,
+    "board": null,
+    "name": "Qumulo"
+  },
+  "reddit": {
+    "ats": "greenhouse",
+    "board": "reddit",
+    "name": "Reddit"
+  },
+  "rei": {
+    "ats": null,
+    "board": null,
+    "name": "REI"
+  },
+  "remitly": {
+    "ats": null,
+    "board": null,
+    "name": "Remitly"
+  },
+  "rentspree": {
+    "ats": "rippling",
+    "board": "rentspree",
+    "name": "RentSpree"
+  },
+  "rippling": {
+    "ats": "rippling",
+    "board": "rippling",
+    "name": "Rippling"
+  },
+  "robinhood": {
+    "ats": "greenhouse",
+    "board": "robinhood",
+    "name": "Robinhood"
+  },
+  "salesforce": {
+    "ats": "workday",
+    "board": "External_Career_Site",
+    "name": "Salesforce",
+    "wd_company": "salesforce",
+    "wd_instance": 12
+  },
+  "scholarly": {
+    "ats": "ashby",
+    "board": "Scholarly",
+    "name": "Scholarly"
+  },
+  "shantui-america-corp": {
+    "ats": null,
+    "board": null,
+    "name": "SHANTUI AMERICA CORP"
+  },
+  "sentinelone": {
+    "ats": "greenhouse",
+    "board": "sentinelone",
+    "name": "SentinelOne"
+  },
+  "silkline": {
+    "ats": null,
+    "board": null,
+    "name": "Silkline"
+  },
+  "snowflake": {
+    "ats": "ashby",
+    "board": "snowflake",
+    "name": "Snowflake"
+  },
+  "sofi": {
+    "ats": "greenhouse",
+    "board": "sofi",
+    "name": "SoFi"
+  },
+  "sonos": {
+    "ats": null,
+    "board": null,
+    "name": "Sonos"
+  },
+  "sphinx": {
+    "ats": "greenhouse",
+    "board": "sphinxdefense",
+    "name": "Sphinx"
+  },
+  "spotify": {
+    "ats": "lever",
+    "board": "spotify",
+    "name": "Spotify"
+  },
+  "spring-health": {
+    "ats": "greenhouse",
+    "board": "springhealth66",
+    "name": "Spring Health"
+  },
+  "stack-influence": {
+    "ats": null,
+    "board": null,
+    "name": "Stack Influence"
+  },
+  "stainless": {
+    "ats": "ashby",
+    "board": "stainlessapi",
+    "name": "Stainless"
+  },
+  "starbucks": {
+    "ats": "eightfold",
+    "base_url": "https://apply.starbucks.com",
+    "board": "starbucks",
+    "default_filters": {
+      "filter_job_category": [
+        "technology",
+        "business strategy"
+      ],
+      "location": "WA, United States"
+    },
+    "domain": "starbucks.com",
+    "name": "Starbucks"
+  },
+  "striveworks": {
+    "ats": "greenhouse",
+    "board": "striveworks",
+    "name": "Striveworks"
+  },
+  "stripe": {
+    "ats": "greenhouse",
+    "board": "stripe",
+    "name": "Stripe"
+  },
+  "t-mobile": {
+    "ats": "workday",
+    "board": "External",
+    "default_filters": {
+      "appliedFacets": {
+        "Job_Family_Group": [
+          "426b19690b7b1036f85c9c0f4dd30a29",
+          "426b19690b7b1036f85d91748cc80a51",
+          "426b19690b7b1036f85cd4aeae300a33",
+          "426b19690b7b1036f85d16cd22eb0a49"
+        ]
+      }
+    },
+    "name": "T-Mobile",
+    "wd_company": "tmobile",
+    "wd_instance": 1
+  },
+  "the-room": {
+    "ats": null,
+    "board": null,
+    "name": "The Room"
+  },
+  "thealleninstitute": {
+    "ats": "greenhouse",
+    "board": "thealleninstitute",
+    "name": "Allen Institute for AI"
+  },
+  "thetradedesk": {
+    "ats": "greenhouse",
+    "board": "thetradedesk",
+    "name": "The Trade Desk"
+  },
+  "thousandeyes": {
+    "ats": null,
+    "board": null,
+    "name": "ThousandEyes"
+  },
+  "tiktok": {
+    "ats": null,
+    "board": null,
+    "name": "TikTok"
+  },
+  "trucksmarter": {
+    "ats": "ashby",
+    "board": "trucksmarter",
+    "name": "TruckSmarter"
+  },
+  "tubitv": {
+    "ats": "greenhouse",
+    "board": "tubitv",
+    "name": "Tubi"
+  },
+  "twitch": {
+    "ats": "greenhouse",
+    "board": "twitch",
+    "name": "Twitch"
+  },
+  "typeface": {
+    "ats": "greenhouse",
+    "board": "typeface",
+    "name": "Typeface"
+  },
+  "uber": {
+    "ats": null,
+    "board": null,
+    "name": "Uber"
+  },
+  "unframe": {
+    "ats": "greenhouse",
+    "board": "unframe",
+    "name": "Unframe"
+  },
+  "unitq": {
+    "ats": "lever",
+    "board": "unitq",
+    "name": "unitQ"
+  },
+  "university-of-washington": {
+    "ats": null,
+    "board": null,
+    "name": "University of Washington"
+  },
+  "us-bank": {
+    "ats": null,
+    "board": null,
+    "name": "US Bank"
+  },
+  "vbeyond-corporation": {
+    "ats": null,
+    "board": null,
+    "name": "VBeyond Corporation"
+  },
+  "vestwell": {
+    "ats": null,
+    "board": null,
+    "name": "Vestwell"
+  },
+  "walmart": {
+    "ats": "workday",
+    "board": "WalmartExternal",
+    "default_filters": {
+      "appliedFacets": {
+        "jobFamily": [
+          "e83ebdbd2a0a01bffcb4245a47e906c4"
+        ]
+      }
+    },
+    "name": "Walmart",
+    "wd_company": "walmart",
+    "wd_instance": 5
+  },
+  "warner-bros-discovery": {
+    "ats": null,
+    "board": null,
+    "name": "Warner Bros. Discovery"
+  },
+  "waymo": {
+    "ats": "greenhouse",
+    "board": "waymo",
+    "name": "Waymo"
+  },
+  "wellsaid-labs": {
+    "ats": null,
+    "board": null,
+    "name": "WellSaid Labs"
+  },
+  "wibotic": {
+    "ats": null,
+    "board": null,
+    "name": "WiBotic"
+  },
+  "workato": {
+    "ats": "greenhouse",
+    "board": "workato",
+    "name": "Workato"
+  },
+  "workday": {
+    "ats": "workday",
+    "board": "Workday",
+    "name": "Workday",
+    "wd_company": "workday",
+    "wd_instance": 5
+  },
+  "zoom": {
+    "ats": "workday",
+    "board": "Zoom",
+    "name": "Zoom",
+    "wd_company": "zoom",
+    "wd_instance": 5
+  },
+  "zoox": {
+    "ats": "lever",
+    "board": "zoox",
+    "name": "Zoox"
+  }
+}

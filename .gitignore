@@ -1,0 +1,12 @@
+.env
+CLAUDE.local.md
+*.db
+__pycache__/
+*.py[oc]
+.venv/
+*.egg-info/
+dist/
+build/
+wheels/
+.cursor/
+.pytest_cache/
