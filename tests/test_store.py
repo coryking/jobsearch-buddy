@@ -310,7 +310,7 @@ class TestEmbeddings:
         text_hash = self._get_text_hash("1", "Build AI.")
         store.store_embedding(job_id, "bge_small", blob, text_hash)
         assert store.jobs_needing_embeddings("bge_small", count_only=True) == 0
-        assert store.jobs_needing_embeddings("jobbge_m3", count_only=True) == 1
+        assert store.jobs_needing_embeddings("nomic_v15", count_only=True) == 1
 
     def test_hash_mismatch_triggers_re_embedding(self, store):
         """Changed description hash means the job needs re-embedding."""

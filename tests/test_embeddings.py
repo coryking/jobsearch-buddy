@@ -39,8 +39,8 @@ def _make_job(**kw) -> Job:
 
 
 class TestModelRegistry:
-    def test_registry_has_three_models(self):
-        assert len(MODEL_REGISTRY) == 3
+    def test_registry_has_two_models(self):
+        assert len(MODEL_REGISTRY) == 2
 
     def test_default_model_exists(self):
         assert DEFAULT_MODEL_KEY in MODEL_REGISTRY
@@ -56,9 +56,9 @@ class TestModelRegistry:
 
     def test_list_models_returns_all(self):
         models = list_models()
-        assert len(models) == 3
+        assert len(models) == 2
         keys = {m.model_key for m in models}
-        assert keys == {"jobbge_m3", "nomic_v15", "bge_small"}
+        assert keys == {"nomic_v15", "bge_small"}
 
     def test_nomic_has_prefixes(self):
         config = get_config("nomic_v15")

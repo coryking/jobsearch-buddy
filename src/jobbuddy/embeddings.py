@@ -24,11 +24,6 @@ class EmbeddingModelConfig:
 
 
 MODEL_REGISTRY: dict[str, EmbeddingModelConfig] = {
-    "jobbge_m3": EmbeddingModelConfig(
-        model_key="jobbge_m3",
-        model_name="pj-mathematician/JobBGE-m3",
-        dimensions=1024,
-    ),
     "nomic_v15": EmbeddingModelConfig(
         model_key="nomic_v15",
         model_name="nomic-ai/nomic-embed-text-v1.5",

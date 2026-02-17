@@ -112,7 +112,6 @@ class TestVectorSearch:
     def test_available_models(self, vs):
         models = vs.available_models
         assert "bge_small" in models
-        assert "jobbge_m3" in models
         assert "nomic_v15" in models
 
     def test_search_all_models(self, vs):
@@ -123,4 +122,4 @@ class TestVectorSearch:
         assert "bge_small" in all_results
         # Only bge_small has embeddings, others should be empty
         assert len(all_results["bge_small"]) > 0
-        assert len(all_results["jobbge_m3"]) == 0
+        assert len(all_results["nomic_v15"]) == 0
