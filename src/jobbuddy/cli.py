@@ -466,6 +466,92 @@ def log(
 
 
 @app.command()
+def embed(
+    company: Optional[str] = typer.Option(None, "--company", "-c", help="Only embed jobs for this company"),
+):
+    """Generate embeddings for cached jobs (without fetching or enriching)."""
+    from rich.progress import BarColumn, MofNCompleteColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
+
+    from jobbuddy.store import JobStore
+    from jobbuddy.sync import SyncCallbacks
+    from jobbuddy.sync.embed import EmbedPhase
+
+    if not get_settings().db_path.exists():
+        console.print("[yellow]No cached data. Run 'ats sync' to populate.[/yellow]")
+        raise SystemExit(0)
+
+    store = JobStore()
+
+    # Determine which slugs to embed
+    if company:
+        resolved = lookup_by_name(company)
+        if not resolved:
+            store.close()
+            console.print(f"[red]Unknown company: {company}[/red]")
+            raise SystemExit(1)
+        slugs = [resolved.slug]
+    else:
+        statuses = store.get_sync_status()
+        slugs = [s["company_slug"] for s in statuses]
+
+    if not slugs:
+        store.close()
+        console.print("[yellow]No synced companies found.[/yellow]")
+        raise SystemExit(0)
+
+    # Embedding progress callbacks
+    embed_progress: Progress | None = None
+    embed_task_id: int | None = None
+    embed_last_completed: int = 0
+
+    def on_embed_start(total_jobs: int, model_name: str, dimensions: int) -> None:
+        nonlocal embed_progress, embed_task_id, embed_last_completed
+        embed_last_completed = 0
+        if total_jobs == 0:
+            console.print(f"[dim]{model_name} ({dimensions}d): all embeddings up to date[/dim]")
+            return
+        if embed_progress is not None:
+            embed_progress.stop()
+        console.print(f"\n[bold blue]Generating embeddings[/bold blue] ({model_name}, {dimensions}d) for {total_jobs} jobs")
+        embed_progress = Progress(
+            SpinnerColumn("dots"),
+            TextColumn("[bold blue]{task.description}"),
+            BarColumn(bar_width=40),
+            MofNCompleteColumn(),
+            TextColumn("[dim]|[/dim]"),
+            TimeElapsedColumn(),
+            console=console,
+            expand=False,
+        )
+        embed_task_id = embed_progress.add_task("Embedding", total=total_jobs)
+        embed_progress.start()
+
+    def on_embed_progress(done: int, total: int) -> None:
+        nonlocal embed_last_completed
+        if embed_progress is not None and embed_task_id is not None:
+            advance_by = done - embed_last_completed
+            if advance_by > 0:
+                embed_progress.advance(embed_task_id, advance_by)
+                embed_last_completed = done
+
+    def on_embed_done() -> None:
+        if embed_progress is not None:
+            embed_progress.stop()
+        console.print("[green]✓[/green] Embeddings complete.")
+
+    callbacks = SyncCallbacks(
+        on_embed_start=on_embed_start,
+        on_embed_progress=on_embed_progress,
+        on_embed_done=on_embed_done,
+    )
+
+    try:
+        EmbedPhase(store, slugs, callbacks).run()
+    finally:
+        store.close()
+
+
+@app.command()
 def serve(
     port: int = typer.Option(8000, "--port", "-p", help="Port to listen on"),
     host: str = typer.Option("127.0.0.1", "--host", help="Host to bind to"),
