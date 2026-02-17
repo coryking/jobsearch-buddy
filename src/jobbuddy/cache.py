@@ -76,7 +76,9 @@ def _validate_date(value: str | None) -> str | None:
 
 def get_connection(db_path: Path | str | None = None) -> sqlite3.Connection:
     """Open a SQLite connection with WAL mode, Row factory, and sqlite-vec."""
-    path = str(db_path or _default_db_path())
+    resolved = Path(db_path or _default_db_path())
+    resolved.parent.mkdir(parents=True, exist_ok=True)
+    path = str(resolved)
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")

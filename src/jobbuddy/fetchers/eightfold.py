@@ -1,5 +1,6 @@
 """Eightfold AI ATS fetcher."""
 
+import logging
 import time
 from datetime import datetime, timezone
 
@@ -8,8 +9,13 @@ import httpx
 from jobbuddy.fetchers.base import ATSFetcher
 from jobbuddy.models import Job, strip_html
 
+log = logging.getLogger(__name__)
+
 PAGE_SIZE = 10  # Eightfold returns exactly 10 per page, not configurable
 PAGE_DELAY = 0.3  # seconds between paginated requests
+ENRICH_DELAY = 0.5  # seconds between individual description fetches
+BACKOFF_BASE = 2.0  # base seconds for exponential backoff on 429
+MAX_RETRIES = 5  # max retries per request on 429
 
 # Browser-like headers to avoid CloudFront blocks
 _HEADERS = {
@@ -109,16 +115,40 @@ class EightfoldFetcher(ATSFetcher):
 
         return jobs
 
-    def fetch_job(self, job_id: str) -> Job:
-        self._require_config()
+    def _fetch_detail(self, job_id: str) -> dict:
+        """Fetch position_details with exponential backoff on 429."""
         params = {
             "position_id": job_id,
             "domain": self.domain,
             "hl": "en",
         }
-        resp = httpx.get(self._api_url("position_details"), params=params, headers=self._headers, timeout=30)
-        resp.raise_for_status()
-        data = resp.json().get("data", {})
+        for attempt in range(MAX_RETRIES + 1):
+            resp = httpx.get(
+                self._api_url("position_details"),
+                params=params,
+                headers=self._headers,
+                timeout=30,
+            )
+            if resp.status_code == 429:
+                if attempt == MAX_RETRIES:
+                    resp.raise_for_status()
+                # Use Retry-After header if present, otherwise exponential backoff
+                retry_after = resp.headers.get("Retry-After")
+                if retry_after:
+                    wait = float(retry_after)
+                else:
+                    wait = BACKOFF_BASE * (2 ** attempt)
+                log.info("429 for job %s, backing off %.1fs (attempt %d/%d)",
+                         job_id, wait, attempt + 1, MAX_RETRIES)
+                time.sleep(wait)
+                continue
+            resp.raise_for_status()
+            return resp.json().get("data", {})
+        return {}  # unreachable, but satisfies type checker
+
+    def fetch_job(self, job_id: str) -> Job:
+        self._require_config()
+        data = self._fetch_detail(job_id)
 
         if not data:
             raise ValueError(f"Position {job_id} not found.")
@@ -144,3 +174,18 @@ class EightfoldFetcher(ATSFetcher):
             department=data.get("department"),
             description=description or None,
         )
+
+    def fetch_descriptions(self, job_ids: list[str]) -> dict[str, str | None]:
+        """Fetch descriptions one at a time with polite delays and 429 backoff."""
+        self._require_config()
+        results: dict[str, str | None] = {}
+        for job_id in job_ids:
+            try:
+                data = self._fetch_detail(job_id)
+                desc = data.get("jobDescription", "")
+                results[job_id] = strip_html(desc) if desc else None
+            except Exception as e:
+                log.warning("Failed to fetch description for %s: %s", job_id, e)
+                results[job_id] = None
+            time.sleep(ENRICH_DELAY)
+        return results

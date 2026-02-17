@@ -450,5 +450,16 @@ def log(
     console.print(f"[green]Logged:[/green] {row['action']} → {result.company.name} - {result.job.title} on {row['date']}")
 
 
+@app.command()
+def serve(
+    port: int = typer.Option(8000, "--port", "-p", help="Port to listen on"),
+    host: str = typer.Option("127.0.0.1", "--host", help="Host to bind to"),
+):
+    """Start the semantic search web UI."""
+    from jobbuddy.web import create_app
+    console.print(f"[green]Starting web UI at[/green] http://{host}:{port}")
+    create_app().run(host=host, port=port, debug=True)
+
+
 if __name__ == "__main__":
     app()
