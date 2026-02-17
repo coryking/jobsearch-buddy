@@ -13,7 +13,7 @@ MAX_RESULTS = 75  # cap per keyword query — relevancy drops fast past ~50 resu
 class OracleHCMFetcher(ATSFetcher):
     ats_type = "oracle_hcm"
     descriptions_in_listing = False
-    enrich_delay = 0.3
+    enrich_delay = 0.0
 
     def __init__(
         self,

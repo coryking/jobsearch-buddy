@@ -16,7 +16,7 @@ def _wd_base(wd_company: str, wd_instance: int) -> str:
 class WorkdayFetcher(ATSFetcher):
     ats_type = "workday"
     descriptions_in_listing = False
-    enrich_delay = 0.3
+    enrich_delay = 0.0
 
     def __init__(self, board: str, name: str | None = None, *, wd_company: str = "", wd_instance: int = 0, default_filters: dict | None = None):
         super().__init__(board, name)

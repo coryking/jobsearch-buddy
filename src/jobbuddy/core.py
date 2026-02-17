@@ -302,7 +302,7 @@ def sync_jobs(
     else:
         targets = [c for c in registry.values() if c.ats is not None]
 
-    conn = get_connection(db_path)
+    conn = get_connection(db_path, check_same_thread=False)
 
     # Filter by staleness
     if stale_hours is not None:
@@ -395,18 +395,23 @@ def sync_jobs(
             if on_enrich_start:
                 on_enrich_start(enrich_total)
 
+            import threading
             enrich_done = 0
-            for slug, job_ids, jobs_meta in enrich_plan:
+            enrich_lock = threading.Lock()
+
+            def _enrich_company(slug: str, job_ids: list[str], jobs_meta: dict[str, dict]) -> None:
+                nonlocal enrich_done
                 company_obj = slug_to_company[slug]
                 try:
                     fetcher = get_fetcher(company_obj)
 
                     def _on_fetched(job_id: str, desc: str, _slug: str = slug) -> None:
                         nonlocal enrich_done
-                        update_job_descriptions(conn, _slug, {job_id: desc})
-                        enrich_done += 1
-                        if on_enrich_progress:
-                            on_enrich_progress(enrich_done, enrich_total)
+                        with enrich_lock:
+                            update_job_descriptions(conn, _slug, {job_id: desc})
+                            enrich_done += 1
+                            if on_enrich_progress:
+                                on_enrich_progress(enrich_done, enrich_total)
 
                     fetcher.fetch_descriptions(
                         job_ids,
@@ -415,9 +420,18 @@ def sync_jobs(
                     )
                 except Exception as e:
                     log.warning("Description enrichment failed for %s: %s", slug, e)
-                    enrich_done += len(job_ids)
-                    if on_enrich_progress:
-                        on_enrich_progress(enrich_done, enrich_total)
+                    with enrich_lock:
+                        enrich_done += len(job_ids)
+                        if on_enrich_progress:
+                            on_enrich_progress(enrich_done, enrich_total)
+
+            with ThreadPoolExecutor(max_workers=max_workers) as enrich_executor:
+                enrich_futures = [
+                    enrich_executor.submit(_enrich_company, slug, job_ids, jobs_meta)
+                    for slug, job_ids, jobs_meta in enrich_plan
+                ]
+                for future in as_completed(enrich_futures):
+                    future.result()  # propagate unexpected exceptions
 
             if on_enrich_done:
                 on_enrich_done()

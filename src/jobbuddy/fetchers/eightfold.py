@@ -16,7 +16,7 @@ PAGE_DELAY = 0.3  # seconds between paginated requests
 class EightfoldFetcher(ATSFetcher):
     ats_type = "eightfold"
     descriptions_in_listing = False
-    enrich_delay = 0.5
+    enrich_delay = 0.0
     max_retries = 5
 
     def __init__(
