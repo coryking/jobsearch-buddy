@@ -4,8 +4,6 @@ import logging
 import time
 from datetime import datetime, timezone
 
-import httpx
-
 from jobbuddy.fetchers.base import ATSFetcher
 from jobbuddy.models import Job, strip_html
 
@@ -13,28 +11,13 @@ log = logging.getLogger(__name__)
 
 PAGE_SIZE = 10  # Eightfold returns exactly 10 per page, not configurable
 PAGE_DELAY = 0.3  # seconds between paginated requests
-ENRICH_DELAY = 0.5  # seconds between individual description fetches
-BACKOFF_BASE = 2.0  # base seconds for exponential backoff on 429
-MAX_RETRIES = 5  # max retries per request on 429
-
-# Browser-like headers to avoid CloudFront blocks
-_HEADERS = {
-    "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "en-US,en;q=0.9",
-    "DNT": "1",
-    "Sec-Fetch-Dest": "empty",
-    "Sec-Fetch-Mode": "cors",
-    "Sec-Fetch-Site": "same-origin",
-    "User-Agent": (
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36"
-    ),
-}
 
 
 class EightfoldFetcher(ATSFetcher):
     ats_type = "eightfold"
     descriptions_in_listing = False
+    enrich_delay = 0.5
+    max_retries = 5
 
     def __init__(
         self,
@@ -49,7 +32,7 @@ class EightfoldFetcher(ATSFetcher):
         self.base_url = base_url.rstrip("/")
         self.domain = domain
         self.default_filters = default_filters or {}
-        self._headers = {**_HEADERS, "Referer": f"{self.base_url}/careers"}
+        self.client.headers["Referer"] = f"{self.base_url}/careers"
 
     def _require_config(self) -> None:
         if not self.base_url or not self.domain:
@@ -99,7 +82,7 @@ class EightfoldFetcher(ATSFetcher):
 
         while True:
             params["start"] = start
-            resp = httpx.get(self._api_url("search"), params=params, headers=self._headers, timeout=30)
+            resp = self.client.get(self._api_url("search"), params=params)
             resp.raise_for_status()
             data = resp.json().get("data", {})
 
@@ -116,35 +99,15 @@ class EightfoldFetcher(ATSFetcher):
         return jobs
 
     def _fetch_detail(self, job_id: str) -> dict:
-        """Fetch position_details with exponential backoff on 429."""
+        """Fetch position_details (no retry — base class handles 429 retries)."""
         params = {
             "position_id": job_id,
             "domain": self.domain,
             "hl": "en",
         }
-        for attempt in range(MAX_RETRIES + 1):
-            resp = httpx.get(
-                self._api_url("position_details"),
-                params=params,
-                headers=self._headers,
-                timeout=30,
-            )
-            if resp.status_code == 429:
-                if attempt == MAX_RETRIES:
-                    resp.raise_for_status()
-                # Use Retry-After header if present, otherwise exponential backoff
-                retry_after = resp.headers.get("Retry-After")
-                if retry_after:
-                    wait = float(retry_after)
-                else:
-                    wait = BACKOFF_BASE * (2 ** attempt)
-                log.info("429 for job %s, backing off %.1fs (attempt %d/%d)",
-                         job_id, wait, attempt + 1, MAX_RETRIES)
-                time.sleep(wait)
-                continue
-            resp.raise_for_status()
-            return resp.json().get("data", {})
-        return {}  # unreachable, but satisfies type checker
+        resp = self.client.get(self._api_url("position_details"), params=params)
+        resp.raise_for_status()
+        return resp.json().get("data", {})
 
     def fetch_job(self, job_id: str) -> Job:
         self._require_config()
@@ -175,17 +138,9 @@ class EightfoldFetcher(ATSFetcher):
             description=description or None,
         )
 
-    def fetch_descriptions(self, job_ids: list[str]) -> dict[str, str | None]:
-        """Fetch descriptions one at a time with polite delays and 429 backoff."""
+    def fetch_description(self, job_id: str, metadata: dict | None = None) -> str | None:
+        """Fetch description directly from detail API without building a full Job."""
         self._require_config()
-        results: dict[str, str | None] = {}
-        for job_id in job_ids:
-            try:
-                data = self._fetch_detail(job_id)
-                desc = data.get("jobDescription", "")
-                results[job_id] = strip_html(desc) if desc else None
-            except Exception as e:
-                log.warning("Failed to fetch description for %s: %s", job_id, e)
-                results[job_id] = None
-            time.sleep(ENRICH_DELAY)
-        return results
+        data = self._fetch_detail(job_id)
+        desc = data.get("jobDescription", "")
+        return strip_html(desc) if desc else None

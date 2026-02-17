@@ -3,8 +3,6 @@
 import logging
 import time
 
-import httpx
-
 from jobbuddy.fetchers.base import ATSFetcher
 from jobbuddy.models import Job, strip_html
 
@@ -15,31 +13,17 @@ def _wd_base(wd_company: str, wd_instance: int) -> str:
     return f"https://{wd_company}.wd{wd_instance}.myworkdayjobs.com"
 
 
-# Browser-like headers to avoid rate limiting / blocks
-_HEADERS = {
-    "Accept": "application/json",
-    "Accept-Language": "en-US,en;q=0.9",
-    "DNT": "1",
-    "Sec-Fetch-Dest": "empty",
-    "Sec-Fetch-Mode": "cors",
-    "Sec-Fetch-Site": "same-origin",
-    "User-Agent": (
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36"
-    ),
-}
-
-
 class WorkdayFetcher(ATSFetcher):
     ats_type = "workday"
     descriptions_in_listing = False
+    enrich_delay = 0.3
 
     def __init__(self, board: str, name: str | None = None, *, wd_company: str = "", wd_instance: int = 0, default_filters: dict | None = None):
         super().__init__(board, name)
         self.wd_company: str = wd_company
         self.wd_instance: int = wd_instance
         self.default_filters: dict = default_filters or {}
-        self._headers = {**_HEADERS, "Referer": f"{_wd_base(wd_company, wd_instance)}/{board}"}
+        self.client.headers["Referer"] = f"{_wd_base(wd_company, wd_instance)}/{board}"
 
     def _require_config(self) -> None:
         if not self.wd_company or not self.wd_instance:
@@ -59,7 +43,7 @@ class WorkdayFetcher(ATSFetcher):
         total = None
         while True:
             body: dict = {"limit": limit, "offset": offset, **self.default_filters}
-            resp = httpx.post(api_url, json=body, headers=self._headers, timeout=30)
+            resp = self.client.post(api_url, json=body)
             resp.raise_for_status()
             data = resp.json()
             postings = data.get("jobPostings", [])
@@ -81,7 +65,7 @@ class WorkdayFetcher(ATSFetcher):
                         published_at=p.get("postedOn"),
                         department=None,
                         team=None,
-                        ext_path=ext_path,
+                        ats_metadata={"ext_path": ext_path} if ext_path else None,
                     )
                 )
             offset += limit
@@ -101,13 +85,13 @@ class WorkdayFetcher(ATSFetcher):
         if not target:
             raise ValueError(f"Job ID {job_id} not found on {self.board} board.")
 
-        ext_path = target.ext_path
+        ext_path = (target.ats_metadata or {}).get("ext_path")
         if not ext_path:
             return target
 
         base = _wd_base(self.wd_company, self.wd_instance)
         detail_url = f"{base}/wday/cxs/{self.wd_company}/{self.board}{ext_path}"
-        resp = httpx.get(detail_url, headers=self._headers, timeout=30)
+        resp = self.client.get(detail_url)
         resp.raise_for_status()
         data = resp.json()
 
@@ -125,40 +109,17 @@ class WorkdayFetcher(ATSFetcher):
 
         return target
 
-    def fetch_descriptions(self, job_ids: list[str]) -> dict[str, str | None]:
-        """Fetch descriptions by listing all jobs once to get ext_paths, then hitting detail endpoints.
-
-        Avoids calling list_jobs() per job ID (which is what fetch_job() does).
-        """
+    def fetch_description(self, job_id: str, metadata: dict | None = None) -> str | None:
+        """Fetch description using ext_path from metadata (avoids re-listing)."""
         self._require_config()
-        results: dict[str, str | None] = {jid: None for jid in job_ids}
-        needed = set(job_ids)
+        ext_path = (metadata or {}).get("ext_path")
+        if not ext_path:
+            return None
 
-        # One pass through list_jobs to build job_id -> ext_path map
-        try:
-            all_jobs = self.list_jobs()
-        except Exception as e:
-            log.warning("Workday list_jobs failed during enrichment: %s", e)
-            return results
-
-        id_to_ext: dict[str, str] = {}
-        for j in all_jobs:
-            if j.id in needed and j.ext_path:
-                id_to_ext[j.id] = j.ext_path
-
-        # Fetch detail endpoints for each matched job
         base = _wd_base(self.wd_company, self.wd_instance)
-        for job_id, ext_path in id_to_ext.items():
-            try:
-                detail_url = f"{base}/wday/cxs/{self.wd_company}/{self.board}{ext_path}"
-                resp = httpx.get(detail_url, headers=self._headers, timeout=30)
-                resp.raise_for_status()
-                data = resp.json()
-                desc = data.get("jobPostingInfo", {}).get("jobDescription", "")
-                if desc:
-                    results[job_id] = strip_html(desc)
-                time.sleep(0.3)
-            except Exception as e:
-                log.warning("Failed to fetch Workday description for %s: %s", job_id, e)
-
-        return results
+        detail_url = f"{base}/wday/cxs/{self.wd_company}/{self.board}{ext_path}"
+        resp = self.client.get(detail_url)
+        resp.raise_for_status()
+        data = resp.json()
+        desc = data.get("jobPostingInfo", {}).get("jobDescription", "")
+        return strip_html(desc) if desc else None

@@ -1,7 +1,5 @@
 """Rippling ATS fetcher."""
 
-import httpx
-
 from jobbuddy.fetchers.base import ATSFetcher
 from jobbuddy.models import Job, strip_html
 
@@ -69,13 +67,13 @@ class RipplingFetcher(ATSFetcher):
 
     def list_jobs(self) -> list[Job]:
         url = f"{_BASE}/board/{self.board}/jobs"
-        resp = httpx.get(url, timeout=30)
+        resp = self.client.get(url)
         resp.raise_for_status()
         return [self._parse_job(j) for j in resp.json()]
 
     def fetch_job(self, job_id: str) -> Job:
         url = f"{_BASE}/board/{self.board}/jobs/{job_id}"
-        resp = httpx.get(url, timeout=30)
+        resp = self.client.get(url)
         if resp.status_code == 404:
             raise ValueError(f"Job ID {job_id} not found on {self.board} board.")
         resp.raise_for_status()

@@ -12,7 +12,7 @@ class GreenhouseFetcher(ATSFetcher):
     def resolve_name(self) -> str | None:
         """Fetch company display name from Greenhouse board API."""
         try:
-            resp = httpx.get(f"https://boards-api.greenhouse.io/v1/boards/{self.board}", timeout=10)
+            resp = self.client.get(f"https://boards-api.greenhouse.io/v1/boards/{self.board}")
             resp.raise_for_status()
             return resp.json().get("name")
         except (httpx.HTTPError, KeyError):
@@ -20,7 +20,7 @@ class GreenhouseFetcher(ATSFetcher):
 
     def list_jobs(self) -> list[Job]:
         url = f"https://boards-api.greenhouse.io/v1/boards/{self.board}/jobs?content=true"
-        resp = httpx.get(url, timeout=30)
+        resp = self.client.get(url)
         resp.raise_for_status()
         data = resp.json()
         jobs = []

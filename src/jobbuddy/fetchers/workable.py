@@ -10,8 +10,6 @@ list_jobs() enriches each job with its v2 description using concurrent requests.
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-import httpx
-
 from jobbuddy.fetchers.base import ATSFetcher
 from jobbuddy.models import Job, strip_html
 
@@ -75,16 +73,16 @@ class WorkableFetcher(ATSFetcher):
     def _fetch_v2_detail(self, shortcode: str) -> Job | None:
         """Fetch a single job's v2 detail. Returns None on failure."""
         try:
-            resp = httpx.get(f"{_V2_BASE}/{self.board}/jobs/{shortcode}", timeout=30)
+            resp = self.client.get(f"{_V2_BASE}/{self.board}/jobs/{shortcode}")
             resp.raise_for_status()
             return self._parse_v2_job(resp.json())
-        except (httpx.HTTPError, KeyError, ValueError) as exc:
+        except Exception as exc:
             log.warning("Failed to fetch v2 detail for %s: %s", shortcode, exc)
             return None
 
     def list_jobs(self) -> list[Job]:
         # Get the job list from v1 (fast, no descriptions)
-        resp = httpx.get(f"{_V1_BASE}/{self.board}", timeout=30)
+        resp = self.client.get(f"{_V1_BASE}/{self.board}")
         resp.raise_for_status()
         v1_jobs = resp.json().get("jobs", [])
 
@@ -124,7 +122,7 @@ class WorkableFetcher(ATSFetcher):
         return jobs
 
     def fetch_job(self, job_id: str) -> Job:
-        resp = httpx.get(f"{_V2_BASE}/{self.board}/jobs/{job_id}", timeout=30)
+        resp = self.client.get(f"{_V2_BASE}/{self.board}/jobs/{job_id}")
         if resp.status_code == 404:
             raise ValueError(f"Job ID {job_id} not found on {self.board} board.")
         resp.raise_for_status()

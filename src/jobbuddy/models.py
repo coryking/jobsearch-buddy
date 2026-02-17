@@ -21,7 +21,7 @@ class Job(BaseModel):
     team: str | None = None
     salary: str | None = None
     description: str | None = None
-    ext_path: str | None = Field(default=None, exclude=True)  # Workday internal
+    ats_metadata: dict | None = Field(default=None, exclude=True)
 
     def embed_text(self, company_name: str) -> str | None:
         """Build semantically rich text for embedding. Returns None if no description."""
@@ -226,7 +226,7 @@ class CompactJob(BaseModel):
 
     @classmethod
     def from_result(cls, result: FetchResult) -> "CompactJob":
-        return cls(company=result.company.name, **result.job.model_dump(exclude={"ext_path"}))
+        return cls(company=result.company.name, **result.job.model_dump())
 
 
 class _HTMLStripper(HTMLParser):

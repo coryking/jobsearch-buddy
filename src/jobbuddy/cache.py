@@ -10,6 +10,7 @@ Schema: jobs (company_slug, job_id PK) + sync_status (company_slug PK) +
 """
 
 import hashlib
+import json
 import logging
 import sqlite3
 from datetime import datetime, timezone
@@ -55,6 +56,8 @@ _MIGRATIONS = [
     "ALTER TABLE jobs ADD COLUMN disappeared_at TIMESTAMP",
     # Store descriptions for embedding/vector search
     "ALTER TABLE jobs ADD COLUMN description TEXT",
+    # ATS-specific metadata as JSON (e.g. Workday ext_path, Eightfold positionUrl)
+    "ALTER TABLE jobs ADD COLUMN ats_metadata TEXT",
 ]
 
 
@@ -173,8 +176,8 @@ def upsert_company_jobs(
         conn.executemany(
             """INSERT INTO jobs
                (company_slug, job_id, title, location, url, published_at,
-                department, team, salary, description, last_seen, disappeared_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+                department, team, salary, description, ats_metadata, last_seen, disappeared_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
                ON CONFLICT(company_slug, job_id) DO UPDATE SET
                 title = excluded.title,
                 location = excluded.location,
@@ -184,6 +187,7 @@ def upsert_company_jobs(
                 team = excluded.team,
                 salary = excluded.salary,
                 description = COALESCE(excluded.description, jobs.description),
+                ats_metadata = COALESCE(excluded.ats_metadata, jobs.ats_metadata),
                 last_seen = excluded.last_seen,
                 disappeared_at = NULL""",
             [
@@ -198,6 +202,7 @@ def upsert_company_jobs(
                     j.team or None,
                     j.salary or None,
                     j.description or None,
+                    json.dumps(j.ats_metadata) if j.ats_metadata else None,
                     now,
                 )
                 for j in jobs
@@ -342,9 +347,9 @@ def job_count(conn: sqlite3.Connection, include_disappeared: bool = False) -> in
 def get_jobs_needing_descriptions(
     conn: sqlite3.Connection, company_slug: str
 ) -> list[dict]:
-    """Return active jobs with NULL description for a company."""
+    """Return active jobs with NULL description for a company (includes ats_metadata)."""
     rows = conn.execute(
-        """SELECT job_id, title FROM jobs
+        """SELECT job_id, title, ats_metadata FROM jobs
            WHERE company_slug = ? AND description IS NULL AND disappeared_at IS NULL""",
         (company_slug,),
     ).fetchall()

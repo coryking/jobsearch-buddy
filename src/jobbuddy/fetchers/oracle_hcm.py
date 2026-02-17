@@ -2,8 +2,6 @@
 
 import time
 
-import httpx
-
 from jobbuddy.fetchers.base import ATSFetcher
 from jobbuddy.models import Job, strip_html
 
@@ -15,6 +13,7 @@ MAX_RESULTS = 75  # cap per keyword query — relevancy drops fast past ~50 resu
 class OracleHCMFetcher(ATSFetcher):
     ats_type = "oracle_hcm"
     descriptions_in_listing = False
+    enrich_delay = 0.3
 
     def __init__(
         self,
@@ -88,7 +87,7 @@ class OracleHCMFetcher(ATSFetcher):
 
         while True:
             url = self._list_api_url(keyword, location, offset)
-            resp = httpx.get(url, timeout=30)
+            resp = self.client.get(url)
             resp.raise_for_status()
             data = resp.json()
 
@@ -132,20 +131,19 @@ class OracleHCMFetcher(ATSFetcher):
 
         return jobs
 
-    def fetch_job(self, job_id: str) -> Job:
-        self._require_config()
+    def _fetch_detail_data(self, job_id: str) -> dict:
+        """Fetch detail API response for a single job."""
         url = self._detail_api_url(job_id)
-        resp = httpx.get(url, timeout=30)
+        resp = self.client.get(url)
         resp.raise_for_status()
         data = resp.json()
-
         items = data.get("items", [])
         if not items:
             raise ValueError(f"Job {job_id} not found on Oracle HCM board '{self.board}'.")
+        return items[0]
 
-        detail = items[0]
-
-        # Build description from multiple fields
+    def _parse_detail(self, detail: dict, job_id: str) -> Job:
+        """Parse a detail API item into a Job."""
         desc_parts = []
         for field in ("ExternalDescriptionStr", "ExternalResponsibilitiesStr", "ExternalQualificationsStr"):
             val = detail.get(field)
@@ -153,7 +151,6 @@ class OracleHCMFetcher(ATSFetcher):
                 desc_parts.append(strip_html(val))
         description = "\n\n".join(desc_parts) or None
 
-        # Detail API uses ExternalPostedStartDate (ISO timestamp), list uses PostedDate (YYYY-MM-DD)
         posted = detail.get("ExternalPostedStartDate") or detail.get("PostedDate")
         if posted and "T" in str(posted):
             posted = str(posted)[:10]
@@ -169,3 +166,19 @@ class OracleHCMFetcher(ATSFetcher):
             department=detail.get("Category"),
             description=description,
         )
+
+    def fetch_job(self, job_id: str) -> Job:
+        self._require_config()
+        detail = self._fetch_detail_data(job_id)
+        return self._parse_detail(detail, job_id)
+
+    def fetch_description(self, job_id: str, metadata: dict | None = None) -> str | None:
+        """Fetch description from detail API without building a full Job."""
+        self._require_config()
+        detail = self._fetch_detail_data(job_id)
+        desc_parts = []
+        for field in ("ExternalDescriptionStr", "ExternalResponsibilitiesStr", "ExternalQualificationsStr"):
+            val = detail.get(field)
+            if val:
+                desc_parts.append(strip_html(val))
+        return "\n\n".join(desc_parts) or None

@@ -15,7 +15,7 @@ class LeverFetcher(ATSFetcher):
     def resolve_name(self) -> str | None:
         """Fetch company display name from Lever page title."""
         try:
-            resp = httpx.get(f"https://jobs.lever.co/{self.board}", timeout=10)
+            resp = self.client.get(f"https://jobs.lever.co/{self.board}")
             resp.raise_for_status()
             m = re.search(r"<title>(.*?)</title>", resp.text)
             if m:
@@ -85,13 +85,13 @@ class LeverFetcher(ATSFetcher):
 
     def list_jobs(self) -> list[Job]:
         url = f"https://api.lever.co/v0/postings/{self.board}?mode=json"
-        resp = httpx.get(url, timeout=30)
+        resp = self.client.get(url)
         resp.raise_for_status()
         return [self._parse_job(j) for j in resp.json()]
 
     def fetch_job(self, job_id: str) -> Job:
         url = f"https://api.lever.co/v0/postings/{self.board}/{job_id}"
-        resp = httpx.get(url, timeout=30)
+        resp = self.client.get(url)
         if resp.status_code == 404:
             raise ValueError(f"Job ID {job_id} not found on {self.board} board.")
         resp.raise_for_status()

@@ -14,7 +14,7 @@ class AshbyFetcher(ATSFetcher):
     def resolve_name(self) -> str | None:
         """Fetch company display name from Ashby page title ("<Company> Jobs")."""
         try:
-            resp = httpx.get(f"https://jobs.ashbyhq.com/{self.board}", timeout=10)
+            resp = self.client.get(f"https://jobs.ashbyhq.com/{self.board}")
             resp.raise_for_status()
             m = re.search(r"<title>(.*?)</title>", resp.text)
             if m:
@@ -28,7 +28,7 @@ class AshbyFetcher(ATSFetcher):
 
     def list_jobs(self) -> list[Job]:
         url = f"https://api.ashbyhq.com/posting-api/job-board/{self.board}?includeCompensation=true"
-        resp = httpx.get(url, timeout=30)
+        resp = self.client.get(url)
         resp.raise_for_status()
         data = resp.json()
         jobs = []

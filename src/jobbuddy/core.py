@@ -364,12 +364,14 @@ def sync_jobs(
     # that don't return descriptions in list_jobs(). Runs between fetch and
     # embed phases so newly-enriched descriptions get embedded.
     if slugs_to_embed:
+        import json as _json
         from jobbuddy.cache import get_jobs_needing_descriptions, update_job_descriptions
 
         # Build slug -> company map for fetcher lookup
         slug_to_company = {c.slug: c for c in targets}
         enrich_total = 0
-        enrich_plan: list[tuple[str, list[str]]] = []  # (slug, [job_ids])
+        # (slug, [job_ids], {job_id: metadata_dict})
+        enrich_plan: list[tuple[str, list[str], dict[str, dict]]] = []
 
         for slug in slugs_to_embed:
             company_obj = slug_to_company.get(slug)
@@ -382,7 +384,11 @@ def sync_jobs(
             if not needing:
                 continue
             job_ids = [j["job_id"] for j in needing]
-            enrich_plan.append((slug, job_ids))
+            jobs_meta = {
+                j["job_id"]: _json.loads(j["ats_metadata"] or "{}")
+                for j in needing
+            }
+            enrich_plan.append((slug, job_ids, jobs_meta))
             enrich_total += len(job_ids)
 
         if enrich_total > 0:
@@ -390,18 +396,23 @@ def sync_jobs(
                 on_enrich_start(enrich_total)
 
             enrich_done = 0
-            for slug, job_ids in enrich_plan:
+            for slug, job_ids, jobs_meta in enrich_plan:
                 company_obj = slug_to_company[slug]
                 try:
                     fetcher = get_fetcher(company_obj)
-                    desc_map = fetcher.fetch_descriptions(job_ids)
-                    # Filter out None values before updating
-                    valid = {k: v for k, v in desc_map.items() if v is not None}
-                    if valid:
-                        update_job_descriptions(conn, slug, valid)
-                    enrich_done += len(job_ids)
-                    if on_enrich_progress:
-                        on_enrich_progress(enrich_done, enrich_total)
+
+                    def _on_fetched(job_id: str, desc: str, _slug: str = slug) -> None:
+                        nonlocal enrich_done
+                        update_job_descriptions(conn, _slug, {job_id: desc})
+                        enrich_done += 1
+                        if on_enrich_progress:
+                            on_enrich_progress(enrich_done, enrich_total)
+
+                    fetcher.fetch_descriptions(
+                        job_ids,
+                        metadata=jobs_meta,
+                        on_fetched=_on_fetched,
+                    )
                 except Exception as e:
                     log.warning("Description enrichment failed for %s: %s", slug, e)
                     enrich_done += len(job_ids)

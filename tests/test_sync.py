@@ -1,6 +1,6 @@
 """Tests for sync orchestration in ats.core."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, patch, call
 
 import pytest
 
@@ -8,13 +8,14 @@ from jobbuddy.core import SyncResult, sync_jobs
 from jobbuddy.models import Company, Job
 
 
-def _make_job(id: str, title: str = "PM") -> Job:
+def _make_job(id: str, title: str = "PM", ats_metadata: dict | None = None) -> Job:
     return Job(
         id=id,
         title=title,
         location="Seattle",
         url=f"https://example.com/jobs/{id}",
         apply_url=f"https://example.com/jobs/{id}/apply",
+        ats_metadata=ats_metadata,
     )
 
 
@@ -147,8 +148,19 @@ class TestEnrichment:
         mock_fetcher = MagicMock()
         mock_fetcher.descriptions_in_listing = False
         # list_jobs returns jobs without descriptions (stub)
-        mock_fetcher.list_jobs.return_value = [_make_job("1", "PM"), _make_job("2", "SWE")]
-        mock_fetcher.fetch_descriptions.return_value = {"1": "PM description", "2": "SWE description"}
+        mock_fetcher.list_jobs.return_value = [
+            _make_job("1", "PM", ats_metadata={"ext_path": "/job/1"}),
+            _make_job("2", "SWE", ats_metadata={"ext_path": "/job/2"}),
+        ]
+
+        def fake_fetch_descriptions(job_ids, *, metadata=None, on_fetched=None):
+            results = {"1": "PM description", "2": "SWE description"}
+            for jid, desc in results.items():
+                if on_fetched and desc:
+                    on_fetched(jid, desc)
+            return results
+
+        mock_fetcher.fetch_descriptions.side_effect = fake_fetch_descriptions
         mock_get_fetcher.return_value = mock_fetcher
 
         db = tmp_path / "test.db"
@@ -194,7 +206,15 @@ class TestEnrichment:
         mock_fetcher = MagicMock()
         mock_fetcher.descriptions_in_listing = False
         mock_fetcher.list_jobs.return_value = [_make_job("1")]
-        mock_fetcher.fetch_descriptions.return_value = {"1": "description"}
+
+        def fake_fetch_descriptions(job_ids, *, metadata=None, on_fetched=None):
+            results = {"1": "description"}
+            for jid, desc in results.items():
+                if on_fetched and desc:
+                    on_fetched(jid, desc)
+            return results
+
+        mock_fetcher.fetch_descriptions.side_effect = fake_fetch_descriptions
         mock_get_fetcher.return_value = mock_fetcher
 
         db = tmp_path / "test.db"
@@ -202,6 +222,7 @@ class TestEnrichment:
             sync_jobs(company_slug="workday-co", db_path=str(db))
 
         mock_fetcher.fetch_descriptions.reset_mock()
+        mock_fetcher.fetch_descriptions.side_effect = fake_fetch_descriptions
 
         with patch("jobbuddy.core.lookup_by_name", return_value=company):
             sync_jobs(company_slug="workday-co", db_path=str(db))
@@ -233,14 +254,22 @@ class TestEnrichment:
     @patch("jobbuddy.core.list_companies")
     @patch("jobbuddy.core.get_fetcher")
     def test_enrichment_callbacks_fire(self, mock_get_fetcher, mock_list_companies, tmp_path):
-        """Enrichment callbacks fire when enrichment runs."""
+        """Enrichment callbacks fire per-job when enrichment runs."""
         company = _make_company("workday-co", ats="workday")
         mock_list_companies.return_value = {"workday-co": company}
 
         mock_fetcher = MagicMock()
         mock_fetcher.descriptions_in_listing = False
         mock_fetcher.list_jobs.return_value = [_make_job("1"), _make_job("2")]
-        mock_fetcher.fetch_descriptions.return_value = {"1": "desc1", "2": "desc2"}
+
+        def fake_fetch_descriptions(job_ids, *, metadata=None, on_fetched=None):
+            results = {"1": "desc1", "2": "desc2"}
+            for jid, desc in results.items():
+                if on_fetched and desc:
+                    on_fetched(jid, desc)
+            return results
+
+        mock_fetcher.fetch_descriptions.side_effect = fake_fetch_descriptions
         mock_get_fetcher.return_value = mock_fetcher
 
         enrich_events = []
@@ -256,9 +285,77 @@ class TestEnrichment:
 
         assert ("start", 2) in enrich_events
         assert ("done",) in enrich_events
-        # At least one progress callback
+        # Per-job progress callbacks
         progress_events = [e for e in enrich_events if e[0] == "progress"]
-        assert len(progress_events) >= 1
+        assert len(progress_events) == 2
+
+    @patch("jobbuddy.core.list_companies")
+    @patch("jobbuddy.core.get_fetcher")
+    def test_enrichment_passes_metadata(self, mock_get_fetcher, mock_list_companies, tmp_path):
+        """Enrichment passes ats_metadata from DB to fetch_descriptions."""
+        company = _make_company("workday-co", ats="workday")
+        mock_list_companies.return_value = {"workday-co": company}
+
+        mock_fetcher = MagicMock()
+        mock_fetcher.descriptions_in_listing = False
+        mock_fetcher.list_jobs.return_value = [
+            _make_job("1", ats_metadata={"ext_path": "/job/1"}),
+        ]
+
+        captured_metadata = {}
+
+        def fake_fetch_descriptions(job_ids, *, metadata=None, on_fetched=None):
+            captured_metadata.update(metadata or {})
+            results = {"1": "description"}
+            for jid, desc in results.items():
+                if on_fetched and desc:
+                    on_fetched(jid, desc)
+            return results
+
+        mock_fetcher.fetch_descriptions.side_effect = fake_fetch_descriptions
+        mock_get_fetcher.return_value = mock_fetcher
+
+        db = tmp_path / "test.db"
+        with patch("jobbuddy.core.lookup_by_name", return_value=company):
+            sync_jobs(company_slug="workday-co", db_path=str(db))
+
+        assert "1" in captured_metadata
+        assert captured_metadata["1"]["ext_path"] == "/job/1"
+
+    @patch("jobbuddy.core.list_companies")
+    @patch("jobbuddy.core.get_fetcher")
+    def test_incremental_commit_survives_partial_failure(self, mock_get_fetcher, mock_list_companies, tmp_path):
+        """Descriptions committed via on_fetched survive even if later jobs fail."""
+        company = _make_company("workday-co", ats="workday")
+        mock_list_companies.return_value = {"workday-co": company}
+
+        mock_fetcher = MagicMock()
+        mock_fetcher.descriptions_in_listing = False
+        mock_fetcher.list_jobs.return_value = [_make_job("1"), _make_job("2")]
+
+        def fake_fetch_descriptions(job_ids, *, metadata=None, on_fetched=None):
+            # Commit first job, then raise on second
+            if on_fetched:
+                on_fetched("1", "first description")
+            raise Exception("Network died mid-batch")
+
+        mock_fetcher.fetch_descriptions.side_effect = fake_fetch_descriptions
+        mock_get_fetcher.return_value = mock_fetcher
+
+        db = tmp_path / "test.db"
+        with patch("jobbuddy.core.lookup_by_name", return_value=company):
+            results = sync_jobs(company_slug="workday-co", db_path=str(db))
+
+        assert results[0].ok
+
+        # First job's description should be saved despite batch failure
+        from jobbuddy.cache import get_connection
+        conn = get_connection(str(db))
+        row1 = conn.execute("SELECT description FROM jobs WHERE job_id = '1'").fetchone()
+        row2 = conn.execute("SELECT description FROM jobs WHERE job_id = '2'").fetchone()
+        assert row1["description"] == "first description"
+        assert row2["description"] is None
+        conn.close()
 
 
 class TestSyncResult:

@@ -3,8 +3,6 @@
 import json
 import re
 
-import httpx
-
 from jobbuddy.fetchers.base import ATSFetcher
 from jobbuddy.models import Job, strip_html
 
@@ -36,11 +34,11 @@ class PaylocityFetcher(ATSFetcher):
     def resolve_name(self) -> str | None:
         """Fetch company display name from listing page."""
         try:
-            resp = httpx.get(self._listing_url(), timeout=15)
+            resp = self.client.get(self._listing_url())
             resp.raise_for_status()
             page_data = self._extract_page_data(resp.text)
             return page_data.get("ModuleTitle") or None
-        except (httpx.HTTPError, ValueError):
+        except Exception:
             return None
 
     def _parse_list_job(self, j: dict) -> Job:
@@ -75,7 +73,7 @@ class PaylocityFetcher(ATSFetcher):
         )
 
     def list_jobs(self) -> list[Job]:
-        resp = httpx.get(self._listing_url(), timeout=30)
+        resp = self.client.get(self._listing_url())
         resp.raise_for_status()
         page_data = self._extract_page_data(resp.text)
         jobs_raw = page_data.get("Jobs", [])
@@ -84,7 +82,7 @@ class PaylocityFetcher(ATSFetcher):
     def fetch_job(self, job_id: str) -> Job:
         base = _base_url(self.ats_prefix)
         url = f"{base}/Recruiting/Jobs/Details/{job_id}"
-        resp = httpx.get(url, timeout=15)
+        resp = self.client.get(url)
         if resp.status_code == 404:
             raise ValueError(f"Job ID {job_id} not found on Paylocity.")
         resp.raise_for_status()
