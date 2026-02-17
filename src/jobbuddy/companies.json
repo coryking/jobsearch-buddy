@@ -2,13 +2,6 @@
   "adobe": {
     "ats": "workday",
     "board": "external_experienced",
-    "default_filters": {
-      "appliedFacets": {
-        "jobFamilyGroup": [
-          "591af8b812fa10737af39db3d96eed9f"
-        ]
-      }
-    },
     "name": "Adobe",
     "wd_company": "adobe",
     "wd_instance": 5
@@ -243,18 +236,6 @@
   "expedia": {
     "ats": "workday",
     "board": "search",
-    "default_filters": {
-      "appliedFacets": {
-        "locations": [
-          "0210e11067580172e7b490ef4646e32e",
-          "d9ad289ce9b701609c73e2940536397b",
-          "c553432013ba103bbc581be7de044d12",
-          "224ce31cd34310005ee2350cbe2d0000",
-          "c553432013ba103bbc5bf87895d3521e",
-          "c553432013ba103bbc5a737343d54f66"
-        ]
-      }
-    },
     "name": "Expedia",
     "wd_company": "expedia",
     "wd_instance": 108
@@ -339,11 +320,6 @@
       "appliedFacets": {
         "Location_Country": [
           "bc33aa3152ec42d4995f4791a106ed09"
-        ],
-        "jobFamilyGroup": [
-          "80667f5f2da3010ee8417a74cf4b0000",
-          "98cbd30d374e10333e000e782ca45e69",
-          "98cbd30d374e10333e0004dccb145e5f"
         ]
       }
     },
@@ -423,19 +399,6 @@
     "base_url": "https://apply.careers.microsoft.com",
     "board": "microsoft",
     "default_filters": {
-      "filter_career_discipline": [
-        "Product Management",
-        "Technical Program Management"
-      ],
-      "filter_include_remote": 1,
-      "filter_profession": [
-        "program management",
-        "product management"
-      ],
-      "filter_seniority": [
-        "Mid-Level",
-        "Senior"
-      ],
       "location": "United States"
     },
     "domain": "microsoft.com",
@@ -810,8 +773,12 @@
     "board": "WalmartExternal",
     "default_filters": {
       "appliedFacets": {
-        "jobFamily": [
-          "e83ebdbd2a0a01bffcb4245a47e906c4"
+        "jobFamilyGroup": [
+          "e83ebdbd2a0a01e7e1477a8948e904c6",
+          "e83ebdbd2a0a01af0185848948e94dc6",
+          "e83ebdbd2a0a01769a8c8b8948e96cc6",
+          "e83ebdbd2a0a01ea72c2808948e924c6",
+          "e83ebdbd2a0a01cc71e67f8948e91ac6"
         ]
       }
     },

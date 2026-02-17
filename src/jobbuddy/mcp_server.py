@@ -259,9 +259,10 @@ def search_jobs(
     all companies (sorted newest first). If cache is empty, tells user to run `ats sync`.
 
     Returns the company registry if the company name isn't found."""
-    from jobbuddy.cache import cache_exists, get_connection, query_jobs
+    from jobbuddy.settings import get_settings
+    from jobbuddy.store import JobStore
 
-    if not cache_exists():
+    if not get_settings().db_path.exists():
         return "No cached job data. Run `ats sync` in the terminal to populate the cache."
 
     # Resolve company
@@ -273,39 +274,39 @@ def search_jobs(
             return f"Error: Unknown company '{company}'. Registered companies: {', '.join(c.name for c in companies.values())}"
         company_slug = resolved.slug
 
-    conn = get_connection()
+    store = JobStore()
+    try:
+        limit = 100 if not company_slug else 500
+        rows = store.query_jobs(
+            company=company_slug,
+            title=title_filter or None,
+            location=location_filter or None,
+            limit=limit,
+        )
 
-    limit = 100 if not company_slug else 500
-    rows = query_jobs(
-        conn,
-        company_slug=company_slug,
-        title_filter=title_filter or None,
-        location_filter=location_filter or None,
-        limit=limit,
-    )
+        if not rows:
+            filters = []
+            if title_filter:
+                filters.append(f"title='{title_filter}'")
+            if location_filter:
+                filters.append(f"location='{location_filter}'")
+            filter_desc = f" matching {', '.join(filters)}" if filters else ""
+            scope = company_slug or "any company"
+            return f"No cached jobs found for {scope}{filter_desc}. Try running `ats sync` to refresh."
 
-    if not rows:
-        conn.close()
-        filters = []
-        if title_filter:
-            filters.append(f"title='{title_filter}'")
-        if location_filter:
-            filters.append(f"location='{location_filter}'")
-        filter_desc = f" matching {', '.join(filters)}" if filters else ""
-        scope = company_slug or "any company"
-        return f"No cached jobs found for {scope}{filter_desc}. Try running `ats sync` to refresh."
+        registry = list_companies()
+        log_entries = read_log()
 
-    registry = list_companies()
-    log_entries = read_log()
-    conn.close()
-
-    return JobSearchResults.from_query(rows, registry, log_entries, company_slug=company_slug).to_mcp_result()
+        return JobSearchResults.from_query(rows, registry, log_entries, company_slug=company_slug).to_mcp_result()
+    finally:
+        store.close()
 
 
 @mcp.tool
 def semantic_search_jobs(
     query: Annotated[str, Field(description="Pass the user's words directly — do not rewrite or summarize")],
     limit: Annotated[int, Field(default=20, description="Max results (default 20)")] = 20,
+    model: Annotated[str, Field(default="bge_small", description="Embedding model key (e.g. 'bge_small', 'arctic')")] = "bge_small",
 ) -> str:
     """Find jobs by meaning rather than keywords. Uses vector similarity over job descriptions.
 
@@ -315,31 +316,32 @@ def semantic_search_jobs(
     companies whose ATS returns descriptions during sync (Greenhouse, Ashby, Lever, Rippling, Paylocity).
 
     Pass the user's natural language query directly — do not rewrite it."""
-    from jobbuddy.cache import cache_exists, get_connection, semantic_search
+    from jobbuddy.search import VectorSearch
+    from jobbuddy.settings import get_settings
 
-    if not cache_exists():
+    if not get_settings().db_path.exists():
         return "No cached job data. Run `ats sync` in the terminal to populate the cache."
 
+    search = VectorSearch()
     try:
-        from jobbuddy import embeddings
+        results = search.search(query, model_key=model, limit=limit)
 
-        query_vec = embeddings.embed_query(query)
-        query_bytes = embeddings.serialize_f32(query_vec)
-    except Exception as e:
-        return f"Error loading embedding model: {e}"
+        if not results:
+            return "No semantic matches found. Descriptions may not be cached yet — try running `ats sync` to populate."
 
-    conn = get_connection()
-    rows = semantic_search(conn, query_bytes, limit=limit)
+        # Convert SearchResult objects to dicts compatible with JobSearchResults.from_query()
+        rows = []
+        for result in results:
+            row = dict(result.job)
+            row["distance"] = (1 - result.score) * 2
+            rows.append(row)
 
-    if not rows:
-        conn.close()
-        return "No semantic matches found. Descriptions may not be cached yet — try running `ats sync` to populate."
+        registry = list_companies()
+        log_entries = read_log()
 
-    registry = list_companies()
-    log_entries = read_log()
-    conn.close()
-
-    return JobSearchResults.from_query(rows, registry, log_entries).to_mcp_result()
+        return JobSearchResults.from_query(rows, registry, log_entries).to_mcp_result()
+    finally:
+        search.close()
 
 
 @mcp.tool

@@ -7,22 +7,52 @@
   <script src="https://cdn.tailwindcss.com"></script>
 </head>
 <body class="bg-gray-50 min-h-screen">
-  <div class="max-w-5xl mx-auto px-4 py-10">
+  <div class="max-w-6xl mx-auto px-4 py-10">
     <h1 class="text-2xl font-bold text-gray-800 mb-6">Semantic Job Search</h1>
 
-    <form method="get" action="/" class="flex gap-2 mb-8">
-      <input
-        type="text"
-        name="q"
-        value="{{ query }}"
-        placeholder="e.g. senior product manager fintech"
-        autofocus
-        class="flex-1 border border-gray-300 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-      >
-      <button
-        type="submit"
-        class="bg-blue-600 text-white px-5 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 transition"
-      >Search</button>
+    <form method="get" action="/" class="mb-8">
+      <div class="flex gap-2 mb-3">
+        <input
+          type="text"
+          name="q"
+          value="{{ query }}"
+          placeholder="e.g. senior product manager fintech"
+          autofocus
+          class="flex-1 border border-gray-300 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+        >
+        <button
+          type="submit"
+          class="bg-blue-600 text-white px-5 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 transition"
+        >Search</button>
+      </div>
+      <div class="flex items-center gap-4">
+        <div class="flex items-center gap-2">
+          <label for="model" class="text-sm text-gray-600">Model:</label>
+          <select
+            name="model"
+            id="model"
+            class="border border-gray-300 rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            {% if compare %}disabled{% endif %}
+          >
+            {% for key, cfg in models.items() %}
+            <option value="{{ key }}" {% if key == model %}selected{% endif %}>
+              {{ cfg.model_key }} ({{ cfg.dimensions }}d)
+            </option>
+            {% endfor %}
+          </select>
+        </div>
+        <label class="flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
+          <input
+            type="checkbox"
+            name="compare"
+            value="1"
+            {% if compare %}checked{% endif %}
+            onchange="this.form.submit()"
+            class="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+          >
+          Compare all models
+        </label>
+      </div>
     </form>
 
     {% if error %}
@@ -32,8 +62,60 @@
     {% endif %}
 
     {% if query and not error %}
-      {% if results %}
-      <p class="text-sm text-gray-500 mb-3">{{ results|length }} results for <strong>{{ query }}</strong></p>
+
+      {# --- Compare mode: unified table with one score column per model --- #}
+      {% if compare and compare_results %}
+      <p class="text-sm text-gray-500 mb-3">{{ compare_results|length }} results for <strong>{{ query }}</strong> (comparing all models)</p>
+      <div class="overflow-x-auto rounded-lg border border-gray-200 shadow-sm">
+        <table class="w-full text-sm text-left text-gray-700">
+          <thead class="bg-gray-100 text-xs uppercase tracking-wide text-gray-500">
+            <tr>
+              {% for key, cfg in models.items() %}
+              <th class="px-3 py-3 w-20 text-center">{{ cfg.model_key }}</th>
+              {% endfor %}
+              <th class="px-4 py-3">Title</th>
+              <th class="px-4 py-3">Company</th>
+              <th class="px-4 py-3">Location</th>
+              <th class="px-4 py-3">Department</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-gray-100">
+            {% for job in compare_results %}
+            <tr class="hover:bg-gray-50 transition">
+              {% for key in models %}
+              <td class="px-3 py-3 font-mono text-xs text-center">
+                {% if key in job.scores %}
+                <span class="{% if job.scores[key] >= 70 %}text-green-600{% elif job.scores[key] >= 50 %}text-yellow-600{% else %}text-gray-400{% endif %}">
+                  {{ job.scores[key] }}%
+                </span>
+                {% else %}
+                <span class="text-gray-300">--</span>
+                {% endif %}
+              </td>
+              {% endfor %}
+              <td class="px-4 py-3 font-medium">
+                {% if job.url %}
+                <a href="{{ job.url }}" target="_blank" rel="noopener"
+                   class="text-blue-600 hover:underline">{{ job.title }}</a>
+                {% else %}
+                {{ job.title }}
+                {% endif %}
+              </td>
+              <td class="px-4 py-3 text-gray-600">{{ job.company }}</td>
+              <td class="px-4 py-3 text-gray-500">{{ job.location }}</td>
+              <td class="px-4 py-3 text-gray-500">{{ job.department }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+
+      {% elif compare and not compare_results %}
+      <p class="text-gray-500 text-sm">No results found. Try a different query or run <code class="bg-gray-100 px-1 rounded">ats sync</code> to populate the cache.</p>
+
+      {# --- Single model mode --- #}
+      {% elif results %}
+      <p class="text-sm text-gray-500 mb-3">{{ results|length }} results for <strong>{{ query }}</strong> ({{ model }})</p>
       <div class="overflow-x-auto rounded-lg border border-gray-200 shadow-sm">
         <table class="w-full text-sm text-left text-gray-700">
           <thead class="bg-gray-100 text-xs uppercase tracking-wide text-gray-500">
@@ -69,9 +151,11 @@
           </tbody>
         </table>
       </div>
+
       {% else %}
       <p class="text-gray-500 text-sm">No results found. Try a different query or run <code class="bg-gray-100 px-1 rounded">ats sync</code> to populate the cache.</p>
       {% endif %}
+
     {% endif %}
   </div>
 </body>

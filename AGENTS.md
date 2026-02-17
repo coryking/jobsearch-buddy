@@ -11,8 +11,8 @@ caches listings in SQLite, and exposes them via a FastMCP server for use with
 Claude Desktop or any MCP-compatible client.
 
 It also serves as a **learning sandbox for ML/retrieval concepts** — embeddings,
-vector search (sqlite-vec), fine-tuning, hybrid search. Architecture should
-support both stable tool use and experimentation.
+vector search, fine-tuning, hybrid search. Architecture supports both stable
+tool use and experimentation with multiple embedding models.
 
 This is a practical tool, not enterprise software. Bias toward shipping.
 80% today beats 99% tomorrow.
@@ -23,15 +23,24 @@ This is a practical tool, not enterprise software. Bias toward shipping.
 src/jobbuddy/
 ├── cli.py          # Typer CLI (ats command)
 ├── mcp_server.py   # FastMCP server (ats-mcp command)
-├── core.py         # Shared logic: fetch, save, sync, URL parsing
-├── cache.py        # SQLite cache layer (WAL mode, sqlite-vec for vector search)
-├── embeddings.py   # fastembed model (Snowflake arctic-embed-l, 1024 dims)
+├── core.py         # Shared logic: fetch, save, URL parsing (no sync)
+├── store.py        # JobStore class — SQLite data access (WAL mode, surrogate keys)
+├── search.py       # VectorSearch class — NumPy cosine similarity over BLOB embeddings
+├── embeddings.py   # Model registry + sentence-transformers (3 models, lazy-loaded)
 ├── settings.py     # pydantic-settings config (env vars, platformdirs paths)
 ├── registry.py     # Company registry + fuzzy name matching
 ├── models.py       # Pydantic Job, FetchResult, Company models
 ├── url.py          # ATS URL parser
 ├── job_log.py      # CSV activity log (WA unemployment audit compliance)
+├── web.py          # Flask web UI for semantic search (model picker, compare mode)
 ├── companies.json  # Company registry data
+├── templates/
+│   └── search.html # Jinja2 template for web search UI
+├── sync/           # Sync pipeline (fetch → enrich → embed)
+│   ├── __init__.py # sync_jobs() orchestrator, SyncCallbacks, SyncResult
+│   ├── fetch.py    # FetchPhase — parallel company fetching
+│   ├── enrich.py   # EnrichPhase — description enrichment for stub fetchers
+│   └── embed.py    # EmbedPhase — per-model embedding generation
 └── fetchers/       # Per-ATS-platform scrapers (strategy pattern)
     ├── base.py         # ATSFetcher ABC
     ├── greenhouse.py
@@ -44,13 +53,14 @@ src/jobbuddy/
     └── workable.py
 
 tests/
-├── test_cache.py       # Cache layer: upsert, dedup, soft-delete, vector search
-├── test_embeddings.py  # Embedding module: embed_text, serialize_f32, model
-├── test_sync.py        # Sync orchestration: callbacks, error isolation, staleness
+├── test_store.py       # JobStore: schema, upsert, embeddings, migrations
+├── test_search.py      # VectorSearch: ranking, limits, multi-model
+├── test_embeddings.py  # Model registry, serialize/deserialize, prefixes
+├── test_sync.py        # Sync orchestration: phases, callbacks, error isolation
 └── test_settings.py    # Settings: defaults, env var overrides, singleton
 
 docs/
-├── architecture.md     # Detailed architecture, cache design, fetcher pattern
+├── architecture.md     # Detailed architecture, store design, fetcher pattern
 └── data-format.md      # Job search CSV log format
 ```
 

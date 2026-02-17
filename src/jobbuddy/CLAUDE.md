@@ -27,7 +27,7 @@ in `cli.py`; FastMCP deps stay in `mcp_server.py`.
 
 ### Testing Philosophy
 
-Test the cache and sync layers — they handle data that's expensive to re-scrape
+Test the store and sync layers — they handle data that's expensive to re-scrape
 and easy to silently corrupt. Skip tests for CLI formatting, MCP descriptions,
 and other presentation-layer stuff.
 

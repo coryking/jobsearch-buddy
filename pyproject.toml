@@ -5,16 +5,16 @@ description = "Job search tool with ATS scraping, SQLite cache, vector search, a
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "fastembed>=0.4.0",
     "fastmcp>=2.0.0",
     "flask>=3.0.0",
     "httpx>=0.28.1",
+    "numpy>=1.24.0",
     "platformdirs>=4.0.0",
     "pydantic>=2.0",
     "pydantic-settings>=2.0.0",
     "python-docx>=1.2.0",
     "rich>=14.3.2",
-    "sqlite-vec>=0.1.1",
+    "sentence-transformers>=3.0.0",
     "toml>=0.10.0",
     "typer>=0.23.1",
 ]

@@ -9,17 +9,18 @@ jobsearch-buddy has two interfaces sharing a single core:
 
 Both call into `core.py`. Core raises `ValueError`; callers handle presentation.
 
-## Cache Design
+## Data Access — JobStore
 
-All search/browse reads come from a local SQLite cache. Only `ats sync` touches
-the network for bulk listing fetches.
+`store.py` provides the `JobStore` class — a SQLite data access layer with WAL
+mode, surrogate keys, and optional thread-safe writes. All DB access goes through
+JobStore; no raw `conn` passing.
 
 | Operation | Source | Notes |
 |-----------|--------|-------|
-| `search_jobs` MCP | Cache | Cross-company keyword search |
-| `semantic_search_jobs` MCP | Cache | Vector similarity (fastembed) |
-| `ats list-jobs` CLI | Cache | Optional company filter |
-| `ats search` CLI | Cache | Title/location/company filters |
+| `search_jobs` MCP | JobStore | Cross-company keyword search |
+| `semantic_search_jobs` MCP | VectorSearch | NumPy cosine similarity |
+| `ats list-jobs` CLI | JobStore | Optional company filter |
+| `ats search` CLI | JobStore | Title/location/company filters |
 | `ats sync` CLI | Live API | Populates/refreshes cache |
 | `get_job_post_details` MCP | Live API | Needs full descriptions |
 | `log_job_application` MCP | Live API | Saves listing as markdown |
@@ -28,35 +29,67 @@ the network for bulk listing fetches.
 ### Schema
 
 ```sql
-jobs          -- company_slug + job_id PK, title, location, url, published_at,
-              --   salary, team, department, description, disappeared_at
-sync_status   -- per-company last sync time and error state
-vec_jobs      -- sqlite-vec virtual table for KNN vector search
-job_embeddings -- maps vec0 integer rowids to (company_slug, job_id) PK
+jobs             -- INTEGER PK (surrogate), UNIQUE(company_slug, job_id)
+                 --   title, location, url, published_at, salary, team,
+                 --   department, description, ats_metadata, last_seen,
+                 --   disappeared_at
+sync_status      -- per-company last sync time and error state
+embedding_models -- model_key PK, model_name, dimensions, created_at
+job_embeddings   -- FK to jobs.id, FK to embedding_models.model_key
+                 --   embedding BLOB (raw float32), text_hash
 ```
 
 ### Soft-Delete
 
 When a job disappears from a company's feed, it gets `disappeared_at` instead of
 deletion. Jobs that reappear get `disappeared_at = NULL`. `query_jobs()` excludes
-disappeared jobs by default; pass `include_disappeared=True` to see them.
+disappeared jobs by default.
 
-### Vector Search
+## Vector Search
 
-Jobs with descriptions are embedded during sync via `generate_embeddings()`.
-Embeddings stored in `vec_jobs` (sqlite-vec virtual table). `job_embeddings`
-bridges vec0's integer rowids to composite `(company_slug, job_id)` PKs.
-`semantic_search()` does KNN via `WHERE v.embedding MATCH ?`.
+`search.py` provides the `VectorSearch` class — owns a `JobStore` and the
+embedding model registry. Search consumers (web.py, mcp_server.py) create one.
 
-Model: Snowflake arctic-embed-l (1024 dims, ~1GB download on first use).
-Asymmetric retrieval: `embed_texts()` for documents (passage prefix),
-`embed_query()` for search queries.
+Search flow:
+1. `embed_query(query, model_key)` → query vector (with query prefix if needed)
+2. `store.load_embeddings(model_key)` → NumPy matrix + job ID list from BLOBs
+3. Cosine similarity via `matrix @ query_vec` (vectors normalized by sentence-transformers)
+4. Top K job IDs → `SELECT * FROM jobs WHERE id IN (...)`
+5. Return ranked `SearchResult` list
+
+No in-memory cache — SQLite loads ~5K BLOBs per request fast enough (~50-100ms).
+Sync and search run in separate processes, so no cache coherence issues.
+
+### Embedding Models
+
+`embeddings.py` defines a model registry with three models:
+
+| Key | Model | Dimensions | Notes |
+|-----|-------|------------|-------|
+| `bge_small` | BAAI/bge-small-en-v1.5 | 384 | Default. Fast, known quantity |
+| `nomic_v15` | nomic-ai/nomic-embed-text-v1.5 | 768 | Asymmetric (query/passage prefixes) |
+| `jobbge_m3` | pj-mathematician/JobBGE-m3 | 1024 | Job-domain fine-tuned |
+
+Models are lazy-loaded via `get_model()` and cached in a dict. Adding a model =
+one `EmbeddingModelConfig` entry in `MODEL_REGISTRY`.
+
+## Sync Pipeline
+
+`sync/` package orchestrates three phases:
+
+1. **FetchPhase** (`sync/fetch.py`): Parallel company fetching via ThreadPoolExecutor
+2. **EnrichPhase** (`sync/enrich.py`): Description enrichment for stub fetchers
+3. **EmbedPhase** (`sync/embed.py`): Per-model sequential embedding generation
+
+`sync_jobs()` in `sync/__init__.py` coordinates them. `SyncCallbacks` dataclass
+replaces positional callback parameters for progress reporting.
 
 ### Sync Concurrency
 
-`ats sync` uses `ThreadPoolExecutor(5)` — workers fetch in parallel, main thread
-writes sequentially. Companies are shuffled before sync to spread same-platform
-requests (rate-limit mitigation). Each company is error-isolated.
+Fetch and enrich phases use `ThreadPoolExecutor(max_workers)`. Companies are
+shuffled before sync to spread same-platform requests (rate-limit mitigation).
+Each company is error-isolated. The embed phase runs models sequentially (they'd
+fight over CPU/GPU if parallel).
 
 ## Fetcher Architecture
 
@@ -71,8 +104,8 @@ Factory functions in `fetchers/__init__.py`:
 `fetch_job()` fetches a single job's full details.
 
 **Stub vs Full fetchers:** Workday, Eightfold, Oracle HCM don't return
-descriptions in bulk listings. After sync, `core.py` runs description enrichment:
-calls `fetch_job()` for stub-fetcher jobs that lack descriptions.
+descriptions in bulk listings. After sync, the enrich phase calls
+`fetch_descriptions()` for stub-fetcher jobs that lack descriptions.
 
 ## Settings
 

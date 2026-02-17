@@ -19,6 +19,7 @@ from jobbuddy.core import (
 from jobbuddy.fetchers import get_fetcher
 from jobbuddy.models import Company, slugify
 from jobbuddy.registry import list_companies, lookup_by_name
+from jobbuddy.settings import get_settings
 
 app = typer.Typer(help="Fetch job listings from ATS job boards.")
 console = Console(stderr=True)
@@ -54,36 +55,37 @@ def list_jobs(
     filter: Optional[str] = typer.Option(None, "--filter", "-f", help="Case-insensitive substring filter on job title"),
 ):
     """List open jobs from cache. Omit company for all cached jobs."""
-    from jobbuddy.cache import cache_exists, get_connection, get_sync_status
+    from jobbuddy.store import JobStore
 
-    if not cache_exists():
+    if not get_settings().db_path.exists():
         console.print("[yellow]No cached data. Run 'ats sync' to populate.[/yellow]")
         raise SystemExit(0)
 
-    conn = get_connection()
+    store = JobStore()
 
     # Resolve company slug if provided
     company_slug = None
     if company:
         resolved = lookup_by_name(company)
         if not resolved:
+            store.close()
             console.print(f"[red]Unknown company: {company}[/red]")
             raise SystemExit(1)
         company_slug = resolved.slug
 
         # Show cache freshness
-        statuses = get_sync_status(conn, company_slug)
+        statuses = store.get_sync_status(company_slug)
         if statuses:
             console.print(f"[dim]Cache from: {statuses[0]['last_sync']}[/dim]")
 
-    from jobbuddy.cache import query_jobs as cache_query
-    rows = cache_query(
-        conn,
-        company_slug=company_slug,
-        title_filter=filter,
-        limit=10000,
-    )
-    conn.close()
+    try:
+        rows = store.query_jobs(
+            company=company_slug,
+            title=filter,
+            limit=10000,
+        )
+    finally:
+        store.close()
 
     if not rows:
         console.print("[yellow]No jobs found.[/yellow]")
@@ -117,9 +119,9 @@ def search(
     company: Optional[str] = typer.Option(None, "--company", "-c", help="Company name or slug"),
 ):
     """Search cached jobs across all companies."""
-    from jobbuddy.cache import cache_exists, get_connection, query_jobs as cache_query
+    from jobbuddy.store import JobStore
 
-    if not cache_exists():
+    if not get_settings().db_path.exists():
         console.print("[yellow]No cached data. Run 'ats sync' to populate.[/yellow]")
         raise SystemExit(0)
 
@@ -131,15 +133,16 @@ def search(
         else:
             company_slug = company  # try raw slug
 
-    conn = get_connection()
-    rows = cache_query(
-        conn,
-        company_slug=company_slug,
-        title_filter=title,
-        location_filter=location,
-        limit=500,
-    )
-    conn.close()
+    store = JobStore()
+    try:
+        rows = store.query_jobs(
+            company=company_slug,
+            title=title,
+            location=location,
+            limit=500,
+        )
+    finally:
+        store.close()
 
     if not rows:
         console.print("[yellow]No jobs found matching filters.[/yellow]")
@@ -177,7 +180,7 @@ def sync(
     from rich.table import Table
     from rich.text import Text
 
-    from jobbuddy.core import SyncResult, sync_jobs
+    from jobbuddy.sync import SyncCallbacks, SyncResult, sync_jobs
 
     registry = list_companies()
     scrapeable = sum(1 for c in registry.values() if c.ats is not None)
@@ -279,15 +282,16 @@ def sync(
     embed_task_id: int | None = None
     embed_last_completed: int = 0
 
-    def on_embed_start(total_jobs: int) -> None:
-        nonlocal embed_progress, embed_task_id
-        # Stop the sync progress bar so it doesn't look hung
-        progress.stop()
+    def on_embed_start(total_jobs: int, model_name: str, dimensions: int) -> None:
+        nonlocal embed_progress, embed_task_id, embed_last_completed
+        # Reset per-model progress tracking
+        embed_last_completed = 0
         if total_jobs == 0:
-            console.print("\n[dim]No new embeddings needed.[/dim]")
             return
-        from jobbuddy.embeddings import MODEL_NAME, DIMENSIONS
-        console.print(f"\n[bold blue]Generating embeddings[/bold blue] for {total_jobs} jobs [dim]({MODEL_NAME}, {DIMENSIONS}d)[/dim]")
+        # Stop any previous embed progress bar (multi-model case)
+        if embed_progress is not None:
+            embed_progress.stop()
+        console.print(f"\n[bold blue]Generating embeddings[/bold blue] ({model_name}, {dimensions}d) for {total_jobs} jobs")
         embed_progress = Progress(
             SpinnerColumn("dots"),
             TextColumn("[bold blue]{task.description}"),
@@ -314,21 +318,25 @@ def sync(
             embed_progress.stop()
         console.print("[green]✓[/green] Embeddings complete.")
 
+    callbacks = SyncCallbacks(
+        on_start=on_start,
+        on_result=on_result,
+        on_skip=on_skip,
+        on_fetch_progress=on_fetch_progress,
+        on_enrich_start=on_enrich_start,
+        on_enrich_progress=on_enrich_progress,
+        on_enrich_done=on_enrich_done,
+        on_embed_start=on_embed_start,
+        on_embed_progress=on_embed_progress,
+        on_embed_done=on_embed_done,
+    )
+
     progress.start()
     try:
         results = sync_jobs(
             company_slug=company,
             stale_hours=stale,
-            on_start=on_start,
-            on_result=on_result,
-            on_skip=on_skip,
-            on_fetch_progress=on_fetch_progress,
-            on_enrich_start=on_enrich_start,
-            on_enrich_progress=on_enrich_progress,
-            on_enrich_done=on_enrich_done,
-            on_embed_start=on_embed_start,
-            on_embed_progress=on_embed_progress,
-            on_embed_done=on_embed_done,
+            callbacks=callbacks,
         )
     except ValueError as e:
         progress.stop()
