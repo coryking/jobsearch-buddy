@@ -39,8 +39,8 @@ def _make_job(**kw) -> Job:
 
 
 class TestModelRegistry:
-    def test_registry_has_two_models(self):
-        assert len(MODEL_REGISTRY) == 2
+    def test_registry_has_expected_models(self):
+        assert len(MODEL_REGISTRY) == 1
 
     def test_default_model_exists(self):
         assert DEFAULT_MODEL_KEY in MODEL_REGISTRY
@@ -56,14 +56,9 @@ class TestModelRegistry:
 
     def test_list_models_returns_all(self):
         models = list_models()
-        assert len(models) == 2
+        assert len(models) == 1
         keys = {m.model_key for m in models}
-        assert keys == {"nomic_v15", "bge_small"}
-
-    def test_nomic_config(self):
-        config = get_config("nomic_v15")
-        assert config.model_name == "nomic-ai/nomic-embed-text-v1.5"
-        assert config.dimensions == 768
+        assert keys == {"bge_small"}
 
     def test_bge_small_config(self):
         config = get_config("bge_small")

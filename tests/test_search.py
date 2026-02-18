@@ -112,7 +112,6 @@ class TestVectorSearch:
     def test_available_models(self, vs):
         models = vs.available_models
         assert "bge_small" in models
-        assert "nomic_v15" in models
 
     def test_search_all_models(self, vs):
         """search_all_models returns dict keyed by model."""
@@ -120,6 +119,4 @@ class TestVectorSearch:
         with patch("jobbuddy.search.embed_query", return_value=query_vec):
             all_results = vs.search_all_models("anything")
         assert "bge_small" in all_results
-        # Only bge_small has embeddings, others should be empty
         assert len(all_results["bge_small"]) > 0
-        assert len(all_results["nomic_v15"]) == 0
