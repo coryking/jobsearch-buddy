@@ -6,14 +6,10 @@ import json
 import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import TYPE_CHECKING
-
 from jobbuddy.fetchers import get_fetcher
 from jobbuddy.models import Company
-
-if TYPE_CHECKING:
-    from jobbuddy.store import JobStore
-    from jobbuddy.sync import SyncCallbacks
+from jobbuddy.store import JobStore
+from jobbuddy.sync.types import SyncCallbacks
 
 log = logging.getLogger(__name__)
 

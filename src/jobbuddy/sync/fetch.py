@@ -5,14 +5,10 @@ from __future__ import annotations
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from time import monotonic
-from typing import TYPE_CHECKING
-
 from jobbuddy.fetchers import get_fetcher
 from jobbuddy.models import Company, Job
-
-if TYPE_CHECKING:
-    from jobbuddy.store import JobStore
-    from jobbuddy.sync import SyncCallbacks, SyncResult
+from jobbuddy.store import JobStore
+from jobbuddy.sync.types import SyncCallbacks, SyncResult
 
 log = logging.getLogger(__name__)
 
@@ -35,8 +31,6 @@ class FetchPhase:
 
         Returns (results, slugs_that_succeeded).
         """
-        from jobbuddy.sync import SyncResult
-
         results: list[SyncResult] = []
         slugs_to_embed: list[str] = []
 

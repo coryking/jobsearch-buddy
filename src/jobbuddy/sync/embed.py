@@ -3,13 +3,9 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
-
 from jobbuddy.embeddings import MODEL_REGISTRY, embed_texts_iter, get_model, serialize_f32, unload_models
-
-if TYPE_CHECKING:
-    from jobbuddy.store import JobStore
-    from jobbuddy.sync import SyncCallbacks
+from jobbuddy.store import JobStore
+from jobbuddy.sync.types import SyncCallbacks
 
 log = logging.getLogger(__name__)
 
