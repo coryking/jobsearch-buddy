@@ -5,7 +5,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
-from jobbuddy.fetchers.base import ATSFetcher, JobList, ProgressCallback
+from jobbuddy.fetchers.base import ATSFetcher, JobList, ProgressCallback, RetryCallback
 from jobbuddy.models import Job, strip_html
 
 log = logging.getLogger(__name__)
@@ -89,14 +89,22 @@ class EightfoldFetcher(ATSFetcher):
             ats_metadata=self._extract_metadata(pos),
         )
 
-    def list_jobs(self, *, on_progress: ProgressCallback | None = None) -> JobList:
+    def list_jobs(
+        self,
+        *,
+        on_progress: ProgressCallback | None = None,
+        on_retry: RetryCallback | None = None,
+    ) -> JobList:
         self._require_config()
         base_params = self._build_search_params()
 
-        # Fetch page 0 to learn count
-        resp = self.client.get(self._api_url("search"), params={**base_params, "start": 0})
-        resp.raise_for_status()
-        data = resp.json().get("data", {})
+        # Fetch page 0 to learn count (with retry)
+        def _fetch_page0():
+            resp = self.client.get(self._api_url("search"), params={**base_params, "start": 0})
+            resp.raise_for_status()
+            return resp.json().get("data", {})
+
+        data = self._retry_request(_fetch_page0, on_retry=on_retry)
         count = data.get("count", 0)
         jobs: JobList = [self._position_to_job(pos) for pos in data.get("positions", [])]
         if on_progress:
@@ -109,9 +117,11 @@ class EightfoldFetcher(ATSFetcher):
         lock = threading.Lock()
 
         def _fetch_page(start: int) -> list[Job]:
-            page_resp = self.client.get(self._api_url("search"), params={**base_params, "start": start})
-            page_resp.raise_for_status()
-            return [self._position_to_job(pos) for pos in page_resp.json().get("data", {}).get("positions", [])]
+            def _do_fetch():
+                page_resp = self.client.get(self._api_url("search"), params={**base_params, "start": start})
+                page_resp.raise_for_status()
+                return [self._position_to_job(pos) for pos in page_resp.json().get("data", {}).get("positions", [])]
+            return self._retry_request(_do_fetch, on_retry=on_retry)
 
         with ThreadPoolExecutor(max_workers=5) as executor:
             futures = {executor.submit(_fetch_page, s): s for s in remaining_starts}

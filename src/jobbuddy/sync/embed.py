@@ -5,7 +5,15 @@ from __future__ import annotations
 import logging
 from jobbuddy.embeddings import MODEL_REGISTRY, embed_texts_iter, get_model, serialize_f32, unload_models
 from jobbuddy.store import JobStore
-from jobbuddy.sync.types import SyncCallbacks
+from jobbuddy.sync.types import (
+    EventQueue,
+    ModelLoaded,
+    ModelUnloaded,
+    Phase,
+    PhaseDone,
+    PhaseProgress,
+    PhaseStarted,
+)
 
 log = logging.getLogger(__name__)
 
@@ -15,11 +23,11 @@ class EmbedPhase:
         self,
         store: JobStore,
         slugs: list[str],
-        callbacks: SyncCallbacks,
+        events: EventQueue,
     ):
         self.store = store
         self.slugs = slugs
-        self.cb = callbacks
+        self.events = events
 
     def run(self) -> None:
         """Generate embeddings for all models sequentially."""
@@ -27,8 +35,7 @@ class EmbedPhase:
             # Free memory from the previous model before loading the next
             if i > 0:
                 prev_config = list(MODEL_REGISTRY.values())[i - 1]
-                if self.cb.on_model_unload:
-                    self.cb.on_model_unload(prev_config.model_key, prev_config.model_name, "")
+                self.events.put(ModelUnloaded(prev_config.model_key, prev_config.model_name, ""))
                 unload_models()
             # Count jobs needing embeddings across synced companies
             total = 0
@@ -37,18 +44,16 @@ class EmbedPhase:
                     config.model_key, slug=slug, count_only=True
                 )
 
-            if self.cb.on_embed_start:
-                self.cb.on_embed_start(total, config.model_name, config.dimensions)
+            detail = f"{config.model_name}, {config.dimensions}d"
+            self.events.put(PhaseStarted(Phase.EMBED, total, detail))
 
             if total > 0:
                 # Trigger model load (lazy) so we can report it
                 get_model(config.model_key)
-                if self.cb.on_model_load:
-                    self.cb.on_model_load(config.model_key, config.model_name, "onnx")
+                self.events.put(ModelLoaded(config.model_key, config.model_name, "onnx"))
                 self._embed_model(config.model_key, total)
 
-            if self.cb.on_embed_done:
-                self.cb.on_embed_done()
+            self.events.put(PhaseDone(Phase.EMBED))
 
     def _embed_model(self, model_key: str, total: int) -> None:
         """Generate embeddings for a single model across all synced companies."""
@@ -69,7 +74,6 @@ class EmbedPhase:
                         job_info["text_hash"],
                     )
                     done += 1
-                    if self.cb.on_embed_progress:
-                        self.cb.on_embed_progress(done, total)
+                    self.events.put(PhaseProgress(Phase.EMBED, done, total))
             except Exception as e:
                 log.warning("Embedding generation failed for %s/%s: %s", slug, model_key, e)

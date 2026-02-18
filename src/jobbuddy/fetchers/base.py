@@ -4,6 +4,7 @@ import logging
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable
+from typing import TypeVar
 
 import httpx
 
@@ -11,9 +12,15 @@ from jobbuddy.models import Job
 
 type ProgressCallback = Callable[[int, int], None]   # (fetched, total)
 type FetchedCallback = Callable[[str, str], None]    # (job_id, description)
+type RetryCallback = Callable[[int, int, float, str], None]  # (attempt, max_attempts, wait_seconds, reason)
 type JobList = list[Job]
 
+T = TypeVar("T")
+
 log = logging.getLogger(__name__)
+
+# Transient errors worth retrying
+_RETRYABLE_EXCEPTIONS = (httpx.ReadTimeout, httpx.ConnectError, httpx.ConnectTimeout)
 
 _DEFAULT_HEADERS = {
     "User-Agent": (
@@ -51,7 +58,12 @@ class ATSFetcher(ABC):
         )
 
     @abstractmethod
-    def list_jobs(self, *, on_progress: ProgressCallback | None = None) -> JobList: ...
+    def list_jobs(
+        self,
+        *,
+        on_progress: ProgressCallback | None = None,
+        on_retry: RetryCallback | None = None,
+    ) -> JobList: ...
 
     @abstractmethod
     def fetch_job(self, job_id: str) -> Job: ...
@@ -59,6 +71,47 @@ class ATSFetcher(ABC):
     def resolve_name(self) -> str | None:
         """Try to resolve company display name from the ATS. Returns None by default."""
         return None
+
+    def _retry_request(
+        self,
+        fn: Callable[[], T],
+        *,
+        on_retry: RetryCallback | None = None,
+    ) -> T:
+        """Call fn() with retry on 429 and transient network errors.
+
+        Respects Retry-After header on 429 responses. Uses exponential backoff
+        for transient errors (ReadTimeout, ConnectError). Non-retryable errors
+        are raised immediately.
+        """
+        last_exc: Exception | None = None
+        for attempt in range(self.max_retries + 1):
+            try:
+                return fn()
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code != 429:
+                    raise
+                last_exc = e
+                if attempt == self.max_retries:
+                    raise
+                retry_after = e.response.headers.get("Retry-After")
+                wait = float(retry_after) if retry_after else self.backoff_base * (2 ** attempt)
+            except _RETRYABLE_EXCEPTIONS as e:
+                last_exc = e
+                if attempt == self.max_retries:
+                    raise
+                wait = self.backoff_base * (2 ** attempt)
+
+            log.info(
+                "Retrying (attempt %d/%d, wait %.1fs): %s",
+                attempt + 1, self.max_retries, wait, last_exc,
+            )
+            if on_retry:
+                on_retry(attempt + 1, self.max_retries, wait, str(last_exc))
+            time.sleep(wait)
+
+        # Should never reach here, but satisfy type checker
+        raise last_exc  # type: ignore[misc]
 
     def fetch_description(self, job_id: str, metadata: dict | None = None) -> str | None:
         """Fetch description for a single job. Override for optimized per-job fetching.
@@ -76,40 +129,25 @@ class ATSFetcher(ABC):
         *,
         metadata: dict[str, dict] | None = None,
         on_fetched: FetchedCallback | None = None,
+        on_retry: RetryCallback | None = None,
     ) -> dict[str, str | None]:
         """Fetch descriptions for a batch of job IDs with retry/backoff.
 
-        Uses fetch_description() per job with rate limiting and 429 retry logic.
-        If on_fetched is provided, it's called with (job_id, description) after
-        each successful fetch so callers can commit incrementally.
+        Uses _retry_request() per job with rate limiting. If on_fetched is
+        provided, it's called with (job_id, description) after each successful
+        fetch so callers can commit incrementally.
         """
         metadata = metadata or {}
         results: dict[str, str | None] = {}
         for job_id in job_ids:
             desc = None
-            for attempt in range(self.max_retries + 1):
-                try:
-                    desc = self.fetch_description(job_id, metadata.get(job_id))
-                    break
-                except httpx.HTTPStatusError as e:
-                    if e.response.status_code == 429:
-                        if attempt == self.max_retries:
-                            log.warning("Max retries on 429 for %s", job_id)
-                            break
-                        retry_after = e.response.headers.get("Retry-After")
-                        if retry_after:
-                            wait = float(retry_after)
-                        else:
-                            wait = self.backoff_base * (2 ** attempt)
-                        log.info("429 for job %s, backing off %.1fs (attempt %d/%d)",
-                                 job_id, wait, attempt + 1, self.max_retries)
-                        time.sleep(wait)
-                    else:
-                        log.warning("Failed to fetch description for %s: %s", job_id, e)
-                        break
-                except Exception as e:
-                    log.warning("Failed to fetch description for %s: %s", job_id, e)
-                    break
+            try:
+                desc = self._retry_request(
+                    lambda jid=job_id: self.fetch_description(jid, metadata.get(jid)),
+                    on_retry=on_retry,
+                )
+            except Exception as e:
+                log.warning("Failed to fetch description for %s: %s", job_id, e)
 
             results[job_id] = desc
             if on_fetched and desc:

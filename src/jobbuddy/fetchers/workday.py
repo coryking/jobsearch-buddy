@@ -4,7 +4,7 @@ import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from jobbuddy.fetchers.base import ATSFetcher, JobList, ProgressCallback
+from jobbuddy.fetchers.base import ATSFetcher, JobList, ProgressCallback, RetryCallback
 from jobbuddy.models import Job, strip_html
 
 log = logging.getLogger(__name__)
@@ -33,7 +33,7 @@ class WorkdayFetcher(ATSFetcher):
                 "These are normally set from the company registry."
             )
 
-    def list_jobs(self, *, on_progress: ProgressCallback | None = None) -> JobList:
+    def list_jobs(self, *, on_progress: ProgressCallback | None = None, on_retry: RetryCallback | None = None) -> JobList:
         self._require_config()
         base = _wd_base(self.wd_company, self.wd_instance)
         api_url = f"{base}/wday/cxs/{self.wd_company}/{self.board}/jobs"

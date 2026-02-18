@@ -1,6 +1,6 @@
 """Oracle HCM Cloud (Oracle Recruiting Cloud) fetcher."""
 
-from jobbuddy.fetchers.base import ATSFetcher, ProgressCallback
+from jobbuddy.fetchers.base import ATSFetcher, ProgressCallback, RetryCallback
 from jobbuddy.models import Job, strip_html
 
 PAGE_SIZE = 25
@@ -105,7 +105,7 @@ class OracleHCMFetcher(ATSFetcher):
 
         return jobs
 
-    def list_jobs(self, *, on_progress: ProgressCallback | None = None) -> list[Job]:
+    def list_jobs(self, *, on_progress: ProgressCallback | None = None, on_retry: RetryCallback | None = None) -> list[Job]:
         self._require_config()
         location = self.default_filters.get("location", "")
 
