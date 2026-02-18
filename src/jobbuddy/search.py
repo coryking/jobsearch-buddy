@@ -49,7 +49,7 @@ class VectorSearch:
         if matrix.shape[0] == 0:
             return []
 
-        # Cosine similarity — vectors are normalized by sentence-transformers
+        # Cosine similarity — vectors are L2-normalized at embed time
         scores = matrix @ query_vec
         top_indices = np.argsort(scores)[::-1][:limit]
 

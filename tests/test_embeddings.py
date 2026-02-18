@@ -60,15 +60,15 @@ class TestModelRegistry:
         keys = {m.model_key for m in models}
         assert keys == {"nomic_v15", "bge_small"}
 
-    def test_nomic_has_prefixes(self):
+    def test_nomic_config(self):
         config = get_config("nomic_v15")
-        assert config.query_prefix == "search_query: "
-        assert config.passage_prefix == "search_document: "
+        assert config.model_name == "nomic-ai/nomic-embed-text-v1.5"
+        assert config.dimensions == 768
 
-    def test_bge_small_has_no_prefixes(self):
+    def test_bge_small_config(self):
         config = get_config("bge_small")
-        assert config.query_prefix == ""
-        assert config.passage_prefix == ""
+        assert config.model_name == "BAAI/bge-small-en-v1.5"
+        assert config.dimensions == 384
 
 
 # ---------------------------------------------------------------------------
@@ -148,17 +148,20 @@ class TestSerializeF32:
 
 @pytest.fixture
 def mock_model():
-    """Patch get_model to return a mock SentenceTransformer."""
+    """Patch get_model to return a mock fastembed TextEmbedding."""
     model = MagicMock()
 
-    def fake_encode(texts, **kwargs):
-        # Return deterministic vectors based on text index
-        return np.array([
-            np.random.RandomState(i).randn(384).astype(np.float32)
-            for i, _ in enumerate(texts)
-        ])
+    def fake_passage_embed(texts):
+        """Return deterministic vectors based on text index."""
+        for i, _ in enumerate(texts):
+            yield np.random.RandomState(i).randn(384).astype(np.float32)
 
-    model.encode = fake_encode
+    def fake_query_embed(text):
+        """Return a single deterministic vector."""
+        yield np.random.RandomState(42).randn(384).astype(np.float32)
+
+    model.passage_embed = fake_passage_embed
+    model.query_embed = fake_query_embed
 
     with patch("jobbuddy.embeddings.get_model", return_value=model):
         yield model
@@ -181,29 +184,3 @@ class TestEmbedFunctions:
         results = list(embed_texts_iter(texts))
         assert len(results) == 3
         assert all(len(v) == 384 for v in results)
-
-    def test_embed_texts_with_prefix(self, mock_model):
-        """nomic model should prepend passage prefix."""
-        calls = []
-        original_encode = mock_model.encode
-
-        def capture_encode(texts, **kwargs):
-            calls.append(list(texts))
-            return original_encode(texts, **kwargs)
-
-        mock_model.encode = capture_encode
-        embed_texts(["test doc"], model_key="nomic_v15")
-        assert calls[0][0] == "search_document: test doc"
-
-    def test_embed_query_with_prefix(self, mock_model):
-        """nomic model should prepend query prefix."""
-        calls = []
-        original_encode = mock_model.encode
-
-        def capture_encode(texts, **kwargs):
-            calls.append(list(texts))
-            return original_encode(texts, **kwargs)
-
-        mock_model.encode = capture_encode
-        embed_query("test query", model_key="nomic_v15")
-        assert calls[0][0] == "search_query: test query"

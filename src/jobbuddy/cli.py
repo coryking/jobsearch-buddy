@@ -318,11 +318,11 @@ def sync(
             embed_progress.stop()
         console.print("[green]✓[/green] Embeddings complete.")
 
-    def on_model_load(model_key: str, model_name: str) -> None:
-        console.print(f"  [dim]Loading model {model_key} ({model_name})...[/dim]")
+    def on_model_load(model_key: str, model_name: str, device: str) -> None:
+        console.print(f"  [dim]Loaded {model_key} on [bold]{device}[/bold][/dim]")
 
-    def on_model_unload(model_key: str, model_name: str) -> None:
-        console.print(f"  [dim]Unloading {model_key} and freeing GPU memory...[/dim]")
+    def on_model_unload(model_key: str, model_name: str, device: str) -> None:
+        console.print(f"  [dim]Unloading {model_key}, freeing memory...[/dim]")
 
     callbacks = SyncCallbacks(
         on_start=on_start,
@@ -547,11 +547,11 @@ def embed(
             embed_progress.stop()
         console.print("[green]✓[/green] Embeddings complete.")
 
-    def on_model_load(model_key: str, model_name: str) -> None:
-        console.print(f"  [dim]Loading model {model_key} ({model_name})...[/dim]")
+    def on_model_load(model_key: str, model_name: str, device: str) -> None:
+        console.print(f"  [dim]Loaded {model_key} on [bold]{device}[/bold][/dim]")
 
-    def on_model_unload(model_key: str, model_name: str) -> None:
-        console.print(f"  [dim]Unloading {model_key} and freeing GPU memory...[/dim]")
+    def on_model_unload(model_key: str, model_name: str, device: str) -> None:
+        console.print(f"  [dim]Unloading {model_key}, freeing memory...[/dim]")
 
     callbacks = SyncCallbacks(
         on_embed_start=on_embed_start,

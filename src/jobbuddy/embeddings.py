@@ -1,9 +1,10 @@
-"""Multi-model embedding generation via sentence-transformers.
+"""Multi-model embedding generation via fastembed (ONNX Runtime).
 
 Model registry + lazy-loaded models. Adding a new model = one dataclass entry.
 Models are cached in a dict so each is loaded at most once per process.
 """
 
+import gc
 import logging
 import struct
 from collections.abc import Generator
@@ -21,9 +22,7 @@ class EmbeddingModelConfig:
     model_key: str
     model_name: str  # HuggingFace model ID
     dimensions: int
-    query_prefix: str = ""
-    passage_prefix: str = ""
-    trust_remote_code: bool = False
+    batch_size: int = 32
 
 
 MODEL_REGISTRY: dict[str, EmbeddingModelConfig] = {
@@ -31,9 +30,7 @@ MODEL_REGISTRY: dict[str, EmbeddingModelConfig] = {
         model_key="nomic_v15",
         model_name="nomic-ai/nomic-embed-text-v1.5",
         dimensions=768,
-        query_prefix="search_query: ",
-        passage_prefix="search_document: ",
-        trust_remote_code=True,
+        batch_size=2,
     ),
     "bge_small": EmbeddingModelConfig(
         model_key="bge_small",
@@ -48,7 +45,7 @@ DEFAULT_MODEL_KEY = "bge_small"
 DIMENSIONS = MODEL_REGISTRY[DEFAULT_MODEL_KEY].dimensions
 MODEL_NAME = MODEL_REGISTRY[DEFAULT_MODEL_KEY].model_name
 
-_models: dict[str, "SentenceTransformer"] = {}
+_models: dict[str, "TextEmbedding"] = {}
 
 
 def get_config(model_key: str) -> EmbeddingModelConfig:
@@ -62,80 +59,57 @@ def list_models() -> list[EmbeddingModelConfig]:
 
 
 def unload_models() -> None:
-    """Unload all cached models and free GPU/MPS memory.
+    """Unload all cached models and free memory.
 
     Called between model runs in the embed phase so only one model
-    occupies GPU memory at a time.
+    occupies memory at a time.
     """
     if not _models:
         return
     keys = list(_models.keys())
     log.info("Unloading models: %s", ", ".join(keys))
     _models.clear()
-    import gc
-
     gc.collect()
-    try:
-        import torch
-
-        if hasattr(torch, "mps") and torch.backends.mps.is_available():
-            torch.mps.empty_cache()
-            log.info("MPS cache cleared")
-        elif torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            log.info("CUDA cache cleared")
-    except ImportError:
-        pass
 
 
-def get_model(model_key: str = DEFAULT_MODEL_KEY) -> "SentenceTransformer":
+def get_model(model_key: str = DEFAULT_MODEL_KEY) -> "TextEmbedding":
     """Load an embedding model (cached per model_key, lazy)."""
     if model_key not in _models:
-        from sentence_transformers import SentenceTransformer
+        from fastembed import TextEmbedding
 
         config = get_config(model_key)
-        log.info("Loading model %s (%s, %dd)", model_key, config.model_name, config.dimensions)
-        _models[model_key] = SentenceTransformer(
-            config.model_name,
-            trust_remote_code=config.trust_remote_code,
-        )
-        log.info("Model %s loaded (device: %s)", model_key, _models[model_key].device)
+        log.info("Loading model %s (%s, %dd) via ONNX", model_key, config.model_name, config.dimensions)
+        _models[model_key] = TextEmbedding(model_name=config.model_name)
+        log.info("Model %s ready (onnx)", model_key)
     return _models[model_key]
 
 
 def embed_texts(texts: list[str], model_key: str = DEFAULT_MODEL_KEY) -> list[list[float]]:
-    """Batch embed documents for storage. Prepends passage prefix if configured."""
-    config = get_config(model_key)
+    """Batch embed documents for storage. fastembed handles prefixes internally."""
     model = get_model(model_key)
-    if config.passage_prefix:
-        texts = [config.passage_prefix + t for t in texts]
-    vecs = model.encode(texts, normalize_embeddings=True, show_progress_bar=False)
+    vecs = list(model.passage_embed(texts))
     return [v.tolist() for v in vecs]
 
 
 def embed_texts_iter(
-    texts: list[str], model_key: str = DEFAULT_MODEL_KEY, batch_size: int = 32
+    texts: list[str], model_key: str = DEFAULT_MODEL_KEY, batch_size: int | None = None
 ) -> Generator[list[float], None, None]:
     """Yield embeddings one at a time. Allows progress tracking and Ctrl+C between batches."""
     config = get_config(model_key)
     model = get_model(model_key)
-    if config.passage_prefix:
-        texts = [config.passage_prefix + t for t in texts]
+    if batch_size is None:
+        batch_size = config.batch_size
     for i in range(0, len(texts), batch_size):
         batch = texts[i : i + batch_size]
-        vecs = model.encode(batch, normalize_embeddings=True, show_progress_bar=False)
-        for v in vecs:
+        for v in model.passage_embed(batch):
             yield v.tolist()
 
 
 def embed_query(text: str, model_key: str = DEFAULT_MODEL_KEY) -> list[float]:
-    """Embed a single search query. Prepends query prefix if configured."""
-    config = get_config(model_key)
+    """Embed a single search query. fastembed handles query prefix internally."""
     model = get_model(model_key)
-    if config.query_prefix:
-        text = config.query_prefix + text
-    vec = model.encode([text], normalize_embeddings=True, show_progress_bar=False)
-    return vec[0].tolist()
+    vecs = list(model.query_embed(text))
+    return vecs[0].tolist()
 
 
 def serialize_f32(vector: list[float]) -> bytes:

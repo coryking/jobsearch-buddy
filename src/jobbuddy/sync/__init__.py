@@ -28,7 +28,7 @@ type CountCallback = Callable[[int], None]
 type ProgressCallback = Callable[[int, int], None]
 type DoneCallback = Callable[[], None]
 type EmbedStartCallback = Callable[[int, str, int], None]  # (total, model_name, dimensions)
-type ModelEventCallback = Callable[[str, str], None]  # (model_key, model_name)
+type ModelEventCallback = Callable[[str, str, str], None]  # (model_key, model_name, device)
 
 
 @dataclass
