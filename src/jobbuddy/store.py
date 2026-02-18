@@ -127,6 +127,7 @@ class JobStore:
                 team           TEXT,
                 salary         TEXT,
                 description    TEXT,
+                description_stripped TEXT,
                 ats_metadata   TEXT,
                 last_seen      TIMESTAMP NOT NULL,
                 disappeared_at TIMESTAMP,
@@ -202,6 +203,7 @@ class JobStore:
             ("disappeared_at", "TIMESTAMP"),
             ("description", "TEXT"),
             ("ats_metadata", "TEXT"),
+            ("description_stripped", "TEXT"),
         ]
         for col_name, col_type in migrations:
             if col_name not in cols:
@@ -384,6 +386,60 @@ class JobStore:
         else:
             _do()
 
+    def get_jobs_needing_stripping(self, limit: int = 50, *, count_only: bool = False) -> int | list[dict]:
+        """Return active jobs with descriptions but no stripped version.
+
+        With count_only=True, returns just the count (no LIMIT applied).
+        """
+        if count_only:
+            row = self.conn.execute(
+                """SELECT COUNT(*) FROM jobs
+                   WHERE description IS NOT NULL AND description_stripped IS NULL
+                   AND disappeared_at IS NULL"""
+            ).fetchone()
+            return row[0]
+
+        rows = self.conn.execute(
+            """SELECT id, company_slug, job_id, title, description FROM jobs
+               WHERE description IS NOT NULL AND description_stripped IS NULL
+               AND disappeared_at IS NULL
+               LIMIT ?""",
+            (limit,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def update_stripped_description(self, job_pk: int, stripped: str) -> None:
+        """Set the stripped description for a job."""
+
+        def _do():
+            with self.conn:
+                self.conn.execute(
+                    "UPDATE jobs SET description_stripped = ? WHERE id = ?",
+                    (stripped, job_pk),
+                )
+
+        if self._lock:
+            with self._lock:
+                _do()
+        else:
+            _do()
+
+    def clear_stripped_descriptions(self) -> int:
+        """Set description_stripped to NULL for all jobs. Returns count affected."""
+
+        def _do():
+            with self.conn:
+                cur = self.conn.execute(
+                    "UPDATE jobs SET description_stripped = NULL WHERE description_stripped IS NOT NULL"
+                )
+                return cur.rowcount
+
+        if self._lock:
+            with self._lock:
+                return _do()
+        else:
+            return _do()
+
     def get_job_by_ids(self, job_ids: list[int]) -> list[dict]:
         """Fetch jobs by surrogate key IDs."""
         if not job_ids:
@@ -470,7 +526,7 @@ class JobStore:
             # Check hash mismatches by loading them
             sql3 = f"""
                 SELECT j.id, j.company_slug, j.job_id, j.title, j.department,
-                       j.location, j.description, e.text_hash
+                       j.location, j.description, j.description_stripped, e.text_hash
                 FROM jobs j
                 JOIN job_embeddings e ON j.id = e.job_id AND e.model_key = ?
                 WHERE {where}
@@ -483,7 +539,7 @@ class JobStore:
                     location=r["location"] or "", url="", apply_url="",
                     department=r["department"], description=r["description"],
                 )
-                text = job.embed_text(r["company_slug"])
+                text = job.embed_text(r["company_slug"], description_stripped=r["description_stripped"])
                 if text and _text_hash(text) != r["text_hash"]:
                     mismatches += 1
 
@@ -492,7 +548,8 @@ class JobStore:
         # List mode — return full job info for embedding
         sql = f"""
             SELECT j.id, j.company_slug, j.job_id, j.title, j.department,
-                   j.location, j.description, e.id AS embed_id, e.text_hash
+                   j.location, j.description, j.description_stripped,
+                   e.id AS embed_id, e.text_hash
             FROM jobs j
             LEFT JOIN job_embeddings e ON j.id = e.job_id AND e.model_key = ?
             WHERE {where}
@@ -506,7 +563,7 @@ class JobStore:
                 location=r["location"] or "", url="", apply_url="",
                 department=r["department"], description=r["description"],
             )
-            text = job.embed_text(r["company_slug"])
+            text = job.embed_text(r["company_slug"], description_stripped=r["description_stripped"])
             if not text:
                 continue
 

@@ -28,6 +28,13 @@ class Settings(BaseSettings):
     db_path: Optional[Path] = None
     listings_dir: Path = Path.home() / "projects" / "resume" / "job-listings"
 
+    # Azure OpenAI (for description stripping)
+    azure_openai_api_key: Optional[str] = None
+    azure_openai_endpoint: Optional[str] = None
+    azure_openai_api_version: str = "2024-12-01-preview"
+    azure_openai_model: str = "gpt-5-nano"
+    strip_batch_size: int = 50
+
     @field_validator("db_path", mode="before")
     @classmethod
     def _default_db_path(cls, v):

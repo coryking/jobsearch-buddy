@@ -16,6 +16,7 @@ type ProgressCallback = Callable[[int, int], None]
 type DoneCallback = Callable[[], None]
 type EmbedStartCallback = Callable[[int, str, int], None]  # (total, model_name, dimensions)
 type ModelEventCallback = Callable[[str, str, str], None]  # (model_key, model_name, device)
+type StripErrorCallback = Callable[[str, str, str], None]  # (job_id, title, error_message)
 
 
 @dataclass
@@ -29,6 +30,10 @@ class SyncCallbacks:
     on_enrich_start: CountCallback | None = None
     on_enrich_progress: ProgressCallback | None = None
     on_enrich_done: DoneCallback | None = None
+    on_strip_start: CountCallback | None = None
+    on_strip_progress: ProgressCallback | None = None
+    on_strip_done: DoneCallback | None = None
+    on_strip_error: StripErrorCallback | None = None
     on_embed_start: EmbedStartCallback | None = None
     on_embed_progress: ProgressCallback | None = None
     on_embed_done: DoneCallback | None = None

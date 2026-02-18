@@ -1,9 +1,10 @@
-"""Sync pipeline — fetch, enrich, embed job listings.
+"""Sync pipeline — fetch, enrich, strip, embed job listings.
 
-Orchestrates three phases:
+Orchestrates four phases:
 1. FetchPhase: parallel company fetching via ThreadPoolExecutor
 2. EnrichPhase: description enrichment for stub fetchers
-3. EmbedPhase: per-model embedding generation
+3. StripPhase: LLM-based boilerplate removal (Azure OpenAI)
+4. EmbedPhase: per-model embedding generation
 """
 
 from pathlib import Path
@@ -14,6 +15,7 @@ from jobbuddy.sync.types import SyncCallbacks, SyncResult
 from jobbuddy.sync.embed import EmbedPhase
 from jobbuddy.sync.enrich import EnrichPhase
 from jobbuddy.sync.fetch import FetchPhase
+from jobbuddy.sync.strip import StripPhase
 
 
 # ---------------------------------------------------------------------------
@@ -75,7 +77,10 @@ def sync_jobs(
         if slugs_to_embed:
             EnrichPhase(store, slugs_to_embed, targets, max_workers, cb).run()
 
-        # Phase 3: Embed
+        # Phase 3: Strip boilerplate (global — backfills existing jobs too)
+        StripPhase(store, cb).run()
+
+        # Phase 4: Embed
         if slugs_to_embed:
             EmbedPhase(store, slugs_to_embed, cb).run()
 

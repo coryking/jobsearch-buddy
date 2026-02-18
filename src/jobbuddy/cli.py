@@ -324,6 +324,46 @@ def sync(
     def on_model_unload(model_key: str, model_name: str, device: str) -> None:
         console.print(f"  [dim]Unloading {model_key}, freeing memory...[/dim]")
 
+    # Strip progress — for LLM-based boilerplate removal
+    strip_progress: Progress | None = None
+    strip_task_id: int | None = None
+    strip_last_completed: int = 0
+
+    def on_strip_start(total_jobs: int) -> None:
+        nonlocal strip_progress, strip_task_id
+        if total_jobs == 0:
+            return
+        console.print(f"\n[bold blue]Stripping boilerplate[/bold blue] from {total_jobs} descriptions")
+        strip_progress = Progress(
+            SpinnerColumn("dots"),
+            TextColumn("[bold blue]{task.description}"),
+            BarColumn(bar_width=40),
+            MofNCompleteColumn(),
+            TextColumn("[dim]|[/dim]"),
+            TimeElapsedColumn(),
+            console=console,
+            expand=False,
+        )
+        strip_task_id = strip_progress.add_task("Stripping", total=total_jobs)
+        strip_progress.start()
+
+    def on_strip_progress(done: int, total: int) -> None:
+        nonlocal strip_last_completed
+        if strip_progress is not None and strip_task_id is not None:
+            advance_by = done - strip_last_completed
+            if advance_by > 0:
+                strip_progress.advance(strip_task_id, advance_by)
+                strip_last_completed = done
+
+    def on_strip_done() -> None:
+        if strip_progress is not None:
+            strip_progress.stop()
+        console.print("[green]✓[/green] Boilerplate stripping complete.")
+
+    def on_strip_error(job_id: str, title: str, error: str) -> None:
+        if strip_progress is not None:
+            strip_progress.console.print(f"  [red]✗[/red] {job_id} ({title}): [dim]{error[:80]}[/dim]")
+
     callbacks = SyncCallbacks(
         on_start=on_start,
         on_result=on_result,
@@ -332,6 +372,10 @@ def sync(
         on_enrich_start=on_enrich_start,
         on_enrich_progress=on_enrich_progress,
         on_enrich_done=on_enrich_done,
+        on_strip_start=on_strip_start,
+        on_strip_progress=on_strip_progress,
+        on_strip_done=on_strip_done,
+        on_strip_error=on_strip_error,
         on_embed_start=on_embed_start,
         on_embed_progress=on_embed_progress,
         on_embed_done=on_embed_done,
@@ -563,6 +607,89 @@ def embed(
 
     try:
         EmbedPhase(store, slugs, callbacks).run()
+    finally:
+        store.close()
+
+
+@app.command()
+def strip(
+    force: bool = typer.Option(False, "--force", "-f", help="Re-strip jobs that already have stripped descriptions"),
+):
+    """Strip boilerplate from cached job descriptions using Azure OpenAI."""
+    from rich.progress import BarColumn, MofNCompleteColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
+
+    from jobbuddy.store import JobStore
+    from jobbuddy.sync import SyncCallbacks
+    from jobbuddy.sync.strip import StripPhase
+
+    settings = get_settings()
+    if not settings.azure_openai_api_key or not settings.azure_openai_endpoint:
+        console.print("[red]Azure OpenAI not configured.[/red]")
+        console.print("[dim]Set JOBBUDDY_AZURE_OPENAI_API_KEY and JOBBUDDY_AZURE_OPENAI_ENDPOINT[/dim]")
+        raise SystemExit(1)
+
+    if not settings.db_path.exists():
+        console.print("[yellow]No cached data. Run 'ats sync' to populate.[/yellow]")
+        raise SystemExit(0)
+
+    store = JobStore()
+
+    if force:
+        cleared = store.clear_stripped_descriptions()
+        if cleared:
+            console.print(f"[dim]Cleared {cleared} existing stripped descriptions[/dim]")
+
+    strip_progress: Progress | None = None
+    strip_task_id: int | None = None
+    strip_last_completed: int = 0
+
+    def on_strip_start(total_jobs: int) -> None:
+        nonlocal strip_progress, strip_task_id
+        if total_jobs == 0:
+            console.print("[dim]All descriptions already stripped.[/dim]")
+            return
+        console.print(f"[bold blue]Stripping boilerplate[/bold blue] from {total_jobs} descriptions")
+        strip_progress = Progress(
+            SpinnerColumn("dots"),
+            TextColumn("[bold blue]{task.description}"),
+            BarColumn(bar_width=40),
+            MofNCompleteColumn(),
+            TextColumn("[dim]|[/dim]"),
+            TimeElapsedColumn(),
+            console=console,
+            expand=False,
+        )
+        strip_task_id = strip_progress.add_task("Stripping", total=total_jobs)
+        strip_progress.start()
+
+    def on_strip_progress(done: int, total: int) -> None:
+        nonlocal strip_last_completed
+        if strip_progress is not None and strip_task_id is not None:
+            advance_by = done - strip_last_completed
+            if advance_by > 0:
+                strip_progress.advance(strip_task_id, advance_by)
+                strip_last_completed = done
+
+    def on_strip_done() -> None:
+        if strip_progress is not None:
+            strip_progress.stop()
+        console.print("[green]✓[/green] Boilerplate stripping complete.")
+
+    def on_strip_error(job_id: str, title: str, error: str) -> None:
+        if strip_progress is not None:
+            strip_progress.console.print(f"  [red]✗[/red] {job_id} ({title}): [dim]{error[:80]}[/dim]")
+        else:
+            console.print(f"  [red]✗[/red] {job_id} ({title}): [dim]{error[:80]}[/dim]")
+
+    callbacks = SyncCallbacks(
+        on_strip_start=on_strip_start,
+        on_strip_progress=on_strip_progress,
+        on_strip_done=on_strip_done,
+        on_strip_error=on_strip_error,
+    )
+
+    try:
+        StripPhase(store, callbacks).run()
     finally:
         store.close()
 

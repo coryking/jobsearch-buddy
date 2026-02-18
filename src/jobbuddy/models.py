@@ -23,16 +23,22 @@ class Job(BaseModel):
     description: str | None = None
     ats_metadata: dict | None = Field(default=None, exclude=True)
 
-    def embed_text(self, company_name: str) -> str | None:
-        """Build semantically rich text for embedding. Returns None if no description."""
-        if not self.description:
+    def embed_text(self, company_name: str, *, description_stripped: str | None = None) -> str | None:
+        """Build semantically rich text for embedding. Returns None if no description.
+
+        Uses description_stripped (LLM-cleaned) when available, falling back to
+        the raw description. This means populating description_stripped changes
+        the text_hash, triggering automatic re-embedding.
+        """
+        desc = description_stripped or self.description
+        if not desc:
             return None
         parts = [f"{company_name} — {self.title}"]
         meta = ", ".join(filter(None, [self.department, self.location]))
         if meta:
             parts.append(meta)
         parts.append("")
-        parts.append(self.description)
+        parts.append(desc)
         return "\n".join(parts)
 
 
