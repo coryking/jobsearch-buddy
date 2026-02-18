@@ -78,7 +78,7 @@ def sync_jobs(
             EnrichPhase(store, slugs_to_embed, targets, max_workers, cb).run()
 
         # Phase 3: Strip boilerplate (global — backfills existing jobs too)
-        StripPhase(store, cb).run()
+        # StripPhase(store, cb).run()
 
         # Phase 4: Embed
         if slugs_to_embed:

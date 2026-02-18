@@ -263,15 +263,30 @@ class CompactJob(BaseModel):
 
 
 class _HTMLStripper(HTMLParser):
+    _BLOCK_TAGS = frozenset(
+        "p div br hr li tr dt dd h1 h2 h3 h4 h5 h6 blockquote pre ol ul table".split()
+    )
+
     def __init__(self):
         super().__init__()
         self._pieces: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list):
+        if tag in self._BLOCK_TAGS:
+            self._pieces.append("\n")
+
+    def handle_endtag(self, tag: str):
+        if tag in self._BLOCK_TAGS:
+            self._pieces.append("\n")
 
     def handle_data(self, data: str):
         self._pieces.append(data)
 
     def get_text(self) -> str:
-        return "".join(self._pieces)
+        import re as _re
+        text = "".join(self._pieces)
+        text = _re.sub(r"\n{3,}", "\n\n", text)
+        return text
 
 
 def strip_html(html: str) -> str:
