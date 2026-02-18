@@ -28,9 +28,9 @@ class EmbeddingModelConfig:
 MODEL_REGISTRY: dict[str, EmbeddingModelConfig] = {
     "nomic_v15": EmbeddingModelConfig(
         model_key="nomic_v15",
-        model_name="nomic-ai/nomic-embed-text-v1.5",
+        model_name="nomic-ai/nomic-embed-text-v1.5-Q",
         dimensions=768,
-        batch_size=2,
+        batch_size=4,
     ),
     "bge_small": EmbeddingModelConfig(
         model_key="bge_small",
