@@ -54,6 +54,20 @@ class EightfoldFetcher(ATSFetcher):
         params.update(self.default_filters)
         return params
 
+    @staticmethod
+    def _extract_metadata(data: dict) -> dict:
+        """Pull interesting Eightfold fields into ats_metadata."""
+        meta: dict = {}
+        for key in ("displayJobId", "workLocationOption"):
+            if data.get(key):
+                meta[key] = data[key]
+        # Detail-only fields (lists of strings)
+        for key in ("efcustomTextWorkSite", "efcustomTextRoletype", "efcustomTextEmploymentType"):
+            val = data.get(key)
+            if val:
+                meta[key] = val[0] if isinstance(val, list) and len(val) == 1 else val
+        return meta or None
+
     def _position_to_job(self, pos: dict) -> Job:
         """Map a slim position object from search results to a Job."""
         pos_id = str(pos["id"])
@@ -72,6 +86,7 @@ class EightfoldFetcher(ATSFetcher):
             apply_url=url,
             published_at=published_at,
             department=pos.get("department"),
+            ats_metadata=self._extract_metadata(pos),
         )
 
     def list_jobs(self, *, on_progress: ProgressCallback | None = None) -> JobList:
@@ -148,6 +163,7 @@ class EightfoldFetcher(ATSFetcher):
             published_at=published_at,
             department=data.get("department"),
             description=description or None,
+            ats_metadata=self._extract_metadata(data),
         )
 
     def fetch_description(self, job_id: str, metadata: dict | None = None) -> str | None:

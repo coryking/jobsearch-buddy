@@ -2,12 +2,31 @@
 
 import csv
 import io
+import json
 import re
 from collections import Counter
 from html.parser import HTMLParser
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+
+# ats_metadata keys worth surfacing to LLM consumers (MCP output).
+# Other keys (e.g. Workday's ext_path) are internal plumbing.
+_MCP_METADATA_KEYS = {"displayJobId", "workLocationOption", "efcustomTextWorkSite", "efcustomTextRoletype", "efcustomTextEmploymentType"}
+
+
+def _filter_metadata(raw: dict | str | None) -> dict | None:
+    """Parse and whitelist ats_metadata for MCP output."""
+    if not raw:
+        return None
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (ValueError, TypeError):
+            return None
+    filtered = {k: v for k, v in raw.items() if k in _MCP_METADATA_KEYS}
+    return filtered or None
 
 
 class Job(BaseModel):
@@ -97,7 +116,10 @@ class JobSearchResults(BaseModel):
                 log_by_company.setdefault(co, []).append(entry)
 
         has_distance = any("distance" in row for row in rows)
+        has_metadata = any(_filter_metadata(row.get("ats_metadata")) for row in rows)
         headers = ["company", "title", "location", "posted", "job_id", "url", "salary", "team", "applied"]
+        if has_metadata:
+            headers.append("metadata")
         if has_distance:
             headers.append("similarity")
         job_list: list[JobRow] = [headers]
@@ -129,6 +151,9 @@ class JobSearchResults(BaseModel):
                 row["team"] or row["department"] or "",
                 applied,
             ]
+            if has_metadata:
+                meta = _filter_metadata(row.get("ats_metadata"))
+                entry.append(json.dumps(meta) if meta else "")
             if has_distance:
                 dist = row.get("distance", 0)
                 entry.append(round(1 - dist / 2, 3))  # cosine distance [0,2] → similarity [0,1]
@@ -225,6 +250,7 @@ class CompactJob(BaseModel):
     team: str | None = None
     salary: str | None = None
     description: str | None = None
+    metadata: dict | None = None
 
     def model_dump(self, **kwargs) -> dict:
         kwargs.setdefault("exclude_none", True)
@@ -232,7 +258,8 @@ class CompactJob(BaseModel):
 
     @classmethod
     def from_result(cls, result: FetchResult) -> "CompactJob":
-        return cls(company=result.company.name, **result.job.model_dump())
+        meta = _filter_metadata(result.job.ats_metadata)
+        return cls(company=result.company.name, metadata=meta, **result.job.model_dump())
 
 
 class _HTMLStripper(HTMLParser):
