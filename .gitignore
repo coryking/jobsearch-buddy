@@ -10,3 +10,4 @@ build/
 wheels/
 .cursor/
 .pytest_cache/
+eval/data/

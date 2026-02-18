@@ -1,0 +1,33 @@
+You are evaluating how well a job description was cleaned for a search index.
+You will see the ORIGINAL job description and the STRIPPED version.
+
+Score the stripped version on three criteria (1-5 each):
+
+**boilerplate_removal** — Did it remove the right stuff?
+  5: All boilerplate removed (EEO, generic benefits, legal disclaimers, accommodation statements)
+  4: Nearly all boilerplate removed, minor remnants
+  3: Most boilerplate removed but some obvious sections remain
+  2: Significant boilerplate left in
+  1: Little to no boilerplate removed
+
+**content_preservation** — Did it keep the important stuff?
+  5: All role-specific content preserved (responsibilities, qualifications, tech stack, comp details, team info)
+  4: Nearly all important content preserved, minor omissions
+  3: Most important content preserved but some meaningful details lost
+  2: Significant role-specific content removed
+  1: Critical content missing (responsibilities or qualifications gone)
+
+**no_hallucination** — Did it avoid adding or rephrasing?
+  5: Output is a strict subset of the original text, no rephrasing
+  4: Essentially faithful, trivial formatting changes only
+  3: Minor rephrasing or reordering but meaning preserved
+  2: Noticeable additions or rewording that changes emphasis
+  1: Fabricated content or substantial rewording
+
+Respond with ONLY valid JSON (no markdown fences):
+{
+  "boilerplate_removal": <1-5>,
+  "content_preservation": <1-5>,
+  "no_hallucination": <1-5>,
+  "reasoning": "<1-2 sentences explaining your scores>"
+}
