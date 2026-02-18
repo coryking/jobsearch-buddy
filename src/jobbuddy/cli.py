@@ -3,7 +3,9 @@
 import csv
 import io
 import json
+import queue
 import re
+import threading
 from pathlib import Path
 from typing import Optional
 
@@ -34,6 +36,192 @@ def _resolve_company(name: str) -> Company:
         console.print(f"Available: {', '.join(companies.keys())}")
         raise SystemExit(1)
     return company
+
+
+# ---------------------------------------------------------------------------
+# Event consumer — replaces 16 callback closures
+# ---------------------------------------------------------------------------
+
+
+def _make_phase_progress(con: Console):
+    """Create a fresh Rich Progress bar for a phase."""
+    from rich.progress import BarColumn, MofNCompleteColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
+    return Progress(
+        SpinnerColumn("dots"),
+        TextColumn("[bold blue]{task.description}"),
+        BarColumn(bar_width=40),
+        MofNCompleteColumn(),
+        TextColumn("[dim]|[/dim]"),
+        TimeElapsedColumn(),
+        console=con,
+        expand=False,
+    )
+
+
+def _consume_events(
+    events: queue.SimpleQueue,
+    con: Console,
+    overall_progress,
+    overall_task,
+):
+    """Drain the event queue on a daemon thread. Handles all sync events."""
+    from jobbuddy.sync.types import (
+        CompanySkipped,
+        Done,
+        FetchProgress,
+        FetchResult,
+        FetchStarted,
+        ModelLoaded,
+        ModelUnloaded,
+        Phase,
+        PhaseDone,
+        PhaseError,
+        PhaseProgress,
+        PhaseStarted,
+        RetryEvent,
+    )
+
+    active_slugs: dict[str, int] = {}  # slug -> progress task_id
+    lock = threading.Lock()
+
+    # Per-phase progress tracking
+    phase_progress = None
+    phase_task_id = None
+    phase_last_completed: dict[Phase, int] = {}
+
+    while True:
+        event = events.get()
+
+        match event:
+            case Done():
+                break
+
+            case FetchStarted(slug=slug):
+                with lock:
+                    task_id = overall_progress.add_task(f"  [cyan]{slug}[/cyan]", total=None)
+                    active_slugs[slug] = task_id
+
+            case FetchProgress(slug=slug, fetched=fetched, total=total):
+                with lock:
+                    task_id = active_slugs.get(slug)
+                    if task_id is not None:
+                        overall_progress.update(task_id, total=total, completed=fetched)
+
+            case FetchResult(result=sr):
+                with lock:
+                    if sr.slug in active_slugs:
+                        overall_progress.remove_task(active_slugs.pop(sr.slug))
+                    overall_progress.advance(overall_task)
+
+                if sr.ok:
+                    overall_progress.console.print(
+                        f"  [green]✓[/green] {sr.slug:<24} [bold]{sr.job_count:>4}[/bold] jobs  [dim]{sr.elapsed:>5.1f}s[/dim]"
+                    )
+                else:
+                    short_err = (sr.error or "unknown")[:55]
+                    overall_progress.console.print(
+                        f"  [red]✗[/red] {sr.slug:<24} [red]{short_err}[/red]  [dim]{sr.elapsed:>5.1f}s[/dim]"
+                    )
+
+            case CompanySkipped(slug=slug, reason=reason):
+                with lock:
+                    overall_progress.advance(overall_task)
+                overall_progress.console.print(f"  [dim]↷ {slug:<24} skipped ({reason})[/dim]")
+
+            case PhaseStarted(phase=phase, total=total, detail=detail):
+                # Stop fetch progress bar when entering a new phase
+                if phase != Phase.FETCH:
+                    overall_progress.stop()
+
+                if phase_progress is not None:
+                    phase_progress.stop()
+
+                phase_last_completed[phase] = 0
+
+                if total == 0:
+                    phase_progress = None
+                    phase_task_id = None
+                    if phase == Phase.EMBED and detail:
+                        con.print(f"[dim]{detail}: all embeddings up to date[/dim]")
+                    continue
+
+                label = {
+                    Phase.ENRICH: "Enriching descriptions",
+                    Phase.STRIP: "Stripping boilerplate",
+                    Phase.EMBED: "Generating embeddings",
+                }.get(phase, str(phase))
+
+                detail_str = f" ({detail})" if detail else ""
+                con.print(f"\n[bold blue]{label}[/bold blue]{detail_str} for {total} jobs")
+
+                phase_progress = _make_phase_progress(con)
+                short_label = {
+                    Phase.ENRICH: "Enriching",
+                    Phase.STRIP: "Stripping",
+                    Phase.EMBED: "Embedding",
+                }.get(phase, str(phase))
+                phase_task_id = phase_progress.add_task(short_label, total=total)
+                phase_progress.start()
+
+            case PhaseProgress(phase=phase, done=done, total=total):
+                if phase_progress is not None and phase_task_id is not None:
+                    last = phase_last_completed.get(phase, 0)
+                    advance_by = done - last
+                    if advance_by > 0:
+                        phase_progress.advance(phase_task_id, advance_by)
+                        phase_last_completed[phase] = done
+
+            case PhaseDone(phase=phase):
+                if phase_progress is not None:
+                    phase_progress.stop()
+                    phase_progress = None
+                    phase_task_id = None
+                label = {
+                    Phase.ENRICH: "Description enrichment",
+                    Phase.STRIP: "Boilerplate stripping",
+                    Phase.EMBED: "Embeddings",
+                }.get(phase, str(phase))
+                con.print(f"[green]✓[/green] {label} complete.")
+
+            case PhaseError(phase=_phase, job_id=job_id, title=title, error=error):
+                target = phase_progress.console if phase_progress is not None else con
+                target.print(f"  [red]✗[/red] {job_id} ({title}): [dim]{error[:80]}[/dim]")
+
+            case ModelLoaded(model_key=key, device=device):
+                con.print(f"  [dim]Loaded {key} on [bold]{device}[/bold][/dim]")
+
+            case ModelUnloaded(model_key=key):
+                con.print(f"  [dim]Unloading {key}, freeing memory...[/dim]")
+
+            case RetryEvent(slug=slug, job_id=job_id, attempt=attempt, max_attempts=max_attempts, wait_seconds=wait, reason=reason):
+                target = slug if slug else job_id
+                con.print(f"  [yellow]⟳[/yellow] {target}: {reason}, retry {attempt}/{max_attempts} in {wait:.0f}s")
+
+
+def _run_with_events(fn, con, overall_progress, overall_task):
+    """Create queue, start consumer thread, call fn(events=queue), join."""
+    eq = queue.SimpleQueue()
+    consumer = threading.Thread(
+        target=_consume_events,
+        args=(eq, con, overall_progress, overall_task),
+        daemon=True,
+    )
+    consumer.start()
+    try:
+        result = fn(events=eq)
+    except BaseException:
+        # Push Done so consumer exits even on error
+        from jobbuddy.sync.types import Done
+        eq.put(Done())
+        consumer.join(timeout=2)
+        raise
+    consumer.join(timeout=5)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Commands
+# ---------------------------------------------------------------------------
 
 
 @app.command()
@@ -173,228 +361,37 @@ def sync(
     stale: Optional[float] = typer.Option(None, "--stale", "-s", help="Skip companies synced within N hours"),
 ):
     """Sync job listings from ATS boards into the local cache."""
-    import threading
-
     from rich.panel import Panel
-    from rich.progress import BarColumn, MofNCompleteColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
     from rich.table import Table
-    from rich.text import Text
 
-    from jobbuddy.sync import SyncCallbacks, SyncResult, sync_jobs
+    from jobbuddy.sync import sync_jobs
 
     registry = list_companies()
     scrapeable = sum(1 for c in registry.values() if c.ats is not None)
     target_count = 1 if company else scrapeable
 
-    # Track active fetches for the progress display
-    active_slugs: dict[str, int] = {}  # slug -> progress task_id
-    lock = threading.Lock()
-
-    progress = Progress(
-        SpinnerColumn("dots"),
-        TextColumn("[bold blue]{task.description}"),
-        BarColumn(bar_width=40),
-        MofNCompleteColumn(),
-        TextColumn("[dim]|[/dim]"),
-        TimeElapsedColumn(),
-        console=console,
-        expand=False,
-    )
+    progress = _make_phase_progress(console)
     overall_task = progress.add_task(
         "Syncing" if not company else f"Syncing {company}",
         total=target_count,
     )
 
-    def on_start(slug: str) -> None:
-        with lock:
-            task_id = progress.add_task(f"  [cyan]{slug}[/cyan]", total=None)
-            active_slugs[slug] = task_id
-
-    def on_result(sr: SyncResult) -> None:
-        with lock:
-            # Remove the active spinner task
-            if sr.slug in active_slugs:
-                progress.remove_task(active_slugs.pop(sr.slug))
-            # Advance overall progress
-            progress.advance(overall_task)
-
-        # Print completed line above the progress bar
-        if sr.ok:
-            progress.console.print(
-                f"  [green]✓[/green] {sr.slug:<24} [bold]{sr.job_count:>4}[/bold] jobs  [dim]{sr.elapsed:>5.1f}s[/dim]"
-            )
-        else:
-            short_err = (sr.error or "unknown")[:55]
-            progress.console.print(
-                f"  [red]✗[/red] {sr.slug:<24} [red]{short_err}[/red]  [dim]{sr.elapsed:>5.1f}s[/dim]"
-            )
-
-    def on_skip(slug: str, reason: str) -> None:
-        with lock:
-            progress.advance(overall_task)
-        progress.console.print(f"  [dim]↷ {slug:<24} skipped ({reason})[/dim]")
-
-    def on_fetch_progress(slug: str, fetched: int, total: int) -> None:
-        with lock:
-            task_id = active_slugs.get(slug)
-            if task_id is not None:
-                progress.update(task_id, total=total, completed=fetched)
-
-    # Enrichment progress — for stub fetchers that need individual description fetches
-    enrich_progress: Progress | None = None
-    enrich_task_id: int | None = None
-    enrich_last_completed: int = 0
-
-    def on_enrich_start(total_jobs: int) -> None:
-        nonlocal enrich_progress, enrich_task_id
-        progress.stop()
-        if total_jobs == 0:
-            return
-        console.print(f"\n[bold blue]Enriching descriptions[/bold blue] for {total_jobs} jobs")
-        enrich_progress = Progress(
-            SpinnerColumn("dots"),
-            TextColumn("[bold blue]{task.description}"),
-            BarColumn(bar_width=40),
-            MofNCompleteColumn(),
-            TextColumn("[dim]|[/dim]"),
-            TimeElapsedColumn(),
-            console=console,
-            expand=False,
-        )
-        enrich_task_id = enrich_progress.add_task("Enriching", total=total_jobs)
-        enrich_progress.start()
-
-    def on_enrich_progress(done: int, total: int) -> None:
-        nonlocal enrich_last_completed
-        if enrich_progress is not None and enrich_task_id is not None:
-            advance_by = done - enrich_last_completed
-            if advance_by > 0:
-                enrich_progress.advance(enrich_task_id, advance_by)
-                enrich_last_completed = done
-
-    def on_enrich_done() -> None:
-        if enrich_progress is not None:
-            enrich_progress.stop()
-        console.print("[green]✓[/green] Description enrichment complete.")
-
-    # Embedding progress — created lazily in on_embed_start
-    embed_progress: Progress | None = None
-    embed_task_id: int | None = None
-    embed_last_completed: int = 0
-
-    def on_embed_start(total_jobs: int, model_name: str, dimensions: int) -> None:
-        nonlocal embed_progress, embed_task_id, embed_last_completed
-        # Reset per-model progress tracking
-        embed_last_completed = 0
-        if total_jobs == 0:
-            return
-        # Stop any previous embed progress bar (multi-model case)
-        if embed_progress is not None:
-            embed_progress.stop()
-        console.print(f"\n[bold blue]Generating embeddings[/bold blue] ({model_name}, {dimensions}d) for {total_jobs} jobs")
-        embed_progress = Progress(
-            SpinnerColumn("dots"),
-            TextColumn("[bold blue]{task.description}"),
-            BarColumn(bar_width=40),
-            MofNCompleteColumn(),
-            TextColumn("[dim]|[/dim]"),
-            TimeElapsedColumn(),
-            console=console,
-            expand=False,
-        )
-        embed_task_id = embed_progress.add_task("Embedding", total=total_jobs)
-        embed_progress.start()
-
-    def on_embed_progress(done: int, total: int) -> None:
-        nonlocal embed_last_completed
-        if embed_progress is not None and embed_task_id is not None:
-            advance_by = done - embed_last_completed
-            if advance_by > 0:
-                embed_progress.advance(embed_task_id, advance_by)
-                embed_last_completed = done
-
-    def on_embed_done() -> None:
-        if embed_progress is not None:
-            embed_progress.stop()
-        console.print("[green]✓[/green] Embeddings complete.")
-
-    def on_model_load(model_key: str, model_name: str, device: str) -> None:
-        console.print(f"  [dim]Loaded {model_key} on [bold]{device}[/bold][/dim]")
-
-    def on_model_unload(model_key: str, model_name: str, device: str) -> None:
-        console.print(f"  [dim]Unloading {model_key}, freeing memory...[/dim]")
-
-    # Strip progress — for LLM-based boilerplate removal
-    strip_progress: Progress | None = None
-    strip_task_id: int | None = None
-    strip_last_completed: int = 0
-
-    def on_strip_start(total_jobs: int) -> None:
-        nonlocal strip_progress, strip_task_id
-        if total_jobs == 0:
-            return
-        console.print(f"\n[bold blue]Stripping boilerplate[/bold blue] from {total_jobs} descriptions")
-        strip_progress = Progress(
-            SpinnerColumn("dots"),
-            TextColumn("[bold blue]{task.description}"),
-            BarColumn(bar_width=40),
-            MofNCompleteColumn(),
-            TextColumn("[dim]|[/dim]"),
-            TimeElapsedColumn(),
-            console=console,
-            expand=False,
-        )
-        strip_task_id = strip_progress.add_task("Stripping", total=total_jobs)
-        strip_progress.start()
-
-    def on_strip_progress(done: int, total: int) -> None:
-        nonlocal strip_last_completed
-        if strip_progress is not None and strip_task_id is not None:
-            advance_by = done - strip_last_completed
-            if advance_by > 0:
-                strip_progress.advance(strip_task_id, advance_by)
-                strip_last_completed = done
-
-    def on_strip_done() -> None:
-        if strip_progress is not None:
-            strip_progress.stop()
-        console.print("[green]✓[/green] Boilerplate stripping complete.")
-
-    def on_strip_error(job_id: str, title: str, error: str) -> None:
-        if strip_progress is not None:
-            strip_progress.console.print(f"  [red]✗[/red] {job_id} ({title}): [dim]{error[:80]}[/dim]")
-
-    callbacks = SyncCallbacks(
-        on_start=on_start,
-        on_result=on_result,
-        on_skip=on_skip,
-        on_fetch_progress=on_fetch_progress,
-        on_enrich_start=on_enrich_start,
-        on_enrich_progress=on_enrich_progress,
-        on_enrich_done=on_enrich_done,
-        on_strip_start=on_strip_start,
-        on_strip_progress=on_strip_progress,
-        on_strip_done=on_strip_done,
-        on_strip_error=on_strip_error,
-        on_embed_start=on_embed_start,
-        on_embed_progress=on_embed_progress,
-        on_embed_done=on_embed_done,
-        on_model_load=on_model_load,
-        on_model_unload=on_model_unload,
-    )
-
     progress.start()
     try:
-        results = sync_jobs(
-            company_slug=company,
-            stale_hours=stale,
-            callbacks=callbacks,
+        results = _run_with_events(
+            lambda events: sync_jobs(
+                company_slug=company,
+                stale_hours=stale,
+                events=events,
+            ),
+            console,
+            progress,
+            overall_task,
         )
     except ValueError as e:
         progress.stop()
         console.print(f"[red]{e}[/red]")
         raise SystemExit(1)
-    # Progress may already be stopped by on_embed_start; safe to call again
     progress.stop()
 
     # Summary
@@ -405,9 +402,7 @@ def sync(
     ok_count = sum(1 for r in results if r.ok)
     err_count = sum(1 for r in results if not r.ok)
     total_jobs = sum(r.job_count for r in results if r.ok)
-    total_elapsed = sum(r.elapsed for r in results)
 
-    # Build summary panel
     summary = Table.grid(padding=(0, 2))
     summary.add_column(style="bold")
     summary.add_column()
@@ -418,7 +413,7 @@ def sync(
         errors = [r for r in results if not r.ok]
         err_lines = "\n".join(f"  [red]•[/red] {r.slug}: [dim]{r.error}[/dim]" for r in errors)
         summary.add_row("Errors", "")
-        console.print(Panel(summary, title="[bold]Sync Complete[/bold]", border_style="green" if not err_count else "yellow"))
+        console.print(Panel(summary, title="[bold]Sync Complete[/bold]", border_style="yellow"))
         console.print(err_lines)
     else:
         console.print(Panel(summary, title="[bold]Sync Complete[/bold]", border_style="green"))
@@ -522,11 +517,9 @@ def embed(
     company: Optional[str] = typer.Option(None, "--company", "-c", help="Only embed jobs for this company"),
 ):
     """Generate embeddings for cached jobs (without fetching or enriching)."""
-    from rich.progress import BarColumn, MofNCompleteColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
-
     from jobbuddy.store import JobStore
-    from jobbuddy.sync import SyncCallbacks
     from jobbuddy.sync.embed import EmbedPhase
+    from jobbuddy.sync.types import Done
 
     if not get_settings().db_path.exists():
         console.print("[yellow]No cached data. Run 'ats sync' to populate.[/yellow]")
@@ -551,63 +544,23 @@ def embed(
         console.print("[yellow]No synced companies found.[/yellow]")
         raise SystemExit(0)
 
-    # Embedding progress callbacks
-    embed_progress: Progress | None = None
-    embed_task_id: int | None = None
-    embed_last_completed: int = 0
+    # Use a no-op progress bar for the overall (embed has no fetch phase)
+    dummy_progress = _make_phase_progress(console)
+    dummy_task = dummy_progress.add_task("Embedding", total=0)
 
-    def on_embed_start(total_jobs: int, model_name: str, dimensions: int) -> None:
-        nonlocal embed_progress, embed_task_id, embed_last_completed
-        embed_last_completed = 0
-        if total_jobs == 0:
-            console.print(f"[dim]{model_name} ({dimensions}d): all embeddings up to date[/dim]")
-            return
-        if embed_progress is not None:
-            embed_progress.stop()
-        console.print(f"\n[bold blue]Generating embeddings[/bold blue] ({model_name}, {dimensions}d) for {total_jobs} jobs")
-        embed_progress = Progress(
-            SpinnerColumn("dots"),
-            TextColumn("[bold blue]{task.description}"),
-            BarColumn(bar_width=40),
-            MofNCompleteColumn(),
-            TextColumn("[dim]|[/dim]"),
-            TimeElapsedColumn(),
-            console=console,
-            expand=False,
-        )
-        embed_task_id = embed_progress.add_task("Embedding", total=total_jobs)
-        embed_progress.start()
-
-    def on_embed_progress(done: int, total: int) -> None:
-        nonlocal embed_last_completed
-        if embed_progress is not None and embed_task_id is not None:
-            advance_by = done - embed_last_completed
-            if advance_by > 0:
-                embed_progress.advance(embed_task_id, advance_by)
-                embed_last_completed = done
-
-    def on_embed_done() -> None:
-        if embed_progress is not None:
-            embed_progress.stop()
-        console.print("[green]✓[/green] Embeddings complete.")
-
-    def on_model_load(model_key: str, model_name: str, device: str) -> None:
-        console.print(f"  [dim]Loaded {model_key} on [bold]{device}[/bold][/dim]")
-
-    def on_model_unload(model_key: str, model_name: str, device: str) -> None:
-        console.print(f"  [dim]Unloading {model_key}, freeing memory...[/dim]")
-
-    callbacks = SyncCallbacks(
-        on_embed_start=on_embed_start,
-        on_embed_progress=on_embed_progress,
-        on_embed_done=on_embed_done,
-        on_model_load=on_model_load,
-        on_model_unload=on_model_unload,
+    eq = queue.SimpleQueue()
+    consumer = threading.Thread(
+        target=_consume_events,
+        args=(eq, console, dummy_progress, dummy_task),
+        daemon=True,
     )
+    consumer.start()
 
     try:
-        EmbedPhase(store, slugs, callbacks).run()
+        EmbedPhase(store, slugs, eq).run()
     finally:
+        eq.put(Done())
+        consumer.join(timeout=5)
         store.close()
 
 
@@ -616,11 +569,9 @@ def strip(
     force: bool = typer.Option(False, "--force", "-f", help="Re-strip jobs that already have stripped descriptions"),
 ):
     """Strip boilerplate from cached job descriptions using Azure OpenAI."""
-    from rich.progress import BarColumn, MofNCompleteColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
-
     from jobbuddy.store import JobStore
-    from jobbuddy.sync import SyncCallbacks
     from jobbuddy.sync.strip import StripPhase
+    from jobbuddy.sync.types import Done
 
     settings = get_settings()
     if not settings.azure_openai_api_key or not settings.azure_openai_endpoint:
@@ -639,58 +590,23 @@ def strip(
         if cleared:
             console.print(f"[dim]Cleared {cleared} existing stripped descriptions[/dim]")
 
-    strip_progress: Progress | None = None
-    strip_task_id: int | None = None
-    strip_last_completed: int = 0
+    # Use a no-op progress bar for the overall (strip has no fetch phase)
+    dummy_progress = _make_phase_progress(console)
+    dummy_task = dummy_progress.add_task("Stripping", total=0)
 
-    def on_strip_start(total_jobs: int) -> None:
-        nonlocal strip_progress, strip_task_id
-        if total_jobs == 0:
-            console.print("[dim]All descriptions already stripped.[/dim]")
-            return
-        console.print(f"[bold blue]Stripping boilerplate[/bold blue] from {total_jobs} descriptions")
-        strip_progress = Progress(
-            SpinnerColumn("dots"),
-            TextColumn("[bold blue]{task.description}"),
-            BarColumn(bar_width=40),
-            MofNCompleteColumn(),
-            TextColumn("[dim]|[/dim]"),
-            TimeElapsedColumn(),
-            console=console,
-            expand=False,
-        )
-        strip_task_id = strip_progress.add_task("Stripping", total=total_jobs)
-        strip_progress.start()
-
-    def on_strip_progress(done: int, total: int) -> None:
-        nonlocal strip_last_completed
-        if strip_progress is not None and strip_task_id is not None:
-            advance_by = done - strip_last_completed
-            if advance_by > 0:
-                strip_progress.advance(strip_task_id, advance_by)
-                strip_last_completed = done
-
-    def on_strip_done() -> None:
-        if strip_progress is not None:
-            strip_progress.stop()
-        console.print("[green]✓[/green] Boilerplate stripping complete.")
-
-    def on_strip_error(job_id: str, title: str, error: str) -> None:
-        if strip_progress is not None:
-            strip_progress.console.print(f"  [red]✗[/red] {job_id} ({title}): [dim]{error[:80]}[/dim]")
-        else:
-            console.print(f"  [red]✗[/red] {job_id} ({title}): [dim]{error[:80]}[/dim]")
-
-    callbacks = SyncCallbacks(
-        on_strip_start=on_strip_start,
-        on_strip_progress=on_strip_progress,
-        on_strip_done=on_strip_done,
-        on_strip_error=on_strip_error,
+    eq = queue.SimpleQueue()
+    consumer = threading.Thread(
+        target=_consume_events,
+        args=(eq, console, dummy_progress, dummy_task),
+        daemon=True,
     )
+    consumer.start()
 
     try:
-        StripPhase(store, callbacks).run()
+        StripPhase(store, eq).run()
     finally:
+        eq.put(Done())
+        consumer.join(timeout=5)
         store.close()
 
 

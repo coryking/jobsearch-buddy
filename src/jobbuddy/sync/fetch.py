@@ -8,7 +8,15 @@ from time import monotonic
 from jobbuddy.fetchers import get_fetcher
 from jobbuddy.models import Company, Job
 from jobbuddy.store import JobStore
-from jobbuddy.sync.types import SyncCallbacks, SyncResult
+from jobbuddy.sync.types import (
+    EventQueue,
+    FetchProgress,
+    FetchResult,
+    FetchStarted,
+    Phase,
+    RetryEvent,
+    SyncResult,
+)
 
 log = logging.getLogger(__name__)
 
@@ -19,12 +27,12 @@ class FetchPhase:
         store: JobStore,
         targets: list[Company],
         max_workers: int,
-        callbacks: SyncCallbacks,
+        events: EventQueue,
     ):
         self.store = store
         self.targets = targets
         self.max_workers = max_workers
-        self.cb = callbacks
+        self.events = events
 
     def run(self) -> tuple[list[SyncResult], list[str]]:
         """Fetch jobs for all target companies in parallel.
@@ -52,8 +60,7 @@ class FetchPhase:
                     sr = SyncResult(slug, error=str(e), elapsed=elapsed)
                     self.store.record_sync_error(slug, str(e))
                     results.append(sr)
-                    if self.cb.on_result:
-                        self.cb.on_result(sr)
+                    self.events.put(FetchResult(sr))
                     continue
 
                 if isinstance(payload, str):
@@ -65,23 +72,25 @@ class FetchPhase:
                     sr = SyncResult(slug, job_count=len(payload), elapsed=elapsed)
 
                 results.append(sr)
-                if self.cb.on_result:
-                    self.cb.on_result(sr)
+                self.events.put(FetchResult(sr))
 
         return results, slugs_to_embed
 
     def _fetch_company(self, company: Company) -> tuple[str, list[Job] | str]:
         """Worker function: fetch jobs. Returns (slug, jobs) or (slug, error_string)."""
-        if self.cb.on_start:
-            self.cb.on_start(company.slug)
+        self.events.put(FetchStarted(company.slug))
         try:
             fetcher = get_fetcher(company)
 
             def _progress(fetched: int, total: int) -> None:
-                if self.cb.on_fetch_progress:
-                    self.cb.on_fetch_progress(company.slug, fetched, total)
+                self.events.put(FetchProgress(company.slug, fetched, total))
 
-            jobs = fetcher.list_jobs(on_progress=_progress if self.cb.on_fetch_progress else None)
+            def _on_retry(attempt: int, max_attempts: int, wait: float, reason: str) -> None:
+                self.events.put(RetryEvent(
+                    Phase.FETCH, company.slug, "", attempt, max_attempts, wait, reason,
+                ))
+
+            jobs = fetcher.list_jobs(on_progress=_progress, on_retry=_on_retry)
             return (company.slug, jobs)
         except Exception as e:
             return (company.slug, str(e))

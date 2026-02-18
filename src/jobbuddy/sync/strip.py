@@ -8,7 +8,14 @@ from openai import AzureOpenAI
 
 from jobbuddy.settings import get_settings
 from jobbuddy.store import JobStore
-from jobbuddy.sync.types import SyncCallbacks
+from jobbuddy.sync.types import (
+    EventQueue,
+    Phase,
+    PhaseDone,
+    PhaseError,
+    PhaseProgress,
+    PhaseStarted,
+)
 
 log = logging.getLogger(__name__)
 
@@ -38,9 +45,9 @@ Keep:
 
 
 class StripPhase:
-    def __init__(self, store: JobStore, callbacks: SyncCallbacks):
+    def __init__(self, store: JobStore, events: EventQueue):
         self.store = store
-        self.cb = callbacks
+        self.events = events
 
     def run(self) -> None:
         """Strip boilerplate from job descriptions using Azure OpenAI.
@@ -57,8 +64,7 @@ class StripPhase:
         if total == 0:
             return
 
-        if self.cb.on_strip_start:
-            self.cb.on_strip_start(total)
+        self.events.put(PhaseStarted(Phase.STRIP, total))
 
         client = AzureOpenAI(
             azure_endpoint=settings.azure_openai_endpoint,
@@ -85,15 +91,12 @@ class StripPhase:
                 except Exception as e:
                     errors += 1
                     log.warning("Strip failed for job %s (%s): %s", job["job_id"], job["title"], e)
-                    if self.cb.on_strip_error:
-                        self.cb.on_strip_error(job["job_id"], job["title"], str(e))
+                    self.events.put(PhaseError(Phase.STRIP, job["job_id"], job["title"], str(e)))
 
                 done += 1
-                if self.cb.on_strip_progress:
-                    self.cb.on_strip_progress(done, total)
+                self.events.put(PhaseProgress(Phase.STRIP, done, total))
 
-        if self.cb.on_strip_done:
-            self.cb.on_strip_done()
+        self.events.put(PhaseDone(Phase.STRIP))
 
     def _strip_one(self, client, model: str, description: str) -> str:
         """Call Azure OpenAI to strip boilerplate from a single description."""

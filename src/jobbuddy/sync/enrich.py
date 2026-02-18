@@ -9,7 +9,14 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from jobbuddy.fetchers import get_fetcher
 from jobbuddy.models import Company
 from jobbuddy.store import JobStore
-from jobbuddy.sync.types import SyncCallbacks
+from jobbuddy.sync.types import (
+    EventQueue,
+    Phase,
+    PhaseDone,
+    PhaseProgress,
+    PhaseStarted,
+    RetryEvent,
+)
 
 log = logging.getLogger(__name__)
 
@@ -21,13 +28,13 @@ class EnrichPhase:
         slugs: list[str],
         targets: list[Company],
         max_workers: int,
-        callbacks: SyncCallbacks,
+        events: EventQueue,
     ):
         self.store = store
         self.slugs = slugs
         self.slug_to_company = {c.slug: c for c in targets}
         self.max_workers = max_workers
-        self.cb = callbacks
+        self.events = events
 
     def run(self) -> None:
         """Enrich descriptions for stub fetchers."""
@@ -56,8 +63,7 @@ class EnrichPhase:
         if enrich_total == 0:
             return
 
-        if self.cb.on_enrich_start:
-            self.cb.on_enrich_start(enrich_total)
+        self.events.put(PhaseStarted(Phase.ENRICH, enrich_total))
 
         enrich_done = 0
         enrich_lock = threading.Lock()
@@ -73,20 +79,24 @@ class EnrichPhase:
                     with enrich_lock:
                         self.store.update_descriptions(_slug, {job_id: desc})
                         enrich_done += 1
-                        if self.cb.on_enrich_progress:
-                            self.cb.on_enrich_progress(enrich_done, enrich_total)
+                        self.events.put(PhaseProgress(Phase.ENRICH, enrich_done, enrich_total))
+
+                def _on_retry(attempt: int, max_attempts: int, wait: float, reason: str) -> None:
+                    self.events.put(RetryEvent(
+                        Phase.ENRICH, slug, "", attempt, max_attempts, wait, reason,
+                    ))
 
                 fetcher.fetch_descriptions(
                     job_ids,
                     metadata=jobs_meta,
                     on_fetched=_on_fetched,
+                    on_retry=_on_retry,
                 )
             except Exception as e:
                 log.warning("Description enrichment failed for %s: %s", slug, e)
                 with enrich_lock:
                     enrich_done += len(job_ids)
-                    if self.cb.on_enrich_progress:
-                        self.cb.on_enrich_progress(enrich_done, enrich_total)
+                    self.events.put(PhaseProgress(Phase.ENRICH, enrich_done, enrich_total))
 
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
             futures = [
@@ -96,5 +106,4 @@ class EnrichPhase:
             for future in as_completed(futures):
                 future.result()
 
-        if self.cb.on_enrich_done:
-            self.cb.on_enrich_done()
+        self.events.put(PhaseDone(Phase.ENRICH))

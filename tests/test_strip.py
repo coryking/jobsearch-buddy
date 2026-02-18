@@ -1,5 +1,6 @@
 """Tests for boilerplate stripping — store methods and StripPhase."""
 
+import queue
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -7,7 +8,7 @@ import pytest
 from jobbuddy.models import Job
 from jobbuddy.store import JobStore
 from jobbuddy.sync.strip import StripPhase
-from jobbuddy.sync.types import SyncCallbacks
+from jobbuddy.sync.types import Phase, PhaseDone, PhaseError, PhaseProgress, PhaseStarted
 
 
 def _make_job(id: str = "123", title: str = "PM", location: str = "Seattle", **kw) -> Job:
@@ -26,6 +27,17 @@ def store():
     s = JobStore(":memory:")
     yield s
     s.close()
+
+
+def _drain_events(eq):
+    """Drain all events from a SimpleQueue into a list."""
+    events = []
+    while True:
+        try:
+            events.append(eq.get_nowait())
+        except queue.Empty:
+            break
+    return events
 
 
 # ---------------------------------------------------------------------------
@@ -194,10 +206,10 @@ class TestStripPhase:
         mock_settings.return_value = self._make_mock_settings(has_key=False)
         store.upsert_jobs("acme", [_make_job("1", description="desc")])
 
-        events = []
-        cb = SyncCallbacks(on_strip_start=lambda t: events.append(("start", t)))
-        StripPhase(store, cb).run()
+        eq = queue.SimpleQueue()
+        StripPhase(store, eq).run()
 
+        events = _drain_events(eq)
         assert len(events) == 0
 
     @patch("jobbuddy.sync.strip.AzureOpenAI")
@@ -216,17 +228,18 @@ class TestStripPhase:
         mock_client.chat.completions.create.return_value = mock_response
         mock_client_cls.return_value = mock_client
 
-        events = []
-        cb = SyncCallbacks(
-            on_strip_start=lambda t: events.append(("start", t)),
-            on_strip_progress=lambda d, t: events.append(("progress", d, t)),
-            on_strip_done=lambda: events.append(("done",)),
-        )
-        StripPhase(store, cb).run()
+        eq = queue.SimpleQueue()
+        StripPhase(store, eq).run()
 
         assert mock_client.chat.completions.create.call_count == 2
-        assert ("start", 2) in events
-        assert ("done",) in events
+
+        events = _drain_events(eq)
+        starts = [e for e in events if isinstance(e, PhaseStarted) and e.phase == Phase.STRIP]
+        assert len(starts) == 1
+        assert starts[0].total == 2
+
+        dones = [e for e in events if isinstance(e, PhaseDone) and e.phase == Phase.STRIP]
+        assert len(dones) == 1
 
         # Verify descriptions were updated
         row1 = store.conn.execute("SELECT description_stripped FROM jobs WHERE job_id = '1'").fetchone()
@@ -255,7 +268,8 @@ class TestStripPhase:
         mock_client.chat.completions.create.return_value = mock_response
         mock_client_cls.return_value = mock_client
 
-        StripPhase(store, SyncCallbacks()).run()
+        eq = queue.SimpleQueue()
+        StripPhase(store, eq).run()
 
         # Only job 2 should have been processed
         assert mock_client.chat.completions.create.call_count == 1
@@ -285,17 +299,21 @@ class TestStripPhase:
         mock_client.chat.completions.create.side_effect = side_effect
         mock_client_cls.return_value = mock_client
 
-        events = []
-        cb = SyncCallbacks(
-            on_strip_progress=lambda d, t: events.append(("progress", d, t)),
-            on_strip_done=lambda: events.append(("done",)),
-        )
-        StripPhase(store, cb).run()
+        eq = queue.SimpleQueue()
+        StripPhase(store, eq).run()
+
+        events = _drain_events(eq)
 
         # Progress should report both (one failed, one succeeded)
-        progress_events = [e for e in events if e[0] == "progress"]
-        assert len(progress_events) == 2
-        assert ("done",) in events
+        progress = [e for e in events if isinstance(e, PhaseProgress) and e.phase == Phase.STRIP]
+        assert len(progress) == 2
+
+        dones = [e for e in events if isinstance(e, PhaseDone) and e.phase == Phase.STRIP]
+        assert len(dones) == 1
+
+        # Error event should fire
+        errors = [e for e in events if isinstance(e, PhaseError) and e.phase == Phase.STRIP]
+        assert len(errors) == 1
 
         # One should have been stripped, one should not
         rows = store.conn.execute(

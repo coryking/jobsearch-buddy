@@ -2,7 +2,7 @@
 
 import httpx
 
-from jobbuddy.fetchers.base import ATSFetcher, ProgressCallback
+from jobbuddy.fetchers.base import ATSFetcher, ProgressCallback, RetryCallback
 from jobbuddy.models import Job, strip_html
 
 
@@ -18,7 +18,7 @@ class GreenhouseFetcher(ATSFetcher):
         except (httpx.HTTPError, KeyError):
             return None
 
-    def list_jobs(self, *, on_progress: ProgressCallback | None = None) -> list[Job]:
+    def list_jobs(self, *, on_progress: ProgressCallback | None = None, on_retry: RetryCallback | None = None) -> list[Job]:
         url = f"https://boards-api.greenhouse.io/v1/boards/{self.board}/jobs?content=true"
         resp = self.client.get(url)
         resp.raise_for_status()

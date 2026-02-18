@@ -1,11 +1,22 @@
 """Tests for sync orchestration in jobbuddy.sync."""
 
+import queue
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from jobbuddy.models import Company, Job
-from jobbuddy.sync import SyncCallbacks, SyncResult, sync_jobs
+from jobbuddy.sync import SyncResult, sync_jobs
+from jobbuddy.sync.types import (
+    CompanySkipped,
+    Done,
+    FetchResult,
+    FetchStarted,
+    Phase,
+    PhaseDone,
+    PhaseProgress,
+    PhaseStarted,
+)
 
 
 def _make_job(id: str, title: str = "PM", ats_metadata: dict | None = None) -> Job:
@@ -21,6 +32,17 @@ def _make_job(id: str, title: str = "PM", ats_metadata: dict | None = None) -> J
 
 def _make_company(slug: str, ats: str = "greenhouse") -> Company:
     return Company(slug=slug, name=slug.title(), ats=ats, board=slug)
+
+
+def _drain_events(eq):
+    """Drain all events from a SimpleQueue into a list."""
+    events = []
+    while True:
+        try:
+            events.append(eq.get_nowait())
+        except queue.Empty:
+            break
+    return events
 
 
 class TestSync:
@@ -81,8 +103,8 @@ class TestSync:
 
     @patch("jobbuddy.sync.list_companies")
     @patch("jobbuddy.sync.fetch.get_fetcher")
-    def test_sync_callbacks(self, mock_get_fetcher, mock_list_companies, tmp_path):
-        """on_result callback fires for each company."""
+    def test_sync_events_fire(self, mock_get_fetcher, mock_list_companies, tmp_path):
+        """FetchResult events fire for each company."""
         company = _make_company("acme")
         mock_list_companies.return_value = {"acme": company}
 
@@ -90,16 +112,17 @@ class TestSync:
         mock_fetcher.list_jobs.return_value = [_make_job("1")]
         mock_get_fetcher.return_value = mock_fetcher
 
+        eq = queue.SimpleQueue()
         db = tmp_path / "test.db"
-        callback_results = []
-        results = sync_jobs(
-            callbacks=SyncCallbacks(
-                on_result=lambda sr: callback_results.append(sr),
-            ),
-            db_path=str(db),
-        )
-        assert len(callback_results) == 1
-        assert callback_results[0].ok
+        sync_jobs(events=eq, db_path=str(db))
+
+        events = _drain_events(eq)
+        fetch_results = [e for e in events if isinstance(e, FetchResult)]
+        assert len(fetch_results) == 1
+        assert fetch_results[0].result.ok
+
+        # Should have Done sentinel
+        assert any(isinstance(e, Done) for e in events)
 
     def test_sync_unknown_company_raises(self):
         """Syncing a non-existent company raises ValueError."""
@@ -129,16 +152,18 @@ class TestSync:
         # First sync
         sync_jobs(db_path=str(db))
         # Second sync with stale_hours=24 should skip
-        skipped = []
+        eq = queue.SimpleQueue()
         results = sync_jobs(
             stale_hours=24,
-            callbacks=SyncCallbacks(
-                on_skip=lambda slug, reason: skipped.append(slug),
-            ),
+            events=eq,
             db_path=str(db),
         )
         assert len(results) == 0
-        assert "acme" in skipped
+
+        events = _drain_events(eq)
+        skipped = [e for e in events if isinstance(e, CompanySkipped)]
+        assert len(skipped) == 1
+        assert skipped[0].slug == "acme"
 
 
 class TestEnrichment:
@@ -159,7 +184,7 @@ class TestEnrichment:
             _make_job("2", "SWE", ats_metadata={"ext_path": "/job/2"}),
         ]
 
-        def fake_fetch_descriptions(job_ids, *, metadata=None, on_fetched=None):
+        def fake_fetch_descriptions(job_ids, *, metadata=None, on_fetched=None, on_retry=None):
             results = {"1": "PM description", "2": "SWE description"}
             for jid, desc in results.items():
                 if on_fetched and desc:
@@ -221,7 +246,7 @@ class TestEnrichment:
         mock_fetcher.descriptions_in_listing = False
         mock_fetcher.list_jobs.return_value = [_make_job("1")]
 
-        def fake_fetch_descriptions(job_ids, *, metadata=None, on_fetched=None):
+        def fake_fetch_descriptions(job_ids, *, metadata=None, on_fetched=None, on_retry=None):
             results = {"1": "description"}
             for jid, desc in results.items():
                 if on_fetched and desc:
@@ -271,10 +296,10 @@ class TestEnrichment:
     @patch("jobbuddy.sync.list_companies")
     @patch("jobbuddy.sync.fetch.get_fetcher")
     @patch("jobbuddy.sync.enrich.get_fetcher")
-    def test_enrichment_callbacks_fire(
+    def test_enrichment_events_fire(
         self, mock_enrich_fetcher, mock_fetch_fetcher, mock_list_companies, tmp_path
     ):
-        """Enrichment callbacks fire per-job when enrichment runs."""
+        """Enrichment events fire per-job when enrichment runs."""
         company = _make_company("workday-co", ats="workday")
         mock_list_companies.return_value = {"workday-co": company}
 
@@ -282,7 +307,7 @@ class TestEnrichment:
         mock_fetcher.descriptions_in_listing = False
         mock_fetcher.list_jobs.return_value = [_make_job("1"), _make_job("2")]
 
-        def fake_fetch_descriptions(job_ids, *, metadata=None, on_fetched=None):
+        def fake_fetch_descriptions(job_ids, *, metadata=None, on_fetched=None, on_retry=None):
             results = {"1": "desc1", "2": "desc2"}
             for jid, desc in results.items():
                 if on_fetched and desc:
@@ -293,23 +318,26 @@ class TestEnrichment:
         mock_fetch_fetcher.return_value = mock_fetcher
         mock_enrich_fetcher.return_value = mock_fetcher
 
-        enrich_events = []
+        eq = queue.SimpleQueue()
         db = tmp_path / "test.db"
         with patch("jobbuddy.sync.lookup_by_name", return_value=company):
             sync_jobs(
                 company_slug="workday-co",
                 db_path=str(db),
-                callbacks=SyncCallbacks(
-                    on_enrich_start=lambda total: enrich_events.append(("start", total)),
-                    on_enrich_progress=lambda done, total: enrich_events.append(("progress", done, total)),
-                    on_enrich_done=lambda: enrich_events.append(("done",)),
-                ),
+                events=eq,
             )
 
-        assert ("start", 2) in enrich_events
-        assert ("done",) in enrich_events
-        progress_events = [e for e in enrich_events if e[0] == "progress"]
-        assert len(progress_events) == 2
+        events = _drain_events(eq)
+
+        enrich_starts = [e for e in events if isinstance(e, PhaseStarted) and e.phase == Phase.ENRICH]
+        assert len(enrich_starts) == 1
+        assert enrich_starts[0].total == 2
+
+        enrich_dones = [e for e in events if isinstance(e, PhaseDone) and e.phase == Phase.ENRICH]
+        assert len(enrich_dones) == 1
+
+        progress = [e for e in events if isinstance(e, PhaseProgress) and e.phase == Phase.ENRICH]
+        assert len(progress) == 2
 
     @patch("jobbuddy.sync.list_companies")
     @patch("jobbuddy.sync.fetch.get_fetcher")
@@ -329,7 +357,7 @@ class TestEnrichment:
 
         captured_metadata = {}
 
-        def fake_fetch_descriptions(job_ids, *, metadata=None, on_fetched=None):
+        def fake_fetch_descriptions(job_ids, *, metadata=None, on_fetched=None, on_retry=None):
             captured_metadata.update(metadata or {})
             results = {"1": "description"}
             for jid, desc in results.items():
@@ -362,7 +390,7 @@ class TestEnrichment:
         mock_fetcher.descriptions_in_listing = False
         mock_fetcher.list_jobs.return_value = [_make_job("1"), _make_job("2")]
 
-        def fake_fetch_descriptions(job_ids, *, metadata=None, on_fetched=None):
+        def fake_fetch_descriptions(job_ids, *, metadata=None, on_fetched=None, on_retry=None):
             if on_fetched:
                 on_fetched("1", "first description")
             raise Exception("Network died mid-batch")

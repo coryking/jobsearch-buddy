@@ -1,48 +1,154 @@
-"""Shared types for the sync pipeline."""
+"""Typed events for the sync pipeline.
 
-from collections.abc import Callable
+Phases push frozen event dataclasses onto an EventQueue. The CLI (or any
+consumer) drains the queue on a separate thread. Adding a new event type
+means adding a dataclass here and handling it in the consumer — no changes
+to phase signatures.
+"""
+
+from __future__ import annotations
+
+import queue
 from dataclasses import dataclass
+from enum import Enum, auto
 
 
 # ---------------------------------------------------------------------------
-# Callback types
+# Phase discriminator
 # ---------------------------------------------------------------------------
 
-type StartCallback = Callable[[str], None]
-type SkipCallback = Callable[[str, str], None]
-type FetchProgressCallback = Callable[[str, int, int], None]
-type CountCallback = Callable[[int], None]
-type ProgressCallback = Callable[[int, int], None]
-type DoneCallback = Callable[[], None]
-type EmbedStartCallback = Callable[[int, str, int], None]  # (total, model_name, dimensions)
-type ModelEventCallback = Callable[[str, str, str], None]  # (model_key, model_name, device)
-type StripErrorCallback = Callable[[str, str, str], None]  # (job_id, title, error_message)
 
-
-@dataclass
-class SyncCallbacks:
-    """Typed container for sync pipeline callbacks."""
-
-    on_start: StartCallback | None = None
-    on_result: "Callable[[SyncResult], None] | None" = None
-    on_skip: SkipCallback | None = None
-    on_fetch_progress: FetchProgressCallback | None = None
-    on_enrich_start: CountCallback | None = None
-    on_enrich_progress: ProgressCallback | None = None
-    on_enrich_done: DoneCallback | None = None
-    on_strip_start: CountCallback | None = None
-    on_strip_progress: ProgressCallback | None = None
-    on_strip_done: DoneCallback | None = None
-    on_strip_error: StripErrorCallback | None = None
-    on_embed_start: EmbedStartCallback | None = None
-    on_embed_progress: ProgressCallback | None = None
-    on_embed_done: DoneCallback | None = None
-    on_model_load: ModelEventCallback | None = None
-    on_model_unload: ModelEventCallback | None = None
+class Phase(Enum):
+    FETCH = auto()
+    ENRICH = auto()
+    STRIP = auto()
+    EMBED = auto()
 
 
 # ---------------------------------------------------------------------------
-# SyncResult
+# Event base
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class SyncEvent:
+    """Base class for all sync pipeline events."""
+
+
+# ---------------------------------------------------------------------------
+# Fetch events
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class FetchStarted(SyncEvent):
+    slug: str
+
+
+@dataclass(frozen=True, slots=True)
+class FetchProgress(SyncEvent):
+    slug: str
+    fetched: int
+    total: int
+
+
+@dataclass(frozen=True, slots=True)
+class FetchResult(SyncEvent):
+    result: SyncResult
+
+
+@dataclass(frozen=True, slots=True)
+class CompanySkipped(SyncEvent):
+    slug: str
+    reason: str
+
+
+# ---------------------------------------------------------------------------
+# Generic phase lifecycle events
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class PhaseStarted(SyncEvent):
+    phase: Phase
+    total: int
+    detail: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class PhaseProgress(SyncEvent):
+    phase: Phase
+    done: int
+    total: int
+
+
+@dataclass(frozen=True, slots=True)
+class PhaseDone(SyncEvent):
+    phase: Phase
+
+
+@dataclass(frozen=True, slots=True)
+class PhaseError(SyncEvent):
+    phase: Phase
+    job_id: str
+    title: str
+    error: str
+
+
+# ---------------------------------------------------------------------------
+# Model lifecycle events
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class ModelLoaded(SyncEvent):
+    model_key: str
+    model_name: str
+    device: str
+
+
+@dataclass(frozen=True, slots=True)
+class ModelUnloaded(SyncEvent):
+    model_key: str
+    model_name: str
+    device: str
+
+
+# ---------------------------------------------------------------------------
+# Retry visibility
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class RetryEvent(SyncEvent):
+    phase: Phase
+    slug: str
+    job_id: str
+    attempt: int
+    max_attempts: int
+    wait_seconds: float
+    reason: str
+
+
+# ---------------------------------------------------------------------------
+# Sentinel
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class Done(SyncEvent):
+    """Sentinel: consumer should exit its loop."""
+
+
+# ---------------------------------------------------------------------------
+# Queue alias
+# ---------------------------------------------------------------------------
+
+EventQueue = queue.SimpleQueue[SyncEvent]
+
+
+# ---------------------------------------------------------------------------
+# SyncResult (unchanged — used by FetchResult event and orchestrator return)
 # ---------------------------------------------------------------------------
 
 
