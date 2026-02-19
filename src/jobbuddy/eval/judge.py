@@ -175,14 +175,19 @@ def judge(
             raise typer.Exit(1)
         run_dirs = [run]
     else:
-        if prompt is None:
-            from jobbuddy.eval.utils import pick_prompt
-            prompt = pick_prompt()
-        prompt_stem = prompt.stem
         runs_dir = Path("eval/data/runs")
-        run_dirs = _find_runs_for_prompt(prompt_stem, runs_dir)
+        if prompt is not None:
+            prompts = [prompt]
+        else:
+            from jobbuddy.eval.utils import pick_prompts
+            prompts = pick_prompts(output_dir=runs_dir)
+        run_dirs = []
+        for p in prompts:
+            found = _find_runs_for_prompt(p.stem, runs_dir)
+            if not found:
+                print(f"No runs found for prompt '{p.stem}' in {runs_dir}")
+            run_dirs.extend(found)
         if not run_dirs:
-            print(f"No runs found for prompt '{prompt_stem}' in {runs_dir}")
             raise typer.Exit(1)
 
     prompt_file = judge_prompt or Path("eval/prompts/judge.txt")
