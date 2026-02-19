@@ -51,7 +51,7 @@ def run(
     model: Annotated[Optional[str], typer.Option(help="Azure OpenAI model deployment name")] = None,
     samples: Annotated[Path, typer.Option(help="Samples directory")] = Path("eval/data/samples"),
     output: Annotated[Path, typer.Option(help="Base output directory for runs")] = Path("eval/data/runs"),
-    workers: Annotated[int, typer.Option(help="Concurrent API workers")] = 5,
+    workers: Annotated[int, typer.Option(help="Concurrent API workers")] = 50,
 ) -> None:
     """Run strip eval: prompt+model against samples."""
     if prompt is None:
@@ -241,8 +241,9 @@ def _run_all(
         table.add_column("Reduc", justify="right")
         table.add_column("Time", justify="right")
         table.add_column("Tokens", justify="right")
-        # Reserve lines for status line + table header + border; show as many rows as fit
-        max_rows = max(console.height - 5, 5)
+        # status(1) + table header(2) + ellipsis(1) + margin(2) = 6 base
+        overhead = 6
+        max_rows = max(console.height - overhead, 5)
         visible = table_rows[-max_rows:]
         if len(table_rows) > max_rows:
             table.add_row(*["..."] * len(table.columns))

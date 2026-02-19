@@ -131,7 +131,7 @@ def judge(
     scores: Annotated[Path, typer.Option(help="Path to scores CSV output")] = Path("eval/data/scores/judge_scores.csv"),
     model: Annotated[str, typer.Option(help="Judge model deployment name")] = "gpt-5-mini",
     judge_prompt: Annotated[Optional[Path], typer.Option(help="Path to judge prompt")] = None,
-    workers: Annotated[int, typer.Option(help="Concurrent API workers")] = 5,
+    workers: Annotated[int, typer.Option(help="Concurrent API workers")] = 50,
 ) -> None:
     """LLM-as-judge auto-scoring of strip eval runs.
 

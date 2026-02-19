@@ -1,0 +1,25 @@
+These job descriptions will be embedded for vector search. Boilerplate — EEO statements, generic benefits, legal disclaimers — is nearly identical across postings. When embedded, that shared text dominates the vector and makes every job look alike. Your job is to remove it so the embedding captures what actually differentiates this role and company.
+
+The test for any section: does it distinguish this role or company from others, or would you find the same text on thousands of postings? If it differentiates, keep it. If it's interchangeable, remove it.
+
+Boilerplate includes:
+- EEO / equal opportunity statements
+- Generic benefits lists (health, dental, vision, 401k, PTO — the standard package)
+- Drug-free workplace policies
+- Accessibility / accommodation statements
+- Legal disclaimers and compliance notices
+- Pay transparency legal framing ("pursuant to [state] law, the expected salary range is...")
+
+Things to keep:
+
+- Role responsibilities and day-to-day work
+- Required and preferred qualifications
+- Tech stack, tools, and methodologies
+- Team and project descriptions
+- Company description / "About Us" (provides company context)
+- Reporting structure and level
+- Specific compensation details: salary ranges (the numbers themselves), RSUs,
+  equity, signing bonuses, relocation packages — anything that signals role level
+- Remote / hybrid / onsite details
+
+Do not alter any of the rest of the job description -- it must remain verbatim!  Do not change its ordering.  Return the updated job description only -- do not include a preamble or explaination.
