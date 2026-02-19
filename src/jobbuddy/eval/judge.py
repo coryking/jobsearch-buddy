@@ -196,11 +196,13 @@ def judge(
         return
 
     console = Console()
-    run_names = sorted(set(rn for rn, _, _ in work_items))
-    console.print(f"Judging {len(work_items)} files across {len(run_names)} runs with model={model}, workers={workers}")
-    for rn in run_names:
-        count = sum(1 for r, _, _ in work_items if r == rn)
-        console.print(f"  {rn}: {count} files")
+
+    # Per-run tracking: total files and score accumulators
+    run_totals: dict[str, int] = {}
+    for rn, _, _ in work_items:
+        run_totals[rn] = run_totals.get(rn, 0) + 1
+    run_score_sums: dict[str, int] = {rn: 0 for rn in run_totals}
+    run_done_counts: dict[str, int] = {rn: 0 for rn in run_totals}
 
     settings = get_settings()
     client = AzureOpenAI(
@@ -213,7 +215,6 @@ def judge(
     total = len(work_items)
     done_count = 0
     error_count = 0
-    score_sum = 0
     running_items: set[str] = set()
     table_rows: list[tuple[str, ...]] = []
 
@@ -227,13 +228,29 @@ def judge(
     csv_lock = threading.Lock()
 
     def build_display() -> Group:
+        # Per-run breakdown with live means, columnar via f-string padding
+        name_w = max(len(rn) for rn in run_totals)
+        run_lines = []
+        for rn in sorted(run_totals):
+            done = run_done_counts[rn]
+            t = run_totals[rn]
+            progress = f"{done}/{t}".rjust(7)
+            if done:
+                mean = run_score_sums[rn] / done
+                run_lines.append(f"  {rn:<{name_w}}  {progress}  [green]mean={mean:.1f}[/green]")
+            else:
+                run_lines.append(f"  {rn:<{name_w}}  {progress}")
+        header = Text.from_markup(
+            f"Judging {total} files across {len(run_totals)} runs "
+            f"with model={model}, workers={workers}"
+        )
+
         queued = total - done_count - error_count - len(running_items)
         parts = []
         if running_items:
             parts.append(f"[yellow bold]\u23f3 {len(running_items)} running[/yellow bold]")
         if done_count:
-            mean = f" (mean={score_sum / done_count:.1f})" if done_count else ""
-            parts.append(f"[green]\u2713 {done_count} scored{mean}[/green]")
+            parts.append(f"[green]\u2713 {done_count} scored[/green]")
         if error_count:
             parts.append(f"[red]\u2717 {error_count} errors[/red]")
         if queued > 0:
@@ -245,14 +262,17 @@ def judge(
         table.add_column("File", style="bold", no_wrap=True)
         table.add_column("Score", justify="right")
         table.add_column("Time", justify="right")
-        max_rows = max(console.height - 5, 5)
+        # header(1) + run lines + status(1) + table header(2) + ellipsis(1) + margin(2)
+        overhead = 7 + len(run_totals)
+        max_rows = max(console.height - overhead, 5)
         visible = table_rows[-max_rows:]
         if len(table_rows) > max_rows:
             table.add_row(*["..."] * len(table.columns))
         for row in visible:
             table.add_row(*row)
 
-        return Group(status, table)
+        run_text = Text.from_markup("\n".join(run_lines))
+        return Group(header, run_text, status, table)
 
     with Live(build_display(), console=console, refresh_per_second=4) as live:
         with ThreadPoolExecutor(max_workers=workers) as executor:
@@ -271,7 +291,8 @@ def judge(
 
                 if result.error is None:
                     done_count += 1
-                    score_sum += result.score
+                    run_score_sums[result.run_name] += result.score
+                    run_done_counts[result.run_name] += 1
 
                     with csv_lock:
                         writer.writerow({
@@ -304,7 +325,13 @@ def judge(
 
     console.print()
     console.rule("[bold]Summary[/bold]")
-    console.print(f"  [green]{done_count} scored[/green], [red]{error_count} failed[/red]")
-    if done_count:
-        console.print(f"  Mean score: {score_sum / done_count:.2f}")
+    for rn in sorted(run_totals):
+        done = run_done_counts[rn]
+        if done:
+            mean = run_score_sums[rn] / done
+            console.print(f"  {rn}: [green]{done} scored[/green] (mean={mean:.2f})")
+        else:
+            console.print(f"  {rn}: [red]0 scored[/red]")
+    if error_count:
+        console.print(f"  [red]{error_count} total errors[/red]")
     console.print(f"  Scores saved to: {scores}")
