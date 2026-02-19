@@ -51,38 +51,80 @@ or role, keep it.
 
 Score the stripped version on four dimensions (1-5 each):
 
-**recall** — Did all differentiating content survive?
+RECALL — Did all differentiating content survive?
   This is the most important dimension. Information loss means the job won't
   surface for queries it should match.
-  5: All role-specific AND company-specific differentiating content preserved
-  4: Nearly all preserved, trivial omissions only
-  3: Most preserved but some meaningful details lost
-  2: Important content removed (salary, qualifications, eligibility, company details)
-  1: Critical content missing — responsibilities, qualifications, or key requirements gone
 
-**precision** — Was boilerplate actually removed?
+  5: Zero differentiating content removed. Every responsibility, qualification,
+     company detail, salary figure, eligibility requirement, and location detail
+     from the original is present in the stripped version.
+  4: One minor item lost — e.g., a single preferred qualification, a hashtag
+     like #LI-Remote, or a "nice to have" bullet. Nothing that would change
+     which queries match this job.
+  3: Two to three meaningful details lost — e.g., a work schedule, a few
+     qualifications, a nice-to-have section, or a company project description.
+     The job would still surface for most relevant queries but misses some.
+  2: An important category of content removed — e.g., the salary range, an
+     eligibility/clearance requirement, multiple required qualifications, or
+     a company-specific section (products, projects, mission). The job will
+     fail to surface for a class of queries it should match.
+  1: Core content gutted — the responsibilities section, the qualifications
+     section, or multiple important categories are missing. The stripped
+     version is missing what fundamentally defines this job.
+
+PRECISION — Was boilerplate actually removed?
   Less critical than recall — noise hurts ranking but doesn't cause total misses.
-  5: All boilerplate removed cleanly
-  4: Nearly all removed, minor remnants
-  3: Most removed but some obvious boilerplate sections remain
-  2: Significant boilerplate left in
-  1: Little to no boilerplate removed (output ≈ input)
 
-**integrity** — Was any false signal introduced?
+  5: No boilerplate remains. Every sentence in the stripped version is
+     differentiating content.
+  4: One or two boilerplate sentences remain — e.g., a stray EEO line,
+     an orphaned "we are an equal opportunity employer", a privacy link.
+  3: A full boilerplate paragraph or section remains — e.g., the entire
+     EEO block, the full generic benefits list, or a complete accommodation
+     statement. But most boilerplate was removed.
+  2: Multiple boilerplate sections remain — e.g., EEO + generic benefits,
+     or EEO + accommodation + diversity encouragement. More noise than signal
+     was left behind.
+  1: Little to no boilerplate removed. The stripped version is essentially
+     identical to the original — the model failed to perform the task.
+
+INTEGRITY — Was any false signal introduced?
   Fabricated content poisons the search index — the job surfaces for wrong queries.
-  5: No fabricated content whatsoever
-  4: No factual fabrication; trivial artifacts only (e.g., orphaned header)
-  3: Minor meaning shifts from rewording, but no invented facts
-  2: Noticeable additions or rewording that changes what queries would match
-  1: Fabricated requirements, salary figures, or other factual content
 
-**fidelity** — How closely does kept text match the original surface form?
-  Least important for search quality, but useful for measuring instruction-following.
-  5: Kept text is character-for-character identical to original
-  4: Essentially identical, trivial whitespace or formatting differences
-  3: Some rewording but meaning fully preserved
-  2: Noticeable paraphrasing throughout
-  1: Substantially rewritten
+  5: Every sentence in the stripped version exists in the original. No
+     additions, no rewording, no invented content of any kind.
+  4: No new factual claims. At most a trivial artifact from deletion — e.g.,
+     an orphaned section header with no content below it, or a dangling
+     bullet point.
+  3: Some phrases were reworded in ways that preserve the facts but change
+     the surface form — e.g., "5+ years" became "five or more years", or
+     a sentence was lightly restructured. No invented facts.
+  2: New factual claims are present that weren't in the original — e.g., a
+     salary range that differs from the original, a qualification that was
+     strengthened ("experience with" became "expertise in"), or a location/
+     requirement that was added. OR pervasive rewording that shifts what
+     queries would match.
+  1: Clearly fabricated content — invented salary figures, made-up
+     requirements, fictional company details, or a substantially
+     hallucinated section.
+
+FIDELITY — How closely does kept text match the original surface form?
+  Least important for search quality, but measures instruction-following.
+  This dimension is about surface form only — if the meaning is preserved
+  but words changed, that's a fidelity issue (not integrity).
+
+  5: Character-for-character identical on all kept content. If you diff the
+     stripped version against the original, the only changes are deletions.
+  4: Content matches but minor formatting differences — e.g., changed
+     whitespace, removed a header, converted bullets to plain text,
+     or trivial punctuation changes.
+  3: A few phrases reworded while fully preserving meaning — e.g.,
+     "Bachelor's degree required" became "Requires a Bachelor's degree".
+     Infrequent and minor.
+  2: Multiple sentences reworded, restructured, or condensed. The meaning
+     is mostly preserved but the text clearly went through a rewrite.
+  1: Substantially rewritten. Reads like a summary or paraphrase rather
+     than a subset of the original text.
 
 Respond with ONLY valid JSON (no markdown fences):
 {

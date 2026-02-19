@@ -27,6 +27,13 @@ from rich.text import Text
 from jobbuddy.settings import get_settings
 
 SCORE_FIELDS = ["recall", "precision", "integrity", "fidelity"]
+
+
+def _fmt_tokens(n: int) -> str:
+    """Format token count: 1234 → '1.2K', 12345 → '12.3K', 500 → '500'."""
+    if n >= 1000:
+        return f"{n / 1000:.1f}K"
+    return str(n)
 CSV_HEADER = ["filename", "run_name", *SCORE_FIELDS, "reasoning"]
 
 
@@ -60,6 +67,9 @@ class _JudgeResult:
     filename: str
     scores: dict[str, int] | None  # {recall: N, precision: N, ...}
     reasoning: str | None
+    prompt_tokens: int | None
+    completion_tokens: int | None
+    reasoning_tokens: int | None
     elapsed_seconds: float
     error: str | None
 
@@ -96,10 +106,18 @@ def _judge_one(
         raw = response.choices[0].message.content.strip()
         parsed = _parse_judge_response(raw)
 
+        usage = response.usage
+        reasoning_tokens = 0
+        if usage.completion_tokens_details:
+            reasoning_tokens = getattr(usage.completion_tokens_details, "reasoning_tokens", 0) or 0
+
         if parsed is None:
             return _JudgeResult(
                 run_name=run_name, filename=run_file.name,
                 scores=None, reasoning=f"PARSE ERROR: {raw[:200]}",
+                prompt_tokens=usage.prompt_tokens,
+                completion_tokens=usage.completion_tokens,
+                reasoning_tokens=reasoning_tokens,
                 elapsed_seconds=round(elapsed, 3), error="parse_error",
             )
 
@@ -107,6 +125,9 @@ def _judge_one(
             run_name=run_name, filename=run_file.name,
             scores={f: parsed[f] for f in SCORE_FIELDS},
             reasoning=parsed.get("reasoning", ""),
+            prompt_tokens=usage.prompt_tokens,
+            completion_tokens=usage.completion_tokens,
+            reasoning_tokens=reasoning_tokens,
             elapsed_seconds=round(elapsed, 3), error=None,
         )
 
@@ -115,6 +136,8 @@ def _judge_one(
         return _JudgeResult(
             run_name=run_name, filename=run_file.name,
             scores=None, reasoning=None,
+            prompt_tokens=None, completion_tokens=None,
+            reasoning_tokens=None,
             elapsed_seconds=round(elapsed, 3), error=str(e),
         )
 
@@ -132,7 +155,7 @@ def judge(
     run: Annotated[Optional[Path], typer.Option(help="Path to single run directory (legacy)")] = None,
     samples: Annotated[Path, typer.Option(help="Path to original samples directory")] = Path("eval/data/samples"),
     scores: Annotated[Path, typer.Option(help="Path to scores CSV output")] = Path("eval/data/scores/judge_scores.csv"),
-    model: Annotated[str, typer.Option(help="Judge model deployment name")] = "gpt-5-mini",
+    model: Annotated[str, typer.Option(help="Judge model deployment name")] = "DeepSeek-R1-0528",
     judge_prompt: Annotated[Optional[Path], typer.Option(help="Path to judge prompt")] = None,
     workers: Annotated[int, typer.Option(help="Concurrent API workers")] = 50,
 ) -> None:
@@ -220,6 +243,7 @@ def judge(
     error_count = 0
     running_items: set[str] = set()
     table_rows: list[tuple[str, ...]] = []
+    token_totals = {"prompt": 0, "completion": 0, "reasoning": 0}
 
     # CSV writer with lock for thread-safe flushing
     write_header = not scores.exists()
@@ -261,6 +285,13 @@ def judge(
             parts.append(f"[red]\u2717 {error_count} errors[/red]")
         if queued > 0:
             parts.append(f"[dim]\u00b7 {queued} queued[/dim]")
+        tok_total = token_totals["prompt"] + token_totals["completion"]
+        if tok_total:
+            tok_parts = [f"In: {_fmt_tokens(token_totals['prompt'])}",
+                         f"Out: {_fmt_tokens(token_totals['completion'])}"]
+            if token_totals["reasoning"]:
+                tok_parts.append(f"Think: {_fmt_tokens(token_totals['reasoning'])}")
+            parts.append(f"[cyan]{' '.join(tok_parts)}[/cyan]")
         status = Text.from_markup("  \u2502  ".join(parts))
 
         table = Table(show_lines=False, pad_edge=False)
@@ -294,6 +325,11 @@ def judge(
             for future in as_completed(futures):
                 result = future.result()
                 running_items.discard(futures[future])
+
+                if result.prompt_tokens:
+                    token_totals["prompt"] += result.prompt_tokens
+                    token_totals["completion"] += result.completion_tokens
+                    token_totals["reasoning"] += result.reasoning_tokens or 0
 
                 if result.error is None:
                     done_count += 1
@@ -347,4 +383,10 @@ def judge(
             console.print(f"  {rn}: [red]0 scored[/red]")
     if error_count:
         console.print(f"  [red]{error_count} total errors[/red]")
+    tok_total = token_totals["prompt"] + token_totals["completion"]
+    if tok_total:
+        tok_parts = [f"In: {token_totals['prompt']:,}", f"Out: {token_totals['completion']:,}"]
+        if token_totals["reasoning"]:
+            tok_parts.append(f"Think: {token_totals['reasoning']:,}")
+        console.print(f"  Tokens: {' | '.join(tok_parts)} | Total: {tok_total:,}")
     console.print(f"  Scores saved to: {scores}")
