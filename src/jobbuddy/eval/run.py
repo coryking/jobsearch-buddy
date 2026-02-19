@@ -22,7 +22,7 @@ from rich.table import Table
 from rich.text import Text
 
 from jobbuddy.eval.models import KNOWN_MODELS, ModelConfig
-from jobbuddy.eval.utils import PROMPTS_DIR, pick_models, pick_prompt
+from jobbuddy.eval.utils import PROMPTS_DIR, pick_models, pick_prompts
 from jobbuddy.settings import get_settings
 
 
@@ -77,20 +77,9 @@ def run(
     force: Annotated[bool, typer.Option(help="Re-run all samples, ignoring existing outputs")] = False,
 ) -> None:
     """Run strip eval: prompt+model against samples."""
-    if prompt is None:
-        prompt = pick_prompt(PROMPTS_DIR)
-
-    if not prompt.exists():
-        print(f"Prompt file not found: {prompt}")
-        raise typer.Exit(1)
     if not samples.exists():
         print(f"Samples directory not found: {samples}")
         raise typer.Exit(1)
-
-    if model is None:
-        models = pick_models(prompt.stem, output)
-    else:
-        models = [model]
 
     sample_files = sorted(
         f for f in samples.glob("*.txt")
@@ -100,37 +89,52 @@ def run(
         print(f"No .txt samples found in {samples}")
         raise typer.Exit(1)
 
-    prompt_text = prompt.read_text(encoding="utf-8").strip()
+    # Resolve prompt(s): explicit --prompt → single, else checkbox picker
+    if prompt is not None:
+        if not prompt.exists():
+            print(f"Prompt file not found: {prompt}")
+            raise typer.Exit(1)
+        prompts = [prompt]
+    else:
+        prompts = pick_prompts(PROMPTS_DIR, output)
 
-    # Build work items: every (model, sample) pair, skipping already-done
-    work_items: list[dict] = []
-    skipped = 0
-    for m in models:
-        config = KNOWN_MODELS.get(m, ModelConfig())
-        name = run_name if run_name else f"{prompt.stem}-{m}"
-        output_dir = output / name
-        output_dir.mkdir(parents=True, exist_ok=True)
-        for i, sample_file in enumerate(sample_files, 1):
-            if not force and (output_dir / sample_file.name).exists():
-                skipped += 1
-                continue
-            work_items.append({
-                "model": m,
-                "config": config,
-                "run_name": name,
-                "output_dir": output_dir,
-                "sample_file": sample_file,
-                "index": i,
-            })
+    for prompt_file in prompts:
+        prompt_text = prompt_file.read_text(encoding="utf-8").strip()
 
-    if skipped:
-        print(f"Skipping {skipped} already-completed samples")
+        if model is None:
+            models = pick_models(prompt_file.stem, output)
+        else:
+            models = [model]
 
-    if not work_items:
-        print("All samples already completed!")
-        raise typer.Exit(0)
+        # Build work items: every (model, sample) pair, skipping already-done
+        work_items: list[dict] = []
+        skipped = 0
+        for m in models:
+            config = KNOWN_MODELS.get(m, ModelConfig())
+            name = run_name if run_name else f"{prompt_file.stem}-{m}"
+            output_dir = output / name
+            output_dir.mkdir(parents=True, exist_ok=True)
+            for i, sample_file in enumerate(sample_files, 1):
+                if not force and (output_dir / sample_file.name).exists():
+                    skipped += 1
+                    continue
+                work_items.append({
+                    "model": m,
+                    "config": config,
+                    "run_name": name,
+                    "output_dir": output_dir,
+                    "sample_file": sample_file,
+                    "index": i,
+                })
 
-    _run_all(work_items, prompt, prompt_text, sample_files, models, output, workers)
+        if skipped:
+            print(f"Skipping {skipped} already-completed samples")
+
+        if not work_items:
+            print(f"All samples already completed for {prompt_file.name}!")
+            continue
+
+        _run_all(work_items, prompt_file, prompt_text, sample_files, models, output, workers)
 
 
 def _process_sample(

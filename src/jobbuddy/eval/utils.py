@@ -41,6 +41,54 @@ def pick_prompt(prompts_dir: Path = PROMPTS_DIR) -> Path:
     return selected
 
 
+def pick_prompts(
+    prompts_dir: Path = PROMPTS_DIR,
+    output_dir: Path = RUNS_DIR,
+) -> list[Path]:
+    """Interactive multi-prompt selection via questionary checkboxes.
+
+    Prompts sorted by mtime descending. Prompts that already have run dirs
+    for all known models are shown with a "done" marker and unchecked.
+    """
+    prompt_files = sorted(
+        (f for f in prompts_dir.glob("*.txt") if f.name != "judge.txt"),
+        key=lambda f: f.stat().st_mtime,
+        reverse=True,
+    )
+    if not prompt_files:
+        print(f"No prompt files found in {prompts_dir}")
+        raise typer.Exit(1)
+
+    done = set()
+    for f in prompt_files:
+        stem = f.stem
+        all_done = all(
+            (output_dir / f"{stem}-{m}").exists()
+            and any((output_dir / f"{stem}-{m}").glob("*.txt"))
+            for m in KNOWN_MODELS
+        )
+        if all_done:
+            done.add(f)
+
+    remaining = [f for f in prompt_files if f not in done]
+    completed = [f for f in prompt_files if f in done]
+
+    choices: list[questionary.Choice] = []
+    for f in remaining:
+        choices.append(questionary.Choice(title=f.name, value=f, checked=True))
+    for f in completed:
+        choices.append(questionary.Choice(title=f"{f.name} (done)", value=f, checked=False))
+
+    selected = questionary.checkbox(
+        "Select prompts:", choices=choices,
+    ).ask()
+
+    if selected is None or len(selected) == 0:
+        print("No prompts selected.")
+        raise typer.Exit(1)
+    return selected
+
+
 def pick_models(
     prompt_stem: str,
     output_dir: Path = RUNS_DIR,
