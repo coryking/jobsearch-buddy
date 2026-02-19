@@ -127,43 +127,15 @@ files. If the judge agrees with you on those, trust it for the rest.
 
 ## Scoring Rubric
 
-Three criteria, each 1-5:
-
-### Boilerplate Removal
-
-Did it remove the right stuff?
+Single score, 1-5: "How did it do?"
 
 | Score | Meaning |
 |-------|---------|
-| 5 | All boilerplate removed (EEO, generic benefits, legal disclaimers, accommodation) |
-| 4 | Nearly all removed, minor remnants |
-| 3 | Most removed but some obvious sections remain |
-| 2 | Significant boilerplate left in |
-| 1 | Little to no boilerplate removed |
-
-### Content Preservation
-
-Did it keep the important stuff?
-
-| Score | Meaning |
-|-------|---------|
-| 5 | All role-specific content preserved (responsibilities, quals, stack, comp, team) |
-| 4 | Nearly all preserved, minor omissions |
-| 3 | Most preserved but some meaningful details lost |
-| 2 | Significant role-specific content removed |
-| 1 | Critical content missing (responsibilities or qualifications gone) |
-
-### No Hallucination
-
-Did it avoid adding or rephrasing?
-
-| Score | Meaning |
-|-------|---------|
-| 5 | Output is a strict subset of the original text, no rephrasing |
-| 4 | Essentially faithful, trivial formatting changes only |
-| 3 | Minor rephrasing or reordering but meaning preserved |
-| 2 | Noticeable additions or rewording that changes emphasis |
-| 1 | Fabricated content or substantial rewording |
+| 5 | All boilerplate removed, all important content preserved, no rephrasing |
+| 4 | Minor issues — small boilerplate remnants or trivial omissions |
+| 3 | Decent but noticeable issues — some boilerplate left or meaningful content lost |
+| 2 | Significant problems — lots of boilerplate remaining or important content removed |
+| 1 | Failed — little removed, critical content lost, or substantial hallucination |
 
 ## Models
 
@@ -219,12 +191,12 @@ Per-run metadata with timing:
 
 `manual_scores.csv`:
 ```
-filename,run_name,boilerplate_removal,content_preservation,no_hallucination,notes
-001-stripe-sr-backend.txt,v1-gpt4.1nano,4,5,5,clean removal
+filename,run_name,score,notes
+001-stripe-sr-backend.txt,v1-gpt4.1nano,5,clean removal
 ```
 
 `judge_scores.csv`:
 ```
-filename,run_name,boilerplate_removal,content_preservation,no_hallucination,reasoning
-001-stripe-sr-backend.txt,v1-gpt4.1nano,4,5,5,All boilerplate removed...
+filename,run_name,score,reasoning
+001-stripe-sr-backend.txt,v1-gpt4.1nano,5,All boilerplate removed...
 ```

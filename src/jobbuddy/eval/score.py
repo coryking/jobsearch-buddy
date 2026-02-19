@@ -1,7 +1,7 @@
 """Rich terminal UI for manual scoring of strip eval runs.
 
 Shows original vs. stripped side-by-side with diff highlighting.
-Prompts for 3 scores (1-5) per sample. Saves to CSV with resume support.
+Prompts for a single 1-5 score per sample. Saves to CSV with resume support.
 """
 
 from __future__ import annotations
@@ -21,8 +21,7 @@ from rich.prompt import Prompt
 from rich.rule import Rule
 from rich.text import Text
 
-SCORE_FIELDS = ["boilerplate_removal", "content_preservation", "no_hallucination"]
-CSV_HEADER = ["filename", "run_name", *SCORE_FIELDS, "notes"]
+CSV_HEADER = ["filename", "run_name", "score", "notes"]
 
 
 def _load_scored(scores_file: Path) -> set[tuple[str, str]]:
@@ -168,40 +167,32 @@ def _score_sample(console: Console, filename: str, original: str, stripped: str,
             console.print(f"  [red]- {s[:120]}[/red]")
         console.print()
 
-    console.print("[bold]Score each criterion 1-5:[/bold]")
-    console.print("  1=terrible  2=poor  3=acceptable  4=good  5=excellent")
+    console.print("[bold]How did it do? (1-5)[/bold]")
+    console.print("  5=perfect  4=minor issues  3=decent  2=significant problems  1=failed")
     console.print("  (q to quit, s to skip)")
     console.print()
 
-    scores = {}
-    labels = {
-        "boilerplate_removal": "Boilerplate removal (did it remove the right stuff?)",
-        "content_preservation": "Content preservation (did it keep the important stuff?)",
-        "no_hallucination": "No hallucination (did it avoid adding/rephrasing?)",
-    }
-
-    for field in SCORE_FIELDS:
-        while True:
-            answer = Prompt.ask(f"  {labels[field]}")
-            if answer.lower() == "q":
-                return None
-            if answer.lower() == "s":
-                return "skip"
-            try:
-                val = int(answer)
-                if 1 <= val <= 5:
-                    scores[field] = val
-                    break
-            except ValueError:
-                pass
-            console.print("  [red]Enter 1-5, 'q' to quit, or 's' to skip[/red]")
+    while True:
+        answer = Prompt.ask("  Score")
+        if answer.lower() == "q":
+            return None
+        if answer.lower() == "s":
+            return "skip"
+        try:
+            val = int(answer)
+            if 1 <= val <= 5:
+                score_val = val
+                break
+        except ValueError:
+            pass
+        console.print("  [red]Enter 1-5, 'q' to quit, or 's' to skip[/red]")
 
     notes = Prompt.ask("  Notes (optional)", default="")
 
     return {
         "filename": filename,
         "run_name": run_name,
-        **scores,
+        "score": score_val,
         "notes": notes,
     }
 

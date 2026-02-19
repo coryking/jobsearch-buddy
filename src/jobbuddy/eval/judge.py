@@ -17,8 +17,7 @@ from openai import AzureOpenAI
 
 from jobbuddy.settings import get_settings
 
-SCORE_FIELDS = ["boilerplate_removal", "content_preservation", "no_hallucination"]
-CSV_HEADER = ["filename", "run_name", *SCORE_FIELDS, "reasoning"]
+CSV_HEADER = ["filename", "run_name", "score", "reasoning"]
 
 
 def _load_judge_prompt(prompt_file: Path) -> str:
@@ -26,7 +25,7 @@ def _load_judge_prompt(prompt_file: Path) -> str:
 
 
 def _parse_judge_response(text: str) -> dict | None:
-    """Parse JSON scores from judge response. Returns None on failure."""
+    """Parse JSON score from judge response. Returns None on failure."""
     text = text.strip()
     if text.startswith("```"):
         lines = text.splitlines()
@@ -35,10 +34,9 @@ def _parse_judge_response(text: str) -> dict | None:
 
     try:
         data = json.loads(text)
-        for field in SCORE_FIELDS:
-            val = data.get(field)
-            if not isinstance(val, int) or val < 1 or val > 5:
-                return None
+        val = data.get("score")
+        if not isinstance(val, int) or val < 1 or val > 5:
+            return None
         return data
     except (json.JSONDecodeError, KeyError, TypeError):
         return None
@@ -141,15 +139,12 @@ def judge(
             row = {
                 "filename": filename,
                 "run_name": run_name,
-                "boilerplate_removal": parsed["boilerplate_removal"],
-                "content_preservation": parsed["content_preservation"],
-                "no_hallucination": parsed["no_hallucination"],
+                "score": parsed["score"],
                 "reasoning": parsed.get("reasoning", ""),
             }
             results.append(row)
 
-            avg = sum(parsed[f] for f in SCORE_FIELDS) / 3
-            print(f"avg={avg:.1f} (bp={parsed['boilerplate_removal']} cp={parsed['content_preservation']} nh={parsed['no_hallucination']}) {elapsed:.1f}s")
+            print(f"score={parsed['score']} {elapsed:.1f}s")
 
         except Exception as e:
             print(f"ERROR: {e}")
@@ -166,8 +161,7 @@ def judge(
 
     print(f"\nJudged: {len(results)} succeeded, {len(errors)} failed")
     if results:
-        for field in SCORE_FIELDS:
-            vals = [r[field] for r in results]
-            avg = sum(vals) / len(vals)
-            print(f"  {field}: mean={avg:.2f}")
+        vals = [r["score"] for r in results]
+        avg = sum(vals) / len(vals)
+        print(f"  mean score: {avg:.2f}")
     print(f"Scores saved to: {scores}")
