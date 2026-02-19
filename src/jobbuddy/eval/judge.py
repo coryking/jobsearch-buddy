@@ -43,13 +43,16 @@ def _parse_judge_response(text: str) -> dict | None:
 
 
 def judge(
-    run: Annotated[Path, typer.Option(help="Path to run output directory")],
+    run: Annotated[Optional[Path], typer.Option(help="Path to run output directory")] = None,
     samples: Annotated[Path, typer.Option(help="Path to original samples directory")] = Path("eval/data/samples"),
     scores: Annotated[Path, typer.Option(help="Path to scores CSV output")] = Path("eval/data/scores/judge_scores.csv"),
     model: Annotated[str, typer.Option(help="Judge model deployment name")] = "gpt-5-mini",
     judge_prompt: Annotated[Optional[Path], typer.Option(help="Path to judge prompt")] = None,
 ) -> None:
     """LLM-as-judge auto-scoring of strip eval runs."""
+    if run is None:
+        from jobbuddy.eval.utils import pick_run
+        run = pick_run()
     if not run.exists():
         print(f"Run directory not found: {run}")
         raise typer.Exit(1)

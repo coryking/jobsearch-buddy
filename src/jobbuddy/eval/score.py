@@ -12,7 +12,7 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Optional
 
 import typer
 from rich.console import Console
@@ -198,12 +198,15 @@ def _score_sample(console: Console, filename: str, original: str, stripped: str,
 
 
 def score(
-    run: Annotated[Path, typer.Option(help="Path to run output directory")],
+    run: Annotated[Optional[Path], typer.Option(help="Path to run output directory")] = None,
     samples: Annotated[Path, typer.Option(help="Path to original samples directory")] = Path("eval/data/samples"),
     ground_truth: Annotated[Path, typer.Option(help="Path to ground-truth directory")] = Path("eval/data/ground-truth"),
     scores: Annotated[Path, typer.Option(help="Path to scores CSV output")] = Path("eval/data/scores/manual_scores.csv"),
 ) -> None:
     """Manual Rich TUI scoring of strip eval runs."""
+    if run is None:
+        from jobbuddy.eval.utils import pick_run
+        run = pick_run()
     if not run.exists():
         print(f"Run directory not found: {run}")
         raise typer.Exit(1)
