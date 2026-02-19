@@ -10,18 +10,36 @@ import hashlib
 import json
 import statistics
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated, Optional
 
 import typer
 from openai import AzureOpenAI
-from rich.console import Console
+from rich.console import Console, Group
 from rich.live import Live
 from rich.table import Table
+from rich.text import Text
 
 from jobbuddy.eval.utils import KNOWN_MODELS, PROMPTS_DIR, pick_models, pick_prompt
 from jobbuddy.settings import get_settings
+
+
+@dataclass
+class _SampleResult:
+    """Result from processing one sample file."""
+    index: int
+    filename: str
+    input_chars: int
+    output_chars: int | None
+    prompt_tokens: int | None
+    completion_tokens: int | None
+    total_tokens: int | None
+    elapsed_seconds: float
+    reduction: float | None
+    error: str | None
 
 
 def run(
@@ -30,6 +48,7 @@ def run(
     model: Annotated[Optional[str], typer.Option(help="Azure OpenAI model deployment name")] = None,
     samples: Annotated[Path, typer.Option(help="Samples directory")] = Path("eval/data/samples"),
     output: Annotated[Path, typer.Option(help="Base output directory for runs")] = Path("eval/data/runs"),
+    workers: Annotated[int, typer.Option(help="Concurrent API workers")] = 5,
 ) -> None:
     """Run strip eval: prompt+model against samples."""
     # Pick prompt first (need stem to check which models already ran)
@@ -51,7 +70,71 @@ def run(
 
     for m in models:
         name = run_name if run_name else f"{prompt.stem}-{m}"
-        _run_eval(prompt, m, samples, name, output)
+        _run_eval(prompt, m, samples, name, output, workers)
+
+
+def _process_sample(
+    client: AzureOpenAI,
+    model: str,
+    model_params: dict,
+    prompt_text: str,
+    sample_file: Path,
+    output_dir: Path,
+    index: int,
+    running_files: set[str],
+) -> _SampleResult:
+    """Process a single sample file. Runs in a worker thread."""
+    running_files.add(sample_file.name)
+    description = sample_file.read_text(encoding="utf-8")
+    input_chars = len(description)
+
+    try:
+        start = time.monotonic()
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": prompt_text},
+                {"role": "user", "content": description},
+            ],
+            **model_params,
+        )
+        elapsed = time.monotonic() - start
+
+        result_text = response.choices[0].message.content.strip()
+        usage = response.usage
+
+        out_file = output_dir / sample_file.name
+        out_file.write_text(result_text, encoding="utf-8")
+
+        reduction = ((input_chars - len(result_text)) / input_chars * 100) if input_chars else 0
+
+        return _SampleResult(
+            index=index,
+            filename=sample_file.name,
+            input_chars=input_chars,
+            output_chars=len(result_text),
+            prompt_tokens=usage.prompt_tokens,
+            completion_tokens=usage.completion_tokens,
+            total_tokens=usage.total_tokens,
+            elapsed_seconds=round(elapsed, 3),
+            reduction=reduction,
+            error=None,
+        )
+
+    except Exception as e:
+        elapsed = time.monotonic() - start
+        return _SampleResult(
+            index=index,
+            filename=sample_file.name,
+            input_chars=input_chars,
+            output_chars=None,
+            prompt_tokens=None,
+            completion_tokens=None,
+            total_tokens=None,
+            elapsed_seconds=round(elapsed, 3),
+            reduction=None,
+            error=str(e),
+        )
 
 
 def _run_eval(
@@ -60,8 +143,9 @@ def _run_eval(
     samples_dir: Path,
     run_name: str,
     output_base: Path,
+    workers: int,
 ) -> None:
-    prompt = prompt_file.read_text(encoding="utf-8").strip()
+    prompt_text = prompt_file.read_text(encoding="utf-8").strip()
     output_dir = output_base / run_name
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -76,7 +160,7 @@ def _run_eval(
     model_params = KNOWN_MODELS.get(model, {})
     console = Console()
     params_str = ", ".join(f"{k}={v}" for k, v in model_params.items()) if model_params else "defaults"
-    console.print(f"Running {len(sample_files)} samples with model={model} ({params_str}), prompt={prompt_file.name}")
+    console.print(f"Running {len(sample_files)} samples with model={model} ({params_str}), prompt={prompt_file.name}, workers={workers}")
     console.print(f"Output: {output_dir}/")
 
     settings = get_settings()
@@ -87,10 +171,29 @@ def _run_eval(
         timeout=60.0,
     )
 
+    total = len(sample_files)
+    done_count = 0
+    error_count = 0
     file_stats: list[dict] = []
     errors: list[dict] = []
+    table_rows: list[tuple[str, ...]] = []
 
-    def build_table() -> Table:
+    # Track which samples are currently being processed by workers
+    running_files: set[str] = set()
+
+    def build_display() -> Group:
+        queued = total - done_count - error_count - len(running_files)
+        parts = []
+        if running_files:
+            parts.append(f"[yellow bold]\u23f3 {len(running_files)} running[/yellow bold]")
+        if done_count:
+            parts.append(f"[green]\u2713 {done_count} done[/green]")
+        if error_count:
+            parts.append(f"[red]\u2717 {error_count} errors[/red]")
+        if queued > 0:
+            parts.append(f"[dim]\u00b7 {queued} queued[/dim]")
+        status = Text.from_markup("  \u2502  ".join(parts))
+
         table = Table(show_lines=False, pad_edge=False)
         table.add_column("#", justify="right", style="dim", width=4)
         table.add_column("File", style="bold", no_wrap=True)
@@ -101,73 +204,62 @@ def _run_eval(
         table.add_column("Tokens", justify="right")
         for row in table_rows:
             table.add_row(*row)
-        return table
 
-    table_rows: list[tuple[str, ...]] = []
+        return Group(status, table)
 
-    with Live(build_table(), console=console, refresh_per_second=4) as live:
-        for i, sample_file in enumerate(sample_files, 1):
-            description = sample_file.read_text(encoding="utf-8")
-
-            try:
-                start = time.monotonic()
-                response = client.chat.completions.create(
-                    model=model,
-                    messages=[
-                        {"role": "system", "content": prompt},
-                        {"role": "user", "content": description},
-                    ],
-                    **model_params,
+    with Live(build_display(), console=console, refresh_per_second=4) as live:
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {}
+            for i, sample_file in enumerate(sample_files, 1):
+                future = executor.submit(
+                    _process_sample,
+                    client, model, model_params, prompt_text,
+                    sample_file, output_dir, i, running_files,
                 )
-                elapsed = time.monotonic() - start
+                futures[future] = sample_file.name
 
-                result = response.choices[0].message.content.strip()
-                usage = response.usage
+            for future in as_completed(futures):
+                result = future.result()
+                running_files.discard(futures[future])
 
-                out_file = output_dir / sample_file.name
-                out_file.write_text(result, encoding="utf-8")
+                if result.error is None:
+                    done_count += 1
+                    file_stats.append({
+                        "filename": result.filename,
+                        "input_chars": result.input_chars,
+                        "output_chars": result.output_chars,
+                        "prompt_tokens": result.prompt_tokens,
+                        "completion_tokens": result.completion_tokens,
+                        "total_tokens": result.total_tokens,
+                        "elapsed_seconds": result.elapsed_seconds,
+                    })
+                    table_rows.append((
+                        str(result.index),
+                        result.filename,
+                        f"{result.input_chars:,}",
+                        f"{result.output_chars:,}",
+                        f"{result.reduction:.0f}%",
+                        f"{result.elapsed_seconds:.1f}s",
+                        f"{result.total_tokens:,}",
+                    ))
+                else:
+                    error_count += 1
+                    errors.append({
+                        "filename": result.filename,
+                        "error": result.error,
+                        "elapsed_seconds": result.elapsed_seconds,
+                    })
+                    table_rows.append((
+                        str(result.index),
+                        result.filename,
+                        f"{result.input_chars:,}",
+                        "[red]ERROR[/red]",
+                        "",
+                        f"{result.elapsed_seconds:.1f}s",
+                        "",
+                    ))
 
-                reduction = ((len(description) - len(result)) / len(description) * 100) if len(description) else 0
-
-                stat = {
-                    "filename": sample_file.name,
-                    "input_chars": len(description),
-                    "output_chars": len(result),
-                    "prompt_tokens": usage.prompt_tokens,
-                    "completion_tokens": usage.completion_tokens,
-                    "total_tokens": usage.total_tokens,
-                    "elapsed_seconds": round(elapsed, 3),
-                }
-                file_stats.append(stat)
-
-                table_rows.append((
-                    str(i),
-                    sample_file.name,
-                    f"{len(description):,}",
-                    f"{len(result):,}",
-                    f"{reduction:.0f}%",
-                    f"{elapsed:.1f}s",
-                    f"{usage.total_tokens:,}",
-                ))
-
-            except Exception as e:
-                elapsed = time.monotonic() - start
-                errors.append({
-                    "filename": sample_file.name,
-                    "error": str(e),
-                    "elapsed_seconds": round(elapsed, 3),
-                })
-                table_rows.append((
-                    str(i),
-                    sample_file.name,
-                    f"{len(description):,}",
-                    "[red]ERROR[/red]",
-                    "",
-                    f"{elapsed:.1f}s",
-                    "",
-                ))
-
-            live.update(build_table())
+                live.update(build_display())
 
     # Aggregate stats
     if file_stats:
@@ -193,11 +285,12 @@ def _run_eval(
         "model": model,
         "model_params": model_params,
         "prompt_file": str(prompt_file),
-        "prompt_sha256": hashlib.sha256(prompt.encode()).hexdigest()[:12],
+        "prompt_sha256": hashlib.sha256(prompt_text.encode()).hexdigest()[:12],
         "timestamp": datetime.now(timezone.utc).isoformat(),
-        "sample_count": len(sample_files),
+        "sample_count": total,
         "success_count": len(file_stats),
         "error_count": len(errors),
+        "workers": workers,
         "aggregates": aggregates,
         "files": file_stats,
         "errors": errors,
