@@ -8,7 +8,6 @@ consumption (CSV-style tables, not Rich formatting).
 from __future__ import annotations
 
 import csv
-import json
 import statistics
 from pathlib import Path
 from typing import Annotated, Optional
@@ -22,18 +21,42 @@ SCORES_DIR = Path("eval/data/scores")
 
 
 def _load_prompt_runs(runs_dir: Path) -> dict[str, list[dict]]:
-    """Map prompt_file stem → list of run_meta dicts."""
+    """Map prompt stem → list of {run_name, model, run_dir} by parsing dir names.
+
+    Convention: run dirs are named ``{prompt_stem}-{model}``.  We match against
+    known prompt files (longest stem first) so ``v4-edges`` matches before ``v4``.
+    """
+    prompt_stems = sorted(
+        (p.stem for p in PROMPTS_DIR.glob("*.txt") if p.stem != "judge"),
+        key=len,
+        reverse=True,
+    )
+
     prompt_runs: dict[str, list[dict]] = {}
     for run_dir in runs_dir.iterdir():
         if not run_dir.is_dir():
             continue
-        meta_path = run_dir / "run_meta.json"
-        if not meta_path.exists():
-            continue
-        meta = json.loads(meta_path.read_text(encoding="utf-8"))
-        stem = Path(meta.get("prompt_file", "")).stem
-        prompt_runs.setdefault(stem, []).append(meta)
+        name = run_dir.name
+        for stem in prompt_stems:
+            prefix = f"{stem}-"
+            if name.startswith(prefix) and len(name) > len(prefix):
+                model = name[len(prefix):]
+                prompt_runs.setdefault(stem, []).append({
+                    "run_name": name,
+                    "model": model,
+                    "run_dir": run_dir,
+                })
+                break
     return prompt_runs
+
+
+def _load_run_stats(run_dir: Path) -> list[dict]:
+    """Read run_stats.csv from a run directory, returning list of row dicts."""
+    csv_path = run_dir / "run_stats.csv"
+    if not csv_path.exists():
+        return []
+    with open(csv_path, encoding="utf-8") as f:
+        return list(csv.DictReader(f))
 
 
 def _load_judge_scores(scores_path: Path) -> list[dict]:
@@ -42,6 +65,13 @@ def _load_judge_scores(scores_path: Path) -> list[dict]:
         return []
     with open(scores_path, encoding="utf-8") as f:
         return list(csv.DictReader(f))
+
+
+def _fmt_tokens(n: int) -> str:
+    """Format token count: 1234 → '1.2K', 12345 → '12.3K', 500 → '500'."""
+    if n >= 1000:
+        return f"{n / 1000:.1f}K"
+    return str(n)
 
 
 def results(
@@ -68,7 +98,8 @@ def results(
 
     runs = prompt_runs[prompt]
     run_names = {r["run_name"] for r in runs}
-    model_by_run = {r["run_name"]: r.get("model", r["run_name"]) for r in runs}
+    model_by_run = {r["run_name"]: r["model"] for r in runs}
+    dir_by_run = {r["run_name"]: r["run_dir"] for r in runs}
 
     # Sort models for consistent column order
     models = sorted(set(model_by_run.values()))
@@ -96,10 +127,9 @@ def results(
     filenames = sorted(pivot.keys())
 
     # --- Header with paths ---
-    prompt_file = runs[0].get("prompt_file", f"eval/prompts/{prompt}.txt")
     lines = [
         f"## Eval Results: {prompt}",
-        f"prompt: {prompt_file}",
+        f"prompt: {PROMPTS_DIR / f'{prompt}.txt'}",
         f"scores: {scores_file}",
         f"runs:   {runs_dir}/{{{'|'.join(run_for_model[m] for m in models)}}}",
         f"dimensions: R=recall P=precision I=integrity F=fidelity",
@@ -147,6 +177,61 @@ def results(
     lines.append(f"MEAN,{','.join(mean_cells)}")
 
     lines.append("")
+
+    # --- Cost / Performance ---
+    # Load run_stats.csv for each model's run dir
+    model_stats: dict[str, list[dict]] = {}
+    for m in models:
+        rn = run_for_model[m]
+        model_stats[m] = _load_run_stats(dir_by_run[rn])
+
+    has_any_stats = any(model_stats[m] for m in models)
+    if has_any_stats:
+        lines.append("## Cost / Performance")
+        lines.append("")
+        # Header
+        cols = ["model", "samples", "prompt_tok", "compl_tok"]
+        # Check if any model has reasoning tokens
+        has_reasoning = any(
+            any(int(r.get("reasoning_tokens", 0) or 0) for r in rows)
+            for rows in model_stats.values()
+        )
+        if has_reasoning:
+            cols.append("reason_tok")
+        cols.extend(["total_tok", "mean_latency", "total_latency"])
+        lines.append(",".join(cols))
+
+        for m in models:
+            rows = model_stats[m]
+            if not rows:
+                vals = [m] + ["-"] * (len(cols) - 1)
+                lines.append(",".join(vals))
+                continue
+            n = len(rows)
+            prompt_tok = sum(int(r["prompt_tokens"]) for r in rows)
+            compl_tok = sum(int(r["completion_tokens"]) for r in rows)
+            reason_tok = sum(int(r.get("reasoning_tokens", 0) or 0) for r in rows)
+            total_tok = sum(int(r["total_tokens"]) for r in rows)
+            latencies = [float(r["elapsed_seconds"]) for r in rows]
+            mean_lat = statistics.mean(latencies)
+            total_lat = sum(latencies)
+
+            vals = [
+                m,
+                str(n),
+                _fmt_tokens(prompt_tok),
+                _fmt_tokens(compl_tok),
+            ]
+            if has_reasoning:
+                vals.append(_fmt_tokens(reason_tok) if reason_tok else "0")
+            vals.extend([
+                _fmt_tokens(total_tok),
+                f"{mean_lat:.1f}s",
+                f"{total_lat:.0f}s",
+            ])
+            lines.append(",".join(vals))
+
+        lines.append("")
 
     # --- Reasoning per file ---
     lines.append("## Reasoning")

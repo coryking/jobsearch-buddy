@@ -1,18 +1,16 @@
 """Run a prompt+model combination against all samples.
 
 Self-contained LLM client -- reads Azure credentials from settings,
-calls the API, measures timing, writes stripped output + run_meta.json.
+calls the API, measures timing, writes stripped output + run_stats.csv.
 """
 
 from __future__ import annotations
 
-import hashlib
-import json
+import csv
 import statistics
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated, Optional
 
@@ -33,6 +31,22 @@ def _fmt_tokens(n: int) -> str:
     if n >= 1000:
         return f"{n / 1000:.1f}K"
     return str(n)
+
+
+_CSV_COLUMNS = [
+    "filename", "input_chars", "output_chars", "prompt_tokens",
+    "completion_tokens", "reasoning_tokens", "total_tokens", "elapsed_seconds",
+]
+
+
+def _append_run_stats(csv_path: Path, row: dict) -> None:
+    """Append one row to run_stats.csv, writing header if needed."""
+    write_header = not csv_path.exists() or csv_path.stat().st_size == 0
+    with open(csv_path, "a", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=_CSV_COLUMNS)
+        if write_header:
+            writer.writeheader()
+        writer.writerow(row)
 
 
 @dataclass
@@ -308,6 +322,10 @@ def _run_all(
                     }
                     model_stats[result.model].append(stat)
 
+                    # Find output_dir for this model's run
+                    run_output_dir = output_base / result.run_name
+                    _append_run_stats(run_output_dir / "run_stats.csv", stat)
+
                     row: list[str] = [str(result.index)]
                     if multi_model:
                         row.append(result.model)
@@ -343,50 +361,6 @@ def _run_all(
 
                 live.update(build_display())
 
-    # Write per-model run_meta.json
-    prompt_hash = hashlib.sha256(prompt_text.encode()).hexdigest()[:12]
-    timestamp = datetime.now(timezone.utc).isoformat()
-
-    for m in models:
-        stats = model_stats[m]
-        errs = model_errors[m]
-        run_name_m = f"{prompt_file.stem}-{m}"
-        output_dir = output_base / run_name_m
-
-        if stats:
-            latencies = [s["elapsed_seconds"] for s in stats]
-            aggregates = {
-                "mean_latency": round(statistics.mean(latencies), 3),
-                "median_latency": round(statistics.median(latencies), 3),
-                "p95_latency": round(sorted(latencies)[int(len(latencies) * 0.95)], 3),
-                "total_seconds": round(sum(latencies), 1),
-                "total_tokens": sum(s["total_tokens"] for s in stats),
-                "total_prompt_tokens": sum(s["prompt_tokens"] for s in stats),
-                "total_completion_tokens": sum(s["completion_tokens"] for s in stats),
-                "total_reasoning_tokens": sum(s["reasoning_tokens"] for s in stats),
-            }
-        else:
-            aggregates = {}
-
-        meta = {
-            "run_name": run_name_m,
-            "model": m,
-            "model_params": KNOWN_MODELS.get(m, ModelConfig()).api_params,
-            "prompt_file": str(prompt_file),
-            "prompt_sha256": prompt_hash,
-            "timestamp": timestamp,
-            "sample_count": len(sample_files),
-            "success_count": len(stats),
-            "error_count": len(errs),
-            "workers": workers,
-            "aggregates": aggregates,
-            "files": stats,
-            "errors": errs,
-        }
-
-        meta_path = output_dir / "run_meta.json"
-        meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
-
     # Summary
     console.print()
     console.rule("[bold]Summary[/bold]")
@@ -407,4 +381,4 @@ def _run_all(
         if errs:
             for err in errs:
                 console.print(f"    [red]{err['filename']}[/red]: {err['error']}")
-        console.print(f"    Metadata: {output_base / f'{prompt_file.stem}-{m}' / 'run_meta.json'}")
+        console.print(f"    Stats: {output_base / f'{prompt_file.stem}-{m}' / 'run_stats.csv'}")

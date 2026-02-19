@@ -4,16 +4,62 @@ Systematic evaluation of LLM-based boilerplate stripping from job descriptions.
 Compares prompt variants and models to find the best combo for the `StripPhase`
 in `src/jobbuddy/sync/strip.py`.
 
+## The Problem
+
+The job search index contains thousands of postings from 100+ companies across
+diverse industries. Users search across ALL companies with natural language
+queries ("robotics engineer with security clearance near DC", "PM roles at
+companies working on internet privacy"). Each posting is stripped of boilerplate,
+then embedded into a vector for semantic search.
+
+Boilerplate — EEO statements, generic benefits, legal disclaimers, accommodation
+instructions — appears nearly identically across thousands of postings. When
+embedded, this shared text dominates the vector and makes every job look alike,
+drowning out the signal that differentiates one role from another. Stripping
+removes the noise so the embedding captures what actually matters.
+
+## What "Good" Looks Like
+
+The stripped text should preserve everything that helps the right job surface
+for the right query, and remove everything that makes jobs look the same.
+
+The hard part is the gray areas:
+- Company-specific content (Cloudflare's "Project Galileo", Anthropic's research
+  directions) looks like marketing but differentiates the company in cross-company
+  search — keep it
+- Eligibility requirements (export control, citizenship, clearance) look like
+  legal text but are hard gates that determine who can apply — keep them
+- Salary ranges wrapped in legal framing ("pursuant to state law...") look like
+  disclaimers but the numbers themselves are differentiating — keep the numbers
+- Differentiated benefits (100% coverage, fertility benefits, unlimited PTO) look
+  like the standard benefits list but set the company apart — keep them
+
+The stripped text is never shown to users — it only feeds the embedding model.
+So formatting, headers, and minor surface-form changes don't matter for search
+quality. What matters is semantic content: was differentiating meaning preserved
+and was noise removed.
+
+## What We're Evaluating
+
+Two variables: **strip prompt** (the instructions given to the LLM) and **strip
+model** (which LLM executes it). The eval harness tests combinations of both
+to find the best pairing for production use.
+
+Quality is measured on four dimensions (see Scoring Rubric below). Recall
+(preserving differentiating content) is the most important — information loss
+means a job disappears from search results entirely, while leftover noise only
+degrades ranking.
+
 ## Why This Exists
 
-The `StripPhase` uses an LLM to remove boilerplate (EEO statements, generic
-benefits, legal disclaimers) from ~20K job descriptions before embedding. The
-prompt and model were chosen without evaluation. This harness enables:
+The `StripPhase` uses an LLM to remove boilerplate from ~20K job descriptions
+before embedding. The prompt and model were chosen without evaluation. This
+harness enables:
 
 - Iterating on prompts with fast feedback
-- Comparing models on quality vs. latency
-- Both manual scoring and LLM-as-judge auto-scoring
-- Validating that the judge correlates with human judgment
+- Comparing models on quality vs. cost vs. latency
+- LLM-as-judge auto-scoring (DeepSeek-R1-0528) with 4-dimension rubric
+- Manual scoring for judge calibration and validation
 
 ## Directory Layout
 
@@ -35,7 +81,7 @@ eval/                    # data and config (this directory)
   data/                  # ← gitignored, all disposable
     samples/             # raw job descriptions + sample_manifest.json
     ground-truth/        # hand-stripped files (same names as samples/)
-    runs/<run-name>/     # stripped outputs + run_meta.json per combo
+    runs/<run-name>/     # stripped outputs + run_stats.csv per combo
     scores/              # manual_scores.csv, judge_scores.csv
 ```
 
@@ -85,8 +131,9 @@ models are pre-checked. Multi-selecting kicks off sequential runs.
 
 Run names auto-generate as `{prompt_stem}-{model}` when `--run-name` is omitted.
 
-Writes stripped outputs to `eval/data/runs/<run-name>/` plus `run_meta.json`
-with per-file timing, token counts, and aggregate stats.
+Writes stripped outputs to `eval/data/runs/<run-name>/` plus `run_stats.csv`
+(one row per completed sample with timing and token counts). Aggregates are
+computed on read by `ats-eval results`.
 
 ### 4. Score manually
 
@@ -193,29 +240,16 @@ Maps filename to DB metadata:
 }
 ```
 
-### run_meta.json
+### run_stats.csv
 
-Per-run metadata with timing:
-```json
-{
-  "run_name": "v1-gpt4.1nano",
-  "model": "gpt-4.1-nano",
-  "prompt_file": "eval/prompts/v1-original.txt",
-  "prompt_sha256": "a1b2c3d4e5f6",
-  "timestamp": "2026-02-18T...",
-  "sample_count": 25,
-  "success_count": 25,
-  "error_count": 0,
-  "aggregates": {
-    "mean_latency": 0.45,
-    "median_latency": 0.42,
-    "p95_latency": 0.71,
-    "total_seconds": 11.2,
-    "total_tokens": 48000
-  },
-  "files": [...]
-}
+Per-sample token and timing data, appended as each sample completes:
 ```
+filename,input_chars,output_chars,prompt_tokens,completion_tokens,reasoning_tokens,total_tokens,elapsed_seconds
+001-stripe-sr-backend-engineer.txt,4521,2103,1205,580,0,1785,3.412
+```
+
+Append-safe: partial re-runs add rows without destroying previous data.
+Prompt and model are derived from the directory name (`{prompt_stem}-{model}`).
 
 ### CSV score files
 

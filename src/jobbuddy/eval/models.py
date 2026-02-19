@@ -25,5 +25,4 @@ KNOWN_MODELS: dict[str, ModelConfig] = {
     "gpt-5-nano": ModelConfig(api_params={"reasoning_effort": "low"}),
     "gpt-5-mini": ModelConfig(api_params={"reasoning_effort": "low"}),
     "DeepSeek-V3.2": ModelConfig(api_params={"temperature": 1.0}),
-    "DeepSeek-R1-0528": ModelConfig(api_params={}),
 }
