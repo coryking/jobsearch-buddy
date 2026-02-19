@@ -16,12 +16,14 @@ from __future__ import annotations
 import argparse
 import csv
 import difflib
+import shutil
+import subprocess
+import tempfile
 from pathlib import Path
 
-from rich.columns import Columns
 from rich.console import Console
 from rich.panel import Panel
-from rich.prompt import IntPrompt, Prompt
+from rich.prompt import Prompt
 from rich.rule import Rule
 from rich.text import Text
 
@@ -51,28 +53,37 @@ def append_score(scores_file: Path, row: dict) -> None:
         writer.writerow(row)
 
 
-def make_diff_text(original: str, stripped: str) -> Text:
-    """Build a Rich Text showing removed lines in red, kept lines in green."""
-    diff = difflib.unified_diff(
-        original.splitlines(keepends=True),
-        stripped.splitlines(keepends=True),
-        fromfile="original",
-        tofile="stripped",
-        lineterm="",
-    )
-    text = Text()
-    for line in diff:
-        if line.startswith("---") or line.startswith("+++"):
-            text.append(line.rstrip() + "\n", style="bold")
-        elif line.startswith("-"):
-            text.append(line.rstrip() + "\n", style="red")
-        elif line.startswith("+"):
-            text.append(line.rstrip() + "\n", style="green")
-        elif line.startswith("@@"):
-            text.append(line.rstrip() + "\n", style="cyan")
-        else:
-            text.append(line.rstrip() + "\n")
-    return text
+def extract_removals_and_additions(original: str, stripped: str) -> tuple[list[str], list[str]]:
+    """Extract contiguous blocks of removed and added text using SequenceMatcher.
+
+    Returns (removed_blocks, added_blocks) where each block is a multi-line string.
+    Skips blank-only removals/additions.
+    """
+    orig_lines = original.splitlines(keepends=True)
+    strip_lines = stripped.splitlines(keepends=True)
+    matcher = difflib.SequenceMatcher(None, orig_lines, strip_lines)
+
+    removed_blocks = []
+    added_blocks = []
+
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "replace":
+            removed = "".join(orig_lines[i1:i2]).strip()
+            added = "".join(strip_lines[j1:j2]).strip()
+            if removed:
+                removed_blocks.append(removed)
+            if added:
+                added_blocks.append(added)
+        elif tag == "delete":
+            removed = "".join(orig_lines[i1:i2]).strip()
+            if removed:
+                removed_blocks.append(removed)
+        elif tag == "insert":
+            added = "".join(strip_lines[j1:j2]).strip()
+            if added:
+                added_blocks.append(added)
+
+    return removed_blocks, added_blocks
 
 
 def flag_suspicious_removals(original: str, stripped: str) -> list[str]:
@@ -114,28 +125,54 @@ def score_sample(console: Console, filename: str, original: str, stripped: str, 
     console.print(f"Original: {orig_len:,} chars → Stripped: {strip_len:,} chars ({reduction:.0f}% reduction)")
     console.print()
 
-    # Side by side panels (truncated for display)
-    max_preview = 2000
-    left = Panel(
-        original[:max_preview] + ("..." if len(original) > max_preview else ""),
-        title="Original",
-        border_style="blue",
-        width=60,
-    )
-    right = Panel(
-        stripped[:max_preview] + ("..." if len(stripped) > max_preview else ""),
-        title="Stripped",
-        border_style="green",
-        width=60,
-    )
-    console.print(Columns([left, right], padding=2))
-    console.print()
+    # Side-by-side diff via icdiff
+    icdiff_bin = shutil.which("icdiff")
+    if icdiff_bin:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", prefix="orig_", delete=False) as f_orig, \
+             tempfile.NamedTemporaryFile(mode="w", suffix=".txt", prefix="strip_", delete=False) as f_strip:
+            f_orig.write(original)
+            f_strip.write(stripped)
+            f_orig_path, f_strip_path = f_orig.name, f_strip.name
+        try:
+            cols = str(console.width or 160)
+            result = subprocess.run(
+                [icdiff_bin, "--cols", cols, "--label", "Original", "--label", "Stripped",
+                 f_orig_path, f_strip_path],
+                capture_output=True, text=True,
+            )
+            if result.stdout.strip():
+                console.print(Rule("Side-by-side diff (icdiff)"))
+                # icdiff emits ANSI codes — print raw so terminal renders colors
+                print(result.stdout)
+                console.print()
+        finally:
+            Path(f_orig_path).unlink(missing_ok=True)
+            Path(f_strip_path).unlink(missing_ok=True)
+    else:
+        # Fallback: show full stripped output
+        console.print(Panel(stripped, title="Stripped Output", border_style="green"))
+        console.print()
 
-    # Diff
-    diff_text = make_diff_text(original, stripped)
-    if diff_text.plain.strip():
-        console.print(Panel(diff_text, title="Diff (red=removed, green=added)", border_style="yellow"))
-    console.print()
+    # Removed and added blocks
+    removed_blocks, added_blocks = extract_removals_and_additions(original, stripped)
+
+    if removed_blocks:
+        removed_text = Text()
+        for i, block in enumerate(removed_blocks):
+            if i > 0:
+                removed_text.append("\n--- block ---\n\n", style="dim")
+            removed_text.append(block + "\n", style="red")
+        console.print(Panel(removed_text, title=f"Removed ({len(removed_blocks)} blocks)", border_style="red"))
+        console.print()
+
+    if added_blocks:
+        added_text = Text()
+        for i, block in enumerate(added_blocks):
+            if i > 0:
+                added_text.append("\n--- block ---\n\n", style="dim")
+            added_text.append(block + "\n", style="yellow")
+        console.print(Panel(added_text, title=f"Added — possible hallucination ({len(added_blocks)} blocks)", border_style="yellow"))
+        console.print()
 
     # Suspicious removals
     suspicious = flag_suspicious_removals(original, stripped)
