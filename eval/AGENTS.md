@@ -20,6 +20,7 @@ prompt and model were chosen without evaluation. This harness enables:
 ```
 src/jobbuddy/eval/       # CLI subpackage (ats-eval entry point)
   cli.py                 # Typer app, registers subcommands
+  models.py              # ModelConfig dataclass + KNOWN_MODELS registry
   extract.py             # ats-eval extract — stratified sample extraction
   run.py                 # ats-eval run — prompt+model against samples
   score.py               # ats-eval score — Rich TUI manual scoring
@@ -150,13 +151,17 @@ Single score, 1-5: "How did it do?"
 
 ## Models
 
-| Deployment    | Type           | Capacity | Expected Latency |
-|---------------|----------------|----------|------------------|
-| gpt-5-nano    | Reasoning      | 5,000    | 3-7s             |
-| gpt-5-mini    | Reasoning      | 1,000    | 3-7s             |
-| gpt-4.1-nano  | Non-reasoning  | 5,000    | 0.3-0.7s         |
-| gpt-4.1-mini  | Non-reasoning  | 5,000    | 0.3-0.7s         |
-| DeepSeek-V3.2 | Non-reasoning  | 1,000    | 0.3-0.7s         |
+Registered in `src/jobbuddy/eval/models.py`. The `ModelConfig` dataclass maps
+logical model names to Azure deployment names (which may differ due to naming
+restrictions) and API parameters.
+
+| Model         | Deployment    | Type           | Capacity |
+|---------------|---------------|----------------|----------|
+| gpt-5-nano    | gpt-5-nano    | Reasoning      | 5,000    |
+| gpt-5-mini    | gpt-5-mini    | Reasoning      | 1,000    |
+| gpt-4.1-nano  | gpt-4.1-nano  | Non-reasoning  | 5,000    |
+| gpt-4.1-mini  | gpt-41-mini   | Non-reasoning  | 5,000    |
+| DeepSeek-V3.2 | DeepSeek-V3.2 | Non-reasoning  | 1,000    |
 
 ## File Formats
 

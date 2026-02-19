@@ -10,13 +10,7 @@ import typer
 from rich.console import Console
 from rich.prompt import Prompt
 
-KNOWN_MODELS: dict[str, dict] = {
-    "gpt-4.1-nano": {"temperature": 1.0},
-    "gpt-4.1-mini": {"temperature": 1.0},
-    "gpt-5-nano": {"reasoning_effort": "low"},
-    "gpt-5-mini": {"reasoning_effort": "low"},
-    "DeepSeek-V3.2": {"temperature": 1.0},
-}
+from jobbuddy.eval.models import KNOWN_MODELS
 
 PROMPTS_DIR = Path("eval/prompts")
 RUNS_DIR = Path("eval/data/runs")

@@ -18,6 +18,8 @@ from typing import Annotated, Optional
 import typer
 from openai import AzureOpenAI
 from rich.console import Console, Group
+
+from jobbuddy.eval.models import KNOWN_MODELS, ModelConfig
 from rich.live import Live
 from rich.table import Table
 from rich.text import Text
@@ -79,8 +81,9 @@ def _judge_one(
     try:
         start = time.monotonic()
         user_content = f"ORIGINAL:\n{original}\n\n---\n\nSTRIPPED:\n{stripped}"
+        config = KNOWN_MODELS.get(model, ModelConfig())
         response = client.chat.completions.create(
-            model=model,
+            model=config.resolve_deployment(model),
             messages=[
                 {"role": "system", "content": prompt_text},
                 {"role": "user", "content": user_content},

@@ -23,7 +23,8 @@ from rich.live import Live
 from rich.table import Table
 from rich.text import Text
 
-from jobbuddy.eval.utils import KNOWN_MODELS, PROMPTS_DIR, pick_models, pick_prompt
+from jobbuddy.eval.models import KNOWN_MODELS, ModelConfig
+from jobbuddy.eval.utils import PROMPTS_DIR, pick_models, pick_prompt
 from jobbuddy.settings import get_settings
 
 
@@ -82,7 +83,7 @@ def run(
     work_items: list[dict] = []
     skipped = 0
     for m in models:
-        model_params = KNOWN_MODELS.get(m, {})
+        config = KNOWN_MODELS.get(m, ModelConfig())
         name = run_name if run_name else f"{prompt.stem}-{m}"
         output_dir = output / name
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -92,7 +93,7 @@ def run(
                 continue
             work_items.append({
                 "model": m,
-                "model_params": model_params,
+                "config": config,
                 "run_name": name,
                 "output_dir": output_dir,
                 "sample_file": sample_file,
@@ -112,7 +113,7 @@ def run(
 def _process_sample(
     client: AzureOpenAI,
     model: str,
-    model_params: dict,
+    config: ModelConfig,
     prompt_text: str,
     sample_file: Path,
     output_dir: Path,
@@ -129,12 +130,12 @@ def _process_sample(
     try:
         start = time.monotonic()
         response = client.chat.completions.create(
-            model=model,
+            model=config.resolve_deployment(model),
             messages=[
                 {"role": "system", "content": prompt_text},
                 {"role": "user", "content": description},
             ],
-            **model_params,
+            **config.api_params,
         )
         elapsed = time.monotonic() - start
 
@@ -192,8 +193,11 @@ def _run_all(
     multi_model = len(models) > 1
 
     for m in models:
-        params = KNOWN_MODELS.get(m, {})
-        params_str = ", ".join(f"{k}={v}" for k, v in params.items()) if params else "defaults"
+        config = KNOWN_MODELS.get(m, ModelConfig())
+        deployment = config.resolve_deployment(m)
+        params_str = ", ".join(f"{k}={v}" for k, v in config.api_params.items()) if config.api_params else "defaults"
+        if deployment != m:
+            params_str = f"deployment={deployment}, {params_str}"
         console.print(f"  {m} ({params_str})")
     console.print(f"{len(work_items)} total items ({len(sample_files)} samples x {len(models)} models), workers={workers}")
 
@@ -237,7 +241,12 @@ def _run_all(
         table.add_column("Reduc", justify="right")
         table.add_column("Time", justify="right")
         table.add_column("Tokens", justify="right")
-        for row in table_rows:
+        # Reserve lines for status line + table header + border; show as many rows as fit
+        max_rows = max(console.height - 5, 5)
+        visible = table_rows[-max_rows:]
+        if len(table_rows) > max_rows:
+            table.add_row(*["..."] * len(table.columns))
+        for row in visible:
             table.add_row(*row)
 
         return Group(status, table)
@@ -248,7 +257,7 @@ def _run_all(
             for item in work_items:
                 future = executor.submit(
                     _process_sample,
-                    client, item["model"], item["model_params"], prompt_text,
+                    client, item["model"], item["config"], prompt_text,
                     item["sample_file"], item["output_dir"], item["run_name"],
                     item["index"], running_items,
                 )
@@ -334,7 +343,7 @@ def _run_all(
         meta = {
             "run_name": run_name_m,
             "model": m,
-            "model_params": KNOWN_MODELS.get(m, {}),
+            "model_params": KNOWN_MODELS.get(m, ModelConfig()).api_params,
             "prompt_file": str(prompt_file),
             "prompt_sha256": prompt_hash,
             "timestamp": timestamp,
