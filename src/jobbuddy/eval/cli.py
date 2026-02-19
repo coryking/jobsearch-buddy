@@ -20,6 +20,7 @@ def register_commands() -> None:
     from jobbuddy.eval.extract import extract
     from jobbuddy.eval.ground_truth import ground_truth
     from jobbuddy.eval.judge import judge
+    from jobbuddy.eval.results import results
     from jobbuddy.eval.run import run
     from jobbuddy.eval.score import score
 
@@ -27,6 +28,7 @@ def register_commands() -> None:
     app.command()(run)
     app.command()(score)
     app.command()(judge)
+    app.command()(results)
     app.command(name="ground-truth")(ground_truth)
 
 

@@ -132,7 +132,22 @@ ats-eval judge \
 
 Auto-scores using gpt-5-mini. Writes to `eval/data/scores/judge_scores.csv`.
 
-### 8. Validate judge vs. human
+### 8. View results
+
+```bash
+# Interactive prompt picker:
+ats-eval results
+
+# Explicit prompt:
+ats-eval results v3-why
+```
+
+Reads `judge_scores.csv`, groups runs by prompt, and outputs a plain-text
+comparison: CSV score matrix (file × model) with MEAN/MEDIAN rows, followed
+by per-file reasoning from each model. Output includes filesystem paths to
+runs and scores for easy follow-up.
+
+### 9. Validate judge vs. human
 
 Compare `judge_scores.csv` against `manual_scores.csv` on the ~10 ground-truth
 files. If the judge agrees with you on those, trust it for the rest.
