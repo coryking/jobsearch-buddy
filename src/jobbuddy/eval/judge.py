@@ -102,8 +102,15 @@ def judge(
     write_header = not scores.exists()
     scores.parent.mkdir(parents=True, exist_ok=True)
 
-    results = []
-    errors = []
+    # Open CSV in append mode for the entire run so each score is flushed immediately
+    scores_file = scores.open("a", newline="", encoding="utf-8")
+    writer = csv.DictWriter(scores_file, fieldnames=CSV_HEADER)
+    if write_header:
+        writer.writeheader()
+
+    scored = 0
+    score_sum = 0
+    errors = 0
 
     for i, run_file in enumerate(remaining, 1):
         filename = run_file.name
@@ -136,35 +143,28 @@ def judge(
             if parsed is None:
                 print(f"PARSE ERROR ({elapsed:.1f}s)")
                 print(f"    Raw: {raw[:200]}")
-                errors.append({"filename": filename, "error": "parse_error", "raw": raw[:500]})
+                errors += 1
                 continue
 
-            row = {
+            writer.writerow({
                 "filename": filename,
                 "run_name": run_name,
                 "score": parsed["score"],
                 "reasoning": parsed.get("reasoning", ""),
-            }
-            results.append(row)
+            })
+            scores_file.flush()
 
+            scored += 1
+            score_sum += parsed["score"]
             print(f"score={parsed['score']} {elapsed:.1f}s")
 
         except Exception as e:
             print(f"ERROR: {e}")
-            errors.append({"filename": filename, "error": str(e)})
+            errors += 1
 
-    # Write results
-    if results:
-        with scores.open("a", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=CSV_HEADER)
-            if write_header:
-                writer.writeheader()
-            for row in results:
-                writer.writerow(row)
+    scores_file.close()
 
-    print(f"\nJudged: {len(results)} succeeded, {len(errors)} failed")
-    if results:
-        vals = [r["score"] for r in results]
-        avg = sum(vals) / len(vals)
-        print(f"  mean score: {avg:.2f}")
+    print(f"\nJudged: {scored} succeeded, {errors} failed")
+    if scored:
+        print(f"  mean score: {score_sum / scored:.2f}")
     print(f"Scores saved to: {scores}")
