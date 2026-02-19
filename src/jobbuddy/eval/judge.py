@@ -116,69 +116,91 @@ def _judge_one(
         )
 
 
+def _find_runs_for_prompt(prompt_stem: str, runs_dir: Path) -> list[Path]:
+    """Find all run directories matching a prompt stem."""
+    return sorted(
+        d for d in runs_dir.iterdir()
+        if d.is_dir() and d.name.startswith(f"{prompt_stem}-")
+    )
+
+
 def judge(
-    run: Annotated[Optional[Path], typer.Option(help="Path to run output directory")] = None,
+    prompt: Annotated[Optional[Path], typer.Option(help="Path to strip prompt (judges all models for it)")] = None,
+    run: Annotated[Optional[Path], typer.Option(help="Path to single run directory (legacy)")] = None,
     samples: Annotated[Path, typer.Option(help="Path to original samples directory")] = Path("eval/data/samples"),
     scores: Annotated[Path, typer.Option(help="Path to scores CSV output")] = Path("eval/data/scores/judge_scores.csv"),
     model: Annotated[str, typer.Option(help="Judge model deployment name")] = "gpt-5-mini",
     judge_prompt: Annotated[Optional[Path], typer.Option(help="Path to judge prompt")] = None,
     workers: Annotated[int, typer.Option(help="Concurrent API workers")] = 5,
 ) -> None:
-    """LLM-as-judge auto-scoring of strip eval runs."""
-    if run is None:
-        from jobbuddy.eval.utils import pick_run
-        run = pick_run()
-    if not run.exists():
-        print(f"Run directory not found: {run}")
-        raise typer.Exit(1)
+    """LLM-as-judge auto-scoring of strip eval runs.
+
+    By default, picks a prompt and judges all model runs for it.
+    Use --run to judge a single run directory instead.
+    """
     if not samples.exists():
         print(f"Samples directory not found: {samples}")
         raise typer.Exit(1)
+
+    # Resolve run directories to judge
+    if run is not None:
+        if not run.exists():
+            print(f"Run directory not found: {run}")
+            raise typer.Exit(1)
+        run_dirs = [run]
+    else:
+        if prompt is None:
+            from jobbuddy.eval.utils import pick_prompt
+            prompt = pick_prompt()
+        prompt_stem = prompt.stem
+        runs_dir = Path("eval/data/runs")
+        run_dirs = _find_runs_for_prompt(prompt_stem, runs_dir)
+        if not run_dirs:
+            print(f"No runs found for prompt '{prompt_stem}' in {runs_dir}")
+            raise typer.Exit(1)
 
     prompt_file = judge_prompt or Path("eval/prompts/judge.txt")
     if not prompt_file.exists():
         print(f"Judge prompt not found: {prompt_file}")
         raise typer.Exit(1)
 
-    run_name = run.name
     prompt_text = _load_judge_prompt(prompt_file)
 
-    run_files = sorted(f for f in run.glob("*.txt"))
-    if not run_files:
-        print(f"No .txt files found in {run}")
-        return
-
-    # Check for already-judged
-    already_judged: set[str] = set()
+    # Load already-judged set: {(run_name, filename)}
+    already_judged: set[tuple[str, str]] = set()
     if scores.exists():
         with scores.open(newline="", encoding="utf-8") as f:
             for row in csv.DictReader(f):
-                if row["run_name"] == run_name:
-                    already_judged.add(row["filename"])
+                already_judged.add((row["run_name"], row["filename"]))
 
-    remaining = [f for f in run_files if f.name not in already_judged]
-    if len(remaining) < len(run_files):
-        print(f"Skipping {len(run_files) - len(remaining)} already-judged files")
+    # Build work items across all runs
+    work_items = []
+    for run_dir in run_dirs:
+        run_name = run_dir.name
+        run_files = sorted(run_dir.glob("*.txt"))
+        skipped = 0
+        for run_file in run_files:
+            if (run_name, run_file.name) in already_judged:
+                skipped += 1
+                continue
+            original_path = samples / run_file.name
+            if not original_path.exists():
+                print(f"  SKIP {run_name}/{run_file.name} (original not found)")
+                continue
+            work_items.append((run_name, run_file, original_path))
+        if skipped:
+            print(f"Skipping {skipped} already-judged in {run_name}")
 
-    if not remaining:
+    if not work_items:
         print("All files already judged!")
         return
 
-    # Filter to files that have originals
-    work_items = []
-    for run_file in remaining:
-        original_path = samples / run_file.name
-        if not original_path.exists():
-            print(f"  SKIP {run_file.name} (original not found)")
-            continue
-        work_items.append((run_file, original_path))
-
-    if not work_items:
-        print("No files to judge.")
-        return
-
     console = Console()
-    console.print(f"Judging {len(work_items)} files for run '{run_name}' with model={model}, workers={workers}")
+    run_names = sorted(set(rn for rn, _, _ in work_items))
+    console.print(f"Judging {len(work_items)} files across {len(run_names)} runs with model={model}, workers={workers}")
+    for rn in run_names:
+        count = sum(1 for r, _, _ in work_items if r == rn)
+        console.print(f"  {rn}: {count} files")
 
     settings = get_settings()
     client = AzureOpenAI(
@@ -219,10 +241,15 @@ def judge(
         status = Text.from_markup("  \u2502  ".join(parts))
 
         table = Table(show_lines=False, pad_edge=False)
+        table.add_column("Run", style="dim", no_wrap=True)
         table.add_column("File", style="bold", no_wrap=True)
         table.add_column("Score", justify="right")
         table.add_column("Time", justify="right")
-        for row in table_rows:
+        max_rows = max(console.height - 5, 5)
+        visible = table_rows[-max_rows:]
+        if len(table_rows) > max_rows:
+            table.add_row(*["..."] * len(table.columns))
+        for row in visible:
             table.add_row(*row)
 
         return Group(status, table)
@@ -230,7 +257,7 @@ def judge(
     with Live(build_display(), console=console, refresh_per_second=4) as live:
         with ThreadPoolExecutor(max_workers=workers) as executor:
             futures = {}
-            for run_file, original_path in work_items:
+            for run_name, run_file, original_path in work_items:
                 future = executor.submit(
                     _judge_one,
                     client, model, prompt_text, run_name,
@@ -256,6 +283,7 @@ def judge(
                         scores_file.flush()
 
                     table_rows.append((
+                        result.run_name,
                         result.filename,
                         f"[bold]{result.score}[/bold]",
                         f"{result.elapsed_seconds:.1f}s",
@@ -264,6 +292,7 @@ def judge(
                     error_count += 1
                     style = "[red]PARSE[/red]" if result.error == "parse_error" else "[red]ERROR[/red]"
                     table_rows.append((
+                        result.run_name,
                         result.filename,
                         style,
                         f"{result.elapsed_seconds:.1f}s",
