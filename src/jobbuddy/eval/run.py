@@ -74,6 +74,7 @@ def run(
     samples: Annotated[Path, typer.Option(help="Samples directory")] = Path("eval/data/samples"),
     output: Annotated[Path, typer.Option(help="Base output directory for runs")] = Path("eval/data/runs"),
     workers: Annotated[int, typer.Option(help="Concurrent API workers")] = 50,
+    force: Annotated[bool, typer.Option(help="Re-run all samples, ignoring existing outputs")] = False,
 ) -> None:
     """Run strip eval: prompt+model against samples."""
     if prompt is None:
@@ -110,7 +111,7 @@ def run(
         output_dir = output / name
         output_dir.mkdir(parents=True, exist_ok=True)
         for i, sample_file in enumerate(sample_files, 1):
-            if (output_dir / sample_file.name).exists():
+            if not force and (output_dir / sample_file.name).exists():
                 skipped += 1
                 continue
             work_items.append({
