@@ -98,6 +98,11 @@ def run(
     else:
         prompts = pick_prompts(PROMPTS_DIR, output)
 
+    # Build one flat queue across all prompts × models × samples
+    work_items: list[dict] = []
+    all_models: list[str] = []
+    skipped = 0
+
     for prompt_file in prompts:
         prompt_text = prompt_file.read_text(encoding="utf-8").strip()
 
@@ -106,10 +111,9 @@ def run(
         else:
             models = [model]
 
-        # Build work items: every (model, sample) pair, skipping already-done
-        work_items: list[dict] = []
-        skipped = 0
         for m in models:
+            if m not in all_models:
+                all_models.append(m)
             config = KNOWN_MODELS.get(m, ModelConfig())
             name = run_name if run_name else f"{prompt_file.stem}-{m}"
             output_dir = output / name
@@ -124,17 +128,18 @@ def run(
                     "run_name": name,
                     "output_dir": output_dir,
                     "sample_file": sample_file,
+                    "prompt_text": prompt_text,
                     "index": i,
                 })
 
-        if skipped:
-            print(f"Skipping {skipped} already-completed samples")
+    if skipped:
+        print(f"Skipping {skipped} already-completed samples")
 
-        if not work_items:
-            print(f"All samples already completed for {prompt_file.name}!")
-            continue
+    if not work_items:
+        print("All samples already completed!")
+        raise typer.Exit(0)
 
-        _run_all(work_items, prompt_file, prompt_text, sample_files, models, output, workers)
+    _run_all(work_items, sample_files, all_models, output, workers)
 
 
 def _process_sample(
@@ -215,15 +220,15 @@ def _process_sample(
 
 def _run_all(
     work_items: list[dict],
-    prompt_file: Path,
-    prompt_text: str,
     sample_files: list[Path],
     models: list[str],
     output_base: Path,
     workers: int,
 ) -> None:
     console = Console()
-    multi_model = len(models) > 1
+    # Show model/run column when there are multiple run_name combos
+    run_name_set = {item["run_name"] for item in work_items}
+    multi_model = len(run_name_set) > 1
 
     for m in models:
         config = KNOWN_MODELS.get(m, ModelConfig())
@@ -232,7 +237,7 @@ def _run_all(
         if deployment != m:
             params_str = f"deployment={deployment}, {params_str}"
         console.print(f"  {m} ({params_str})")
-    console.print(f"{len(work_items)} total items ({len(sample_files)} samples x {len(models)} models), workers={workers}")
+    console.print(f"{len(work_items)} total items ({len(sample_files)} samples x {len(run_name_set)} runs), workers={workers}")
 
     settings = get_settings()
     client = AzureOpenAI(
@@ -245,14 +250,50 @@ def _run_all(
     total = len(work_items)
     done_count = 0
     error_count = 0
-    # Per-model collectors for metadata
-    model_stats: dict[str, list[dict]] = {m: [] for m in models}
-    model_errors: dict[str, list[dict]] = {m: [] for m in models}
+    # Per-run_name collectors (prompt×model combo)
+    run_names_seen: list[str] = []
+    run_stats: dict[str, list[dict]] = {}
+    run_errors: dict[str, list[dict]] = {}
+    for item in work_items:
+        rn = item["run_name"]
+        if rn not in run_stats:
+            run_names_seen.append(rn)
+            run_stats[rn] = []
+            run_errors[rn] = []
     table_rows: list[tuple[str, ...]] = []
     running_items: set[str] = set()
     token_totals = {"prompt": 0, "completion": 0, "reasoning": 0}
+    # Per-model live accumulators
+    model_tokens: dict[str, dict[str, int]] = {}
+    model_latencies: dict[str, list[float]] = {}
+    model_done: dict[str, int] = {}
+    model_total: dict[str, int] = {}
+    for item in work_items:
+        m = item["model"]
+        if m not in model_tokens:
+            model_tokens[m] = {"prompt": 0, "completion": 0, "reasoning": 0}
+            model_latencies[m] = []
+            model_done[m] = 0
+            model_total[m] = 0
+        model_total[m] += 1
 
     def build_display() -> Group:
+        # Per-model stats block
+        name_w = max(len(m) for m in model_tokens)
+        model_lines = []
+        for m in model_tokens:
+            done_m = model_done[m]
+            total_m = model_total[m]
+            progress = f"{done_m}/{total_m}".rjust(7)
+            if done_m:
+                mt = model_tokens[m]
+                tok_str = f"tok: {_fmt_tokens(mt['prompt'] + mt['completion'])}"
+                lat = model_latencies[m]
+                avg_lat = f"avg: {statistics.mean(lat):.1f}s"
+                model_lines.append(f"  {m:<{name_w}}  {progress}  [cyan]{tok_str}[/cyan]  [dim]{avg_lat}[/dim]")
+            else:
+                model_lines.append(f"  {m:<{name_w}}  {progress}")
+
         queued = total - done_count - error_count - len(running_items)
         parts = []
         if running_items:
@@ -263,27 +304,20 @@ def _run_all(
             parts.append(f"[red]\u2717 {error_count} errors[/red]")
         if queued > 0:
             parts.append(f"[dim]\u00b7 {queued} queued[/dim]")
-        tok_total = token_totals["prompt"] + token_totals["completion"]
-        if tok_total:
-            tok_parts = [f"prompt: {_fmt_tokens(token_totals['prompt'])}",
-                         f"completion: {_fmt_tokens(token_totals['completion'])}"]
-            if token_totals["reasoning"]:
-                tok_parts.append(f"reasoning: {_fmt_tokens(token_totals['reasoning'])}")
-            parts.append(f"[cyan]{' | '.join(tok_parts)}[/cyan]")
         status = Text.from_markup("  \u2502  ".join(parts))
 
         table = Table(show_lines=False, pad_edge=False)
         table.add_column("#", justify="right", style="dim", width=4)
         if multi_model:
-            table.add_column("Model", style="cyan", no_wrap=True)
+            table.add_column("Run", style="cyan", no_wrap=True)
         table.add_column("File", style="bold", no_wrap=True)
         table.add_column("Input", justify="right")
         table.add_column("Output", justify="right")
         table.add_column("Reduc", justify="right")
         table.add_column("Time", justify="right")
         table.add_column("Tokens", justify="right")
-        # status(1) + table header(2) + ellipsis(1) + margin(2) = 6 base
-        overhead = 6
+        # model_lines + status(1) + table header(2) + ellipsis(1) + margin(2)
+        overhead = 6 + len(model_tokens)
         max_rows = max(console.height - overhead, 5)
         visible = table_rows[-max_rows:]
         if len(table_rows) > max_rows:
@@ -291,7 +325,8 @@ def _run_all(
         for row in visible:
             table.add_row(*row)
 
-        return Group(status, table)
+        model_text = Text.from_markup("\n".join(model_lines))
+        return Group(model_text, status, table)
 
     with Live(build_display(), console=console, refresh_per_second=4) as live:
         with ThreadPoolExecutor(max_workers=workers) as executor:
@@ -299,7 +334,7 @@ def _run_all(
             for item in work_items:
                 future = executor.submit(
                     _process_sample,
-                    client, item["model"], item["config"], prompt_text,
+                    client, item["model"], item["config"], item["prompt_text"],
                     item["sample_file"], item["output_dir"], item["run_name"],
                     item["index"], running_items,
                 )
@@ -315,6 +350,11 @@ def _run_all(
                     token_totals["prompt"] += result.prompt_tokens
                     token_totals["completion"] += result.completion_tokens
                     token_totals["reasoning"] += result.reasoning_tokens or 0
+                    model_tokens[result.model]["prompt"] += result.prompt_tokens
+                    model_tokens[result.model]["completion"] += result.completion_tokens
+                    model_tokens[result.model]["reasoning"] += result.reasoning_tokens or 0
+                    model_latencies[result.model].append(result.elapsed_seconds)
+                    model_done[result.model] += 1
                     stat = {
                         "filename": result.filename,
                         "input_chars": result.input_chars,
@@ -325,7 +365,7 @@ def _run_all(
                         "total_tokens": result.total_tokens,
                         "elapsed_seconds": result.elapsed_seconds,
                     }
-                    model_stats[result.model].append(stat)
+                    run_stats[result.run_name].append(stat)
 
                     # Find output_dir for this model's run
                     run_output_dir = output_base / result.run_name
@@ -333,7 +373,7 @@ def _run_all(
 
                     row: list[str] = [str(result.index)]
                     if multi_model:
-                        row.append(result.model)
+                        row.append(result.run_name)
                     row.extend([
                         result.filename,
                         f"{result.input_chars:,}",
@@ -345,7 +385,7 @@ def _run_all(
                     table_rows.append(tuple(row))
                 else:
                     error_count += 1
-                    model_errors[result.model].append({
+                    run_errors[result.run_name].append({
                         "filename": result.filename,
                         "error": result.error,
                         "elapsed_seconds": result.elapsed_seconds,
@@ -353,7 +393,7 @@ def _run_all(
 
                     row = [str(result.index)]
                     if multi_model:
-                        row.append(result.model)
+                        row.append(result.run_name)
                     row.extend([
                         result.filename,
                         f"{result.input_chars:,}",
@@ -368,22 +408,35 @@ def _run_all(
 
     # Summary
     console.print()
-    console.rule("[bold]Summary[/bold]")
-    for m in models:
-        stats = model_stats[m]
-        errs = model_errors[m]
-        console.print(f"\n  [bold]{m}[/bold]: [green]{len(stats)} succeeded[/green], [red]{len(errs)} failed[/red]")
-        if stats:
-            latencies = [s["elapsed_seconds"] for s in stats]
-            prompt_tokens = sum(s["prompt_tokens"] for s in stats)
-            completion_tokens = sum(s["completion_tokens"] for s in stats)
-            reasoning_tokens = sum(s["reasoning_tokens"] for s in stats)
-            console.print(f"    Latency: mean={statistics.mean(latencies):.3f}s, median={statistics.median(latencies):.3f}s")
-            tok_parts = [f"prompt: {prompt_tokens:,}", f"completion: {completion_tokens:,}"]
-            if reasoning_tokens:
-                tok_parts.append(f"reasoning: {reasoning_tokens:,}")
-            console.print(f"    Tokens: {' | '.join(tok_parts)} | total: {prompt_tokens + completion_tokens:,}")
-        if errs:
-            for err in errs:
-                console.print(f"    [red]{err['filename']}[/red]: {err['error']}")
-        console.print(f"    Stats: {output_base / f'{prompt_file.stem}-{m}' / 'run_stats.csv'}")
+    console.rule("[bold]Runs[/bold]")
+    for rn in run_names_seen:
+        n_ok = len(run_stats[rn])
+        n_err = len(run_errors[rn])
+        err_str = f", [red]{n_err} errors[/red]" if n_err else ""
+        console.print(f"  {rn}: [green]{n_ok} done[/green]{err_str}  →  {output_base / rn / 'run_stats.csv'}")
+        for err in run_errors[rn]:
+            console.print(f"    [red]{err['filename']}[/red]: {err['error']}")
+
+    console.rule("[bold]Token Usage by Model[/bold]")
+    summary_table = Table(show_lines=False, pad_edge=False, box=None)
+    summary_table.add_column("Model", style="bold", no_wrap=True)
+    summary_table.add_column("Prompt", justify="right")
+    summary_table.add_column("Completion", justify="right")
+    summary_table.add_column("Reasoning", justify="right")
+    summary_table.add_column("Total", justify="right", style="cyan")
+    summary_table.add_column("Avg Latency", justify="right", style="dim")
+    for m in model_tokens:
+        mt = model_tokens[m]
+        total_tok = mt["prompt"] + mt["completion"]
+        lat = model_latencies[m]
+        avg_lat = f"{statistics.mean(lat):.1f}s" if lat else "-"
+        reasoning_str = f"{mt['reasoning']:,}" if mt["reasoning"] else "-"
+        summary_table.add_row(
+            m,
+            f"{mt['prompt']:,}",
+            f"{mt['completion']:,}",
+            reasoning_str,
+            f"{total_tok:,}",
+            avg_lat,
+        )
+    console.print(summary_table)
