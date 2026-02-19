@@ -22,6 +22,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from openai import AzureOpenAI
+from rich.console import Console
+from rich.live import Live
+from rich.table import Table
 
 from jobbuddy.settings import get_settings
 
@@ -46,8 +49,9 @@ def run_eval(
         print(f"No .txt samples found in {samples_dir}")
         return
 
-    print(f"Running {len(sample_files)} samples with model={model}, prompt={prompt_file.name}")
-    print(f"Output: {output_dir}/")
+    console = Console()
+    console.print(f"Running {len(sample_files)} samples with model={model}, prompt={prompt_file.name}")
+    console.print(f"Output: {output_dir}/")
 
     settings = get_settings()
     client = AzureOpenAI(
@@ -60,48 +64,85 @@ def run_eval(
     file_stats: list[dict] = []
     errors: list[dict] = []
 
-    for i, sample_file in enumerate(sample_files, 1):
-        description = sample_file.read_text(encoding="utf-8")
-        print(f"  [{i}/{len(sample_files)}] {sample_file.name} ({len(description)} chars)...", end=" ", flush=True)
+    def build_table() -> Table:
+        table = Table(show_lines=False, pad_edge=False)
+        table.add_column("#", justify="right", style="dim", width=4)
+        table.add_column("File", style="bold", no_wrap=True)
+        table.add_column("Input", justify="right")
+        table.add_column("Output", justify="right")
+        table.add_column("Reduc", justify="right")
+        table.add_column("Time", justify="right")
+        table.add_column("Tokens", justify="right")
+        for row in table_rows:
+            table.add_row(*row)
+        return table
 
-        try:
-            start = time.monotonic()
-            response = client.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "system", "content": prompt},
-                    {"role": "user", "content": description},
-                ],
-            )
-            elapsed = time.monotonic() - start
+    table_rows: list[tuple[str, ...]] = []
 
-            result = response.choices[0].message.content.strip()
-            usage = response.usage
+    with Live(build_table(), console=console, refresh_per_second=4) as live:
+        for i, sample_file in enumerate(sample_files, 1):
+            description = sample_file.read_text(encoding="utf-8")
 
-            # Write stripped output
-            out_file = output_dir / sample_file.name
-            out_file.write_text(result, encoding="utf-8")
+            try:
+                start = time.monotonic()
+                response = client.chat.completions.create(
+                    model=model,
+                    messages=[
+                        {"role": "system", "content": prompt},
+                        {"role": "user", "content": description},
+                    ],
+                )
+                elapsed = time.monotonic() - start
 
-            stat = {
-                "filename": sample_file.name,
-                "input_chars": len(description),
-                "output_chars": len(result),
-                "prompt_tokens": usage.prompt_tokens,
-                "completion_tokens": usage.completion_tokens,
-                "total_tokens": usage.total_tokens,
-                "elapsed_seconds": round(elapsed, 3),
-            }
-            file_stats.append(stat)
-            print(f"{len(description)}→{len(result)} chars, {elapsed:.1f}s, {usage.total_tokens} tok")
+                result = response.choices[0].message.content.strip()
+                usage = response.usage
 
-        except Exception as e:
-            elapsed = time.monotonic() - start
-            print(f"ERROR: {e}")
-            errors.append({
-                "filename": sample_file.name,
-                "error": str(e),
-                "elapsed_seconds": round(elapsed, 3),
-            })
+                # Write stripped output
+                out_file = output_dir / sample_file.name
+                out_file.write_text(result, encoding="utf-8")
+
+                reduction = ((len(description) - len(result)) / len(description) * 100) if len(description) else 0
+
+                stat = {
+                    "filename": sample_file.name,
+                    "input_chars": len(description),
+                    "output_chars": len(result),
+                    "prompt_tokens": usage.prompt_tokens,
+                    "completion_tokens": usage.completion_tokens,
+                    "total_tokens": usage.total_tokens,
+                    "elapsed_seconds": round(elapsed, 3),
+                }
+                file_stats.append(stat)
+
+                style = "red" if reduction < 5 else ""
+                table_rows.append((
+                    str(i),
+                    sample_file.name,
+                    f"{len(description):,}",
+                    f"{len(result):,}",
+                    f"{reduction:.0f}%",
+                    f"{elapsed:.1f}s",
+                    f"{usage.total_tokens:,}",
+                ))
+
+            except Exception as e:
+                elapsed = time.monotonic() - start
+                errors.append({
+                    "filename": sample_file.name,
+                    "error": str(e),
+                    "elapsed_seconds": round(elapsed, 3),
+                })
+                table_rows.append((
+                    str(i),
+                    sample_file.name,
+                    f"{len(description):,}",
+                    "[red]ERROR[/red]",
+                    "",
+                    f"{elapsed:.1f}s",
+                    str(e)[:40],
+                ))
+
+            live.update(build_table())
 
     # Aggregate stats
     if file_stats:
@@ -141,12 +182,14 @@ def run_eval(
     meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
     # Summary
-    print(f"\nDone: {len(file_stats)} succeeded, {len(errors)} failed")
+    console.print()
+    console.rule("[bold]Summary[/bold]")
+    console.print(f"  [green]{len(file_stats)} succeeded[/green], [red]{len(errors)} failed[/red]")
     if aggregates:
-        print(f"Latency: mean={aggregates['mean_latency']}s, median={aggregates['median_latency']}s, p95={aggregates['p95_latency']}s")
-        print(f"Tokens: {aggregates['total_tokens']} total ({aggregates['total_prompt_tokens']} prompt + {aggregates['total_completion_tokens']} completion)")
-        print(f"Total time: {aggregates['total_seconds']}s")
-    print(f"Metadata: {meta_path}")
+        console.print(f"  Latency: mean={aggregates['mean_latency']}s, median={aggregates['median_latency']}s, p95={aggregates['p95_latency']}s")
+        console.print(f"  Tokens: {aggregates['total_tokens']:,} total ({aggregates['total_prompt_tokens']:,} prompt + {aggregates['total_completion_tokens']:,} completion)")
+        console.print(f"  Total time: {aggregates['total_seconds']}s")
+    console.print(f"  Metadata: {meta_path}")
 
 
 def main():
