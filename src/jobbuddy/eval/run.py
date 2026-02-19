@@ -165,7 +165,7 @@ def _process_sample(
             model=config.resolve_deployment(model),
             messages=[
                 {"role": "system", "content": prompt_text},
-                {"role": "user", "content": description},
+                {"role": "user", "content": f"<job_description>\n{description}\n</job_description>"},
             ],
             **config.api_params,
         )

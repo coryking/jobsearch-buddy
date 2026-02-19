@@ -15,6 +15,7 @@ class ModelConfig:
     api_params: dict = field(default_factory=dict)  # kwargs passed to chat.completions.create
     input_cost_per_m: float = 0.0   # $/1M input tokens
     output_cost_per_m: float = 0.0  # $/1M output tokens (includes reasoning tokens)
+    rpm: int = 0                    # Azure deployment RPM limit
 
     def resolve_deployment(self, model_key: str) -> str:
         """Return the Azure deployment name, falling back to the model key."""
@@ -30,34 +31,34 @@ class ModelConfig:
 KNOWN_MODELS: dict[str, ModelConfig] = {
     "gpt-4.1-nano": ModelConfig(
         api_params={"temperature": 1.0},
-        input_cost_per_m=0.10, output_cost_per_m=0.40,
+        input_cost_per_m=0.10, output_cost_per_m=0.40, rpm=5_000,
     ),
     "gpt-4.1-mini": ModelConfig(
         deployment="gpt-41-mini", api_params={"temperature": 1.0},
-        input_cost_per_m=0.40, output_cost_per_m=1.60,
+        input_cost_per_m=0.40, output_cost_per_m=1.60, rpm=5_000,
     ),
     "gpt-5-nano": ModelConfig(
         api_params={"reasoning_effort": "low"},
-        input_cost_per_m=0.05, output_cost_per_m=0.40,
+        input_cost_per_m=0.05, output_cost_per_m=0.40, rpm=5_000,
     ),
     "gpt-5-mini": ModelConfig(
         api_params={"reasoning_effort": "low"},
-        input_cost_per_m=0.30, output_cost_per_m=1.00,
+        input_cost_per_m=0.30, output_cost_per_m=1.00, rpm=1_000,
     ),
     "DeepSeek-V3.2": ModelConfig(
         api_params={"temperature": 1.0},
-        input_cost_per_m=0.28, output_cost_per_m=0.42,
+        input_cost_per_m=0.28, output_cost_per_m=0.42, rpm=1_000,
     ),
     "DeepSeek-R1-0528": ModelConfig(
         api_params={"temperature": 1.0},
-        input_cost_per_m=0.55, output_cost_per_m=2.19,
+        input_cost_per_m=0.55, output_cost_per_m=2.19, rpm=1_000,
     ),
     "grok-3-mini": ModelConfig(
         api_params={"temperature": 1.0},
-        input_cost_per_m=0.30, output_cost_per_m=0.50,
+        input_cost_per_m=0.30, output_cost_per_m=0.50, rpm=1_000,
     ),
     "grok-4-fast-non-reasoning": ModelConfig(
         api_params={"temperature": 1.0},
-        input_cost_per_m=0.20, output_cost_per_m=0.50,
+        input_cost_per_m=0.20, output_cost_per_m=0.50, rpm=1_000,
     ),
 }

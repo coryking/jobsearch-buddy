@@ -216,14 +216,11 @@ def summary(
     if has_any_stats:
         lines.append("## Cost / Performance")
         lines.append("")
-        cols = ["model", "samples", "prompt_tok", "compl_tok"]
-        has_reasoning = any(
-            any(int(r.get("reasoning_tokens", 0) or 0) for r in rows)
-            for rows in model_stats.values()
-        )
-        if has_reasoning:
-            cols.append("reason_tok")
-        cols.extend(["total_tok", "cost", "mean_latency", "total_latency"])
+        cols = ["model", "n", "cost", "RPM",
+                "latency (mean/med/std)",
+                "visible tok/s (mean/med/std)",
+                "input_tok (mean/med/std)",
+                "output_tok (mean/med/std)"]
         lines.append(",".join(cols))
 
         for m in models:
@@ -234,31 +231,51 @@ def summary(
                 continue
             n = len(rows)
             prompt_tok = sum(int(r["prompt_tokens"]) for r in rows)
-            compl_tok = sum(int(r["completion_tokens"]) for r in rows)
-            reason_tok = sum(int(r.get("reasoning_tokens", 0) or 0) for r in rows)
+            compl_tok_total = sum(int(r["completion_tokens"]) for r in rows)
+            reason_tok_total = sum(int(r.get("reasoning_tokens", 0) or 0) for r in rows)
             total_tok = sum(int(r["total_tokens"]) for r in rows)
+
+            # Per-sample metrics for stats
             latencies = [float(r["elapsed_seconds"]) for r in rows]
-            mean_lat = statistics.mean(latencies)
-            total_lat = sum(latencies)
+            input_per_sample = [int(r["prompt_tokens"]) for r in rows]
+            # Visible output = total - prompt - reasoning.  This is correct
+            # regardless of whether the API nests reasoning inside completion
+            # (OpenAI) or reports them separately (grok).
+            visible_per_sample = [
+                int(r["total_tokens"]) - int(r["prompt_tokens"])
+                - int(r.get("reasoning_tokens", 0) or 0)
+                for r in rows
+            ]
+            # Visible tok/s per sample
+            visible_tps = [
+                vis / float(r["elapsed_seconds"])
+                for r, vis in zip(rows, visible_per_sample)
+                if float(r["elapsed_seconds"]) > 0
+            ]
+
+            def _stats(vals: list[float]) -> str:
+                if not vals:
+                    return "-"
+                m_ = statistics.mean(vals)
+                med = statistics.median(vals)
+                std = statistics.stdev(vals) if len(vals) > 1 else 0.0
+                return f"{m_:.1f}/{med:.1f}/{std:.1f}"
 
             cfg = KNOWN_MODELS.get(m, ModelConfig())
             billable_output = total_tok - prompt_tok
             cost = cfg.cost(prompt_tok, billable_output)
+            rpm_str = f"{cfg.rpm:,}" if cfg.rpm else "-"
 
             vals = [
                 m,
                 str(n),
-                _fmt_tokens(prompt_tok),
-                _fmt_tokens(compl_tok),
-            ]
-            if has_reasoning:
-                vals.append(_fmt_tokens(reason_tok) if reason_tok else "0")
-            vals.extend([
-                _fmt_tokens(total_tok),
                 f"${cost:.4f}" if cost is not None else "-",
-                f"{mean_lat:.1f}s",
-                f"{total_lat:.0f}s",
-            ])
+                rpm_str,
+                _stats(latencies),
+                _stats(visible_tps),
+                _stats([float(v) for v in input_per_sample]),
+                _stats([float(v) for v in visible_per_sample]),
+            ]
             lines.append(",".join(vals))
 
         lines.append("")
