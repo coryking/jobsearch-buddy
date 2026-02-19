@@ -182,17 +182,29 @@ Auto-scores using gpt-5-mini. Writes to `eval/data/scores/judge_scores.csv`.
 ### 8. View results
 
 ```bash
-# Interactive prompt picker:
-ats-eval results
+# Score matrix + cost table (interactive prompt picker):
+ats-eval results summary
 
 # Explicit prompt:
-ats-eval results v3-why
+ats-eval results summary v4-edges
+
+# Judge reasoning for specific files:
+ats-eval results notes v4-edges cloudflare anthropic
+
+# Filter to a single model:
+ats-eval results notes v4-edges cloudflare --model DeepSeek-V3.2
 ```
 
-Reads `judge_scores.csv`, groups runs by prompt, and outputs a plain-text
-comparison: CSV score matrix (file × model) with MEAN/MEDIAN rows, followed
-by per-file reasoning from each model. Output includes filesystem paths to
-runs and scores for easy follow-up.
+`results summary` is compact (typically <100 lines) and designed to be read in
+full — just run it and consume the entire output. It contains the score matrix,
+cost table, and paths to the prompts/runs used.
+
+`results notes` shows judge reasoning for files matching the given substring(s),
+along with paths to the original sample and each model's stripped output. Use
+`--model` to narrow to one model. When scores look surprising, **spot-check by
+reading the actual files** — the output includes paths you can open directly.
+Compare the original sample against the stripped version to verify the judge's
+assessment. Don't just read the reasoning; look at the files themselves.
 
 ### 9. Validate judge vs. human
 
