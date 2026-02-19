@@ -1,35 +1,108 @@
-#!/usr/bin/env python3
 """Run a prompt+model combination against all samples.
 
-Self-contained LLM client — reads Azure credentials from settings,
+Self-contained LLM client -- reads Azure credentials from settings,
 calls the API, measures timing, writes stripped output + run_meta.json.
-
-Usage:
-    uv run python eval/strip_eval.py \
-        --prompt eval/prompts/v1-original.txt \
-        --model gpt-4.1-nano \
-        --samples eval/data/samples/ \
-        --run-name v1-gpt4.1nano
 """
 
 from __future__ import annotations
 
-import argparse
+import hashlib
 import json
 import statistics
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Annotated, Optional
 
+import typer
 from openai import AzureOpenAI
 from rich.console import Console
 from rich.live import Live
+from rich.prompt import Prompt
 from rich.table import Table
 
 from jobbuddy.settings import get_settings
 
+KNOWN_MODELS = [
+    "gpt-4.1-nano",
+    "gpt-4.1-mini",
+    "gpt-5-nano",
+    "gpt-5-mini",
+    "DeepSeek-V3.2",
+]
 
-def run_eval(
+PROMPTS_DIR = Path("eval/prompts")
+
+
+def _pick_model() -> str:
+    """Interactive model selection via Rich."""
+    console = Console()
+    console.print("\n[bold]Available models:[/bold]")
+    for i, m in enumerate(KNOWN_MODELS, 1):
+        console.print(f"  {i}. {m}")
+    while True:
+        choice = Prompt.ask("Select model", default="1")
+        try:
+            idx = int(choice)
+            if 1 <= idx <= len(KNOWN_MODELS):
+                return KNOWN_MODELS[idx - 1]
+        except ValueError:
+            # Allow typing the model name directly
+            if choice in KNOWN_MODELS:
+                return choice
+        console.print(f"  [red]Enter 1-{len(KNOWN_MODELS)} or a model name[/red]")
+
+
+def _pick_prompt() -> Path:
+    """Interactive prompt file selection via Rich."""
+    console = Console()
+    prompt_files = sorted(
+        f for f in PROMPTS_DIR.glob("*.txt")
+        if f.name != "judge.txt"
+    )
+    if not prompt_files:
+        console.print(f"[red]No prompt files found in {PROMPTS_DIR}[/red]")
+        raise typer.Exit(1)
+
+    console.print("\n[bold]Available prompts:[/bold]")
+    for i, p in enumerate(prompt_files, 1):
+        console.print(f"  {i}. {p.name}")
+    while True:
+        choice = Prompt.ask("Select prompt", default="1")
+        try:
+            idx = int(choice)
+            if 1 <= idx <= len(prompt_files):
+                return prompt_files[idx - 1]
+        except ValueError:
+            pass
+        console.print(f"  [red]Enter 1-{len(prompt_files)}[/red]")
+
+
+def run(
+    run_name: Annotated[str, typer.Option(help="Name for this run (becomes output subdir)")],
+    prompt: Annotated[Optional[Path], typer.Option(help="Path to prompt text file")] = None,
+    model: Annotated[Optional[str], typer.Option(help="Azure OpenAI model deployment name")] = None,
+    samples: Annotated[Path, typer.Option(help="Samples directory")] = Path("eval/data/samples"),
+    output: Annotated[Path, typer.Option(help="Base output directory for runs")] = Path("eval/data/runs"),
+) -> None:
+    """Run strip eval: prompt+model against samples."""
+    # Interactive selection if not provided
+    if model is None:
+        model = _pick_model()
+    if prompt is None:
+        prompt = _pick_prompt()
+
+    if not prompt.exists():
+        print(f"Prompt file not found: {prompt}")
+        raise typer.Exit(1)
+    if not samples.exists():
+        print(f"Samples directory not found: {samples}")
+        raise typer.Exit(1)
+
+    _run_eval(prompt, model, samples, run_name, output)
+
+
+def _run_eval(
     prompt_file: Path,
     model: str,
     samples_dir: Path,
@@ -40,7 +113,6 @@ def run_eval(
     output_dir = output_base / run_name
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Get sample files (skip manifest)
     sample_files = sorted(
         f for f in samples_dir.glob("*.txt")
         if f.name != "sample_manifest.json"
@@ -97,7 +169,6 @@ def run_eval(
                 result = response.choices[0].message.content.strip()
                 usage = response.usage
 
-                # Write stripped output
                 out_file = output_dir / sample_file.name
                 out_file.write_text(result, encoding="utf-8")
 
@@ -114,7 +185,6 @@ def run_eval(
                 }
                 file_stats.append(stat)
 
-                style = "red" if reduction < 5 else ""
                 table_rows.append((
                     str(i),
                     sample_file.name,
@@ -163,12 +233,11 @@ def run_eval(
     else:
         aggregates = {}
 
-    # Write run metadata
     meta = {
         "run_name": run_name,
         "model": model,
         "prompt_file": str(prompt_file),
-        "prompt_sha256": __import__("hashlib").sha256(prompt.encode()).hexdigest()[:12],
+        "prompt_sha256": hashlib.sha256(prompt.encode()).hexdigest()[:12],
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "sample_count": len(sample_files),
         "success_count": len(file_stats),
@@ -181,7 +250,6 @@ def run_eval(
     meta_path = output_dir / "run_meta.json"
     meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
-    # Summary
     console.print()
     console.rule("[bold]Summary[/bold]")
     console.print(f"  [green]{len(file_stats)} succeeded[/green], [red]{len(errors)} failed[/red]")
@@ -190,24 +258,3 @@ def run_eval(
         console.print(f"  Tokens: {aggregates['total_tokens']:,} total ({aggregates['total_prompt_tokens']:,} prompt + {aggregates['total_completion_tokens']:,} completion)")
         console.print(f"  Total time: {aggregates['total_seconds']}s")
     console.print(f"  Metadata: {meta_path}")
-
-
-def main():
-    parser = argparse.ArgumentParser(description="Run strip eval: prompt+model against samples")
-    parser.add_argument("--prompt", type=Path, required=True, help="Path to prompt text file")
-    parser.add_argument("--model", type=str, required=True, help="Azure OpenAI model deployment name")
-    parser.add_argument("--samples", type=Path, default=Path("eval/data/samples"), help="Samples directory")
-    parser.add_argument("--run-name", type=str, required=True, help="Name for this run (becomes output subdir)")
-    parser.add_argument("--output", type=Path, default=Path("eval/data/runs"), help="Base output directory for runs")
-    args = parser.parse_args()
-
-    if not args.prompt.exists():
-        parser.error(f"Prompt file not found: {args.prompt}")
-    if not args.samples.exists():
-        parser.error(f"Samples directory not found: {args.samples}")
-
-    run_eval(args.prompt, args.model, args.samples, args.run_name, args.output)
-
-
-if __name__ == "__main__":
-    main()

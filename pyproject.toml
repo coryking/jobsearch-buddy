@@ -23,6 +23,7 @@ dependencies = [
 [project.scripts]
 ats = "jobbuddy.cli:app"
 ats-mcp = "jobbuddy.mcp_server:main"
+ats-eval = "jobbuddy.eval.cli:app"
 
 [build-system]
 requires = ["hatchling"]

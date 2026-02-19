@@ -18,12 +18,16 @@ prompt and model were chosen without evaluation. This harness enables:
 ## Directory Layout
 
 ```
-eval/
+src/jobbuddy/eval/       # CLI subpackage (ats-eval entry point)
+  cli.py                 # Typer app, registers subcommands
+  extract.py             # ats-eval extract — stratified sample extraction
+  run.py                 # ats-eval run — prompt+model against samples
+  score.py               # ats-eval score — Rich TUI manual scoring
+  judge.py               # ats-eval judge — LLM-as-judge auto-scoring
+  ground_truth.py        # ats-eval ground-truth — interactive GT creator
+
+eval/                    # data and config (this directory)
   AGENTS.md              # this file
-  extract_samples.py     # pull stratified samples from DB
-  strip_eval.py          # run prompt+model → stripped output + timing
-  scorer.py              # Rich terminal UI for manual scoring
-  judge.py               # LLM-as-judge auto-scoring
   prompts/
     v1-original.txt      # production prompt (from strip.py)
     judge.txt            # judge system prompt
@@ -39,7 +43,7 @@ eval/
 ### 1. Extract samples
 
 ```bash
-uv run python eval/extract_samples.py --count 25
+ats-eval extract --count 25
 ```
 
 Pulls active jobs with descriptions from the production DB, stratified
@@ -48,20 +52,22 @@ to `eval/data/samples/`.
 
 ### 2. Create ground truth
 
-Copy ~10 samples from `data/samples/` to `data/ground-truth/` and hand-edit
-them to remove boilerplate. These are your reference for what "correct" looks
-like. Keep the same filenames.
-
 ```bash
-mkdir -p eval/data/ground-truth
-cp eval/data/samples/001-*.txt eval/data/ground-truth/
-# ... edit each file by hand
+ats-eval ground-truth
 ```
+
+Interactive workflow: walks through each sample, lets you decide whether to
+include it, and opens `$EDITOR` so you can hand-strip the boilerplate.
+These are your reference for what "correct" looks like.
 
 ### 3. Run a prompt+model combination
 
 ```bash
-uv run python eval/strip_eval.py \
+# Interactive — prompts for model and prompt file selection:
+ats-eval run --run-name v1-gpt4.1nano
+
+# Explicit — no interactive prompts:
+ats-eval run \
     --prompt eval/prompts/v1-original.txt \
     --model gpt-4.1-nano \
     --run-name v1-gpt4.1nano
@@ -73,10 +79,8 @@ with per-file timing, token counts, and aggregate stats.
 ### 4. Score manually
 
 ```bash
-uv run python eval/scorer.py \
-    --run eval/data/runs/v1-gpt4.1nano/ \
-    --ground-truth eval/data/ground-truth/ \
-    --samples eval/data/samples/
+ats-eval score \
+    --run eval/data/runs/v1-gpt4.1nano/
 ```
 
 Shows original vs. stripped side-by-side with diff highlighting. Flags
@@ -90,7 +94,7 @@ Copy a prompt, edit it, re-run, re-score:
 ```bash
 cp eval/prompts/v1-original.txt eval/prompts/v2-tighter.txt
 # edit v2-tighter.txt
-uv run python eval/strip_eval.py \
+ats-eval run \
     --prompt eval/prompts/v2-tighter.txt \
     --model gpt-4.1-nano \
     --run-name v2-gpt4.1nano
@@ -104,15 +108,14 @@ for the final model comparison.
 Once the prompt is stable, extract a larger sample set:
 
 ```bash
-uv run python eval/extract_samples.py --count 100
+ats-eval extract --count 100
 ```
 
 ### 7. Run LLM judge
 
 ```bash
-uv run python eval/judge.py \
-    --run eval/data/runs/v1-gpt4.1nano/ \
-    --samples eval/data/samples/
+ats-eval judge \
+    --run eval/data/runs/v1-gpt4.1nano/
 ```
 
 Auto-scores using gpt-5-mini. Writes to `eval/data/scores/judge_scores.csv`.

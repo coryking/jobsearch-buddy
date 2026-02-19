@@ -1,26 +1,20 @@
-#!/usr/bin/env python3
 """Rich terminal UI for manual scoring of strip eval runs.
 
 Shows original vs. stripped side-by-side with diff highlighting.
 Prompts for 3 scores (1-5) per sample. Saves to CSV with resume support.
-
-Usage:
-    uv run python eval/scorer.py \
-        --run eval/data/runs/v1-gpt4.1nano/ \
-        --ground-truth eval/data/ground-truth/ \
-        --samples eval/data/samples/
 """
 
 from __future__ import annotations
 
-import argparse
 import csv
 import difflib
 import shutil
 import subprocess
 import tempfile
 from pathlib import Path
+from typing import Annotated
 
+import typer
 from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Prompt
@@ -31,7 +25,7 @@ SCORE_FIELDS = ["boilerplate_removal", "content_preservation", "no_hallucination
 CSV_HEADER = ["filename", "run_name", *SCORE_FIELDS, "notes"]
 
 
-def load_scored(scores_file: Path) -> set[tuple[str, str]]:
+def _load_scored(scores_file: Path) -> set[tuple[str, str]]:
     """Return set of (filename, run_name) already scored."""
     if not scores_file.exists():
         return set()
@@ -42,7 +36,7 @@ def load_scored(scores_file: Path) -> set[tuple[str, str]]:
     return scored
 
 
-def append_score(scores_file: Path, row: dict) -> None:
+def _append_score(scores_file: Path, row: dict) -> None:
     """Append a single score row to the CSV."""
     write_header = not scores_file.exists()
     scores_file.parent.mkdir(parents=True, exist_ok=True)
@@ -53,12 +47,8 @@ def append_score(scores_file: Path, row: dict) -> None:
         writer.writerow(row)
 
 
-def extract_removals_and_additions(original: str, stripped: str) -> tuple[list[str], list[str]]:
-    """Extract contiguous blocks of removed and added text using SequenceMatcher.
-
-    Returns (removed_blocks, added_blocks) where each block is a multi-line string.
-    Skips blank-only removals/additions.
-    """
+def _extract_removals_and_additions(original: str, stripped: str) -> tuple[list[str], list[str]]:
+    """Extract contiguous blocks of removed and added text using SequenceMatcher."""
     orig_lines = original.splitlines(keepends=True)
     strip_lines = stripped.splitlines(keepends=True)
     matcher = difflib.SequenceMatcher(None, orig_lines, strip_lines)
@@ -86,7 +76,7 @@ def extract_removals_and_additions(original: str, stripped: str) -> tuple[list[s
     return removed_blocks, added_blocks
 
 
-def flag_suspicious_removals(original: str, stripped: str) -> list[str]:
+def _flag_suspicious_removals(original: str, stripped: str) -> list[str]:
     """Find lines removed that don't look like boilerplate."""
     orig_lines = set(original.splitlines())
     strip_lines = set(stripped.splitlines())
@@ -109,16 +99,15 @@ def flag_suspicious_removals(original: str, stripped: str) -> list[str]:
             continue
         suspicious.append(line.strip())
 
-    return suspicious[:10]  # Cap at 10
+    return suspicious[:10]
 
 
-def score_sample(console: Console, filename: str, original: str, stripped: str, run_name: str) -> dict | None:
-    """Show one sample and collect scores. Returns row dict or None to quit."""
+def _score_sample(console: Console, filename: str, original: str, stripped: str, run_name: str) -> dict | None:
+    """Show one sample and collect scores. Returns row dict, 'skip', or None to quit."""
     console.clear()
     console.print(Rule(f"[bold]{filename}[/bold] — run: {run_name}"))
     console.print()
 
-    # Stats
     orig_len = len(original)
     strip_len = len(stripped)
     reduction = ((orig_len - strip_len) / orig_len * 100) if orig_len else 0
@@ -142,19 +131,17 @@ def score_sample(console: Console, filename: str, original: str, stripped: str, 
             )
             if result.stdout.strip():
                 console.print(Rule("Side-by-side diff (icdiff)"))
-                # icdiff emits ANSI codes — print raw so terminal renders colors
                 print(result.stdout)
                 console.print()
         finally:
             Path(f_orig_path).unlink(missing_ok=True)
             Path(f_strip_path).unlink(missing_ok=True)
     else:
-        # Fallback: show full stripped output
         console.print(Panel(stripped, title="Stripped Output", border_style="green"))
         console.print()
 
     # Removed and added blocks
-    removed_blocks, added_blocks = extract_removals_and_additions(original, stripped)
+    removed_blocks, added_blocks = _extract_removals_and_additions(original, stripped)
 
     if removed_blocks:
         removed_text = Text()
@@ -174,15 +161,13 @@ def score_sample(console: Console, filename: str, original: str, stripped: str, 
         console.print(Panel(added_text, title=f"Added — possible hallucination ({len(added_blocks)} blocks)", border_style="yellow"))
         console.print()
 
-    # Suspicious removals
-    suspicious = flag_suspicious_removals(original, stripped)
+    suspicious = _flag_suspicious_removals(original, stripped)
     if suspicious:
         console.print("[bold red]Suspicious removals (may not be boilerplate):[/bold red]")
         for s in suspicious:
             console.print(f"  [red]- {s[:120]}[/red]")
         console.print()
 
-    # Scoring
     console.print("[bold]Score each criterion 1-5:[/bold]")
     console.print("  1=terrible  2=poor  3=acceptable  4=good  5=excellent")
     console.print("  (q to quit, s to skip)")
@@ -221,32 +206,37 @@ def score_sample(console: Console, filename: str, original: str, stripped: str, 
     }
 
 
-def run_scorer(
-    run_dir: Path,
-    ground_truth_dir: Path,
-    samples_dir: Path,
-    scores_file: Path,
+def score(
+    run: Annotated[Path, typer.Option(help="Path to run output directory")],
+    samples: Annotated[Path, typer.Option(help="Path to original samples directory")] = Path("eval/data/samples"),
+    ground_truth: Annotated[Path, typer.Option(help="Path to ground-truth directory")] = Path("eval/data/ground-truth"),
+    scores: Annotated[Path, typer.Option(help="Path to scores CSV output")] = Path("eval/data/scores/manual_scores.csv"),
 ) -> None:
-    console = Console()
-    run_name = run_dir.name
+    """Manual Rich TUI scoring of strip eval runs."""
+    if not run.exists():
+        print(f"Run directory not found: {run}")
+        raise typer.Exit(1)
+    if not samples.exists():
+        print(f"Samples directory not found: {samples}")
+        raise typer.Exit(1)
 
-    # Find which files to score: intersection of ground-truth and run output
-    gt_files = sorted(ground_truth_dir.glob("*.txt")) if ground_truth_dir.exists() else []
+    console = Console()
+    run_name = run.name
+
+    gt_files = sorted(ground_truth.glob("*.txt")) if ground_truth.exists() else []
     if not gt_files:
-        # No ground truth — score all run output files
-        run_files = sorted(f for f in run_dir.glob("*.txt"))
+        run_files = sorted(f for f in run.glob("*.txt"))
         filenames = [f.name for f in run_files]
         console.print(f"[yellow]No ground-truth directory found. Scoring all {len(filenames)} run outputs.[/yellow]")
     else:
-        filenames = [f.name for f in gt_files if (run_dir / f.name).exists()]
+        filenames = [f.name for f in gt_files if (run / f.name).exists()]
         console.print(f"Found {len(filenames)} ground-truth files with matching run output")
 
     if not filenames:
         console.print("[red]No matching files to score.[/red]")
         return
 
-    # Check for already-scored
-    scored = load_scored(scores_file)
+    scored = _load_scored(scores)
     remaining = [f for f in filenames if (f, run_name) not in scored]
     if len(remaining) < len(filenames):
         console.print(f"Skipping {len(filenames) - len(remaining)} already-scored files")
@@ -261,8 +251,8 @@ def run_scorer(
 
     scored_count = 0
     for filename in remaining:
-        original_path = samples_dir / filename
-        stripped_path = run_dir / filename
+        original_path = samples / filename
+        stripped_path = run / filename
 
         if not original_path.exists():
             console.print(f"[yellow]Skipping {filename}: original not found in samples/[/yellow]")
@@ -271,39 +261,16 @@ def run_scorer(
         original = original_path.read_text(encoding="utf-8")
         stripped = stripped_path.read_text(encoding="utf-8")
 
-        result = score_sample(console, filename, original, stripped, run_name)
+        result = _score_sample(console, filename, original, stripped, run_name)
         if result is None:
             console.print(f"\n[yellow]Quit after scoring {scored_count} files.[/yellow]")
             break
         if result == "skip":
             continue
 
-        append_score(scores_file, result)
+        _append_score(scores, result)
         scored_count += 1
         console.print(f"  [green]Saved! ({scored_count} scored so far)[/green]")
 
     console.print(f"\nTotal scored this session: {scored_count}")
-    console.print(f"Scores saved to: {scores_file}")
-
-
-def main():
-    parser = argparse.ArgumentParser(description="Manual scorer for strip eval runs")
-    parser.add_argument("--run", type=Path, required=True, help="Path to run output directory")
-    parser.add_argument("--ground-truth", type=Path, default=Path("eval/data/ground-truth"),
-                        help="Path to ground-truth directory (optional)")
-    parser.add_argument("--samples", type=Path, default=Path("eval/data/samples"),
-                        help="Path to original samples directory")
-    parser.add_argument("--scores", type=Path, default=Path("eval/data/scores/manual_scores.csv"),
-                        help="Path to scores CSV output")
-    args = parser.parse_args()
-
-    if not args.run.exists():
-        parser.error(f"Run directory not found: {args.run}")
-    if not args.samples.exists():
-        parser.error(f"Samples directory not found: {args.samples}")
-
-    run_scorer(args.run, args.ground_truth, args.samples, args.scores)
-
-
-if __name__ == "__main__":
-    main()
+    console.print(f"Scores saved to: {scores}")

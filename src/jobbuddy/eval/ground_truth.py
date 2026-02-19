@@ -1,48 +1,41 @@
-#!/usr/bin/env python3
 """Interactive ground truth creator.
 
 Walks through each sample, lets you decide whether to include it,
 and opens your $EDITOR so you can hand-strip the boilerplate.
-
-Usage:
-    uv run python eval/create_ground_truth.py
-    uv run python eval/create_ground_truth.py --samples eval/data/samples/ --output eval/data/ground-truth/
 """
 
 from __future__ import annotations
 
-import argparse
 import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import Annotated
+
+import typer
 
 
-def preview(filepath: Path, lines: int = 15) -> str:
+def _preview(filepath: Path, lines: int = 15) -> str:
     """Return the first N lines of a file."""
     text = filepath.read_text(encoding="utf-8")
     return "\n".join(text.splitlines()[:lines])
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Interactive ground truth creator")
-    parser.add_argument("--samples", type=Path, default=Path("eval/data/samples"))
-    parser.add_argument("--output", type=Path, default=Path("eval/data/ground-truth"))
-    args = parser.parse_args()
-
-    samples_dir: Path = args.samples
-    output_dir: Path = args.output
-    output_dir.mkdir(parents=True, exist_ok=True)
-
+def ground_truth(
+    samples: Annotated[Path, typer.Option(help="Path to samples directory")] = Path("eval/data/samples"),
+    output: Annotated[Path, typer.Option(help="Output directory for ground truth files")] = Path("eval/data/ground-truth"),
+) -> None:
+    """Interactive ground truth creator -- copy samples and hand-edit."""
+    output.mkdir(parents=True, exist_ok=True)
     editor = os.environ.get("EDITOR", "nano")
 
-    sample_files = sorted(f for f in samples_dir.glob("*.txt"))
+    sample_files = sorted(f for f in samples.glob("*.txt"))
     if not sample_files:
-        print(f"No .txt files found in {samples_dir}")
-        sys.exit(1)
+        print(f"No .txt files found in {samples}")
+        raise typer.Exit(1)
 
-    already_done = {f.name for f in output_dir.glob("*.txt")}
+    already_done = {f.name for f in output.glob("*.txt")}
     remaining = [f for f in sample_files if f.name not in already_done]
 
     print(f"\n{len(sample_files)} samples total, {len(already_done)} already in ground-truth, {len(remaining)} remaining\n")
@@ -52,7 +45,7 @@ def main() -> None:
         print(f"{'=' * 60}")
         print(f"[{i}/{len(remaining)}]  {sample.name}")
         print(f"{'=' * 60}")
-        print(preview(sample))
+        print(_preview(sample))
         print(f"\n{'...' if len(sample.read_text().splitlines()) > 15 else ''}")
         print(f"\nGround truth so far: {included}")
         print()
@@ -70,14 +63,10 @@ def main() -> None:
         if choice == "n":
             continue
 
-        dest = output_dir / sample.name
+        dest = output / sample.name
         shutil.copy2(sample, dest)
         subprocess.run([editor, str(dest)])
         included += 1
         print(f"  Saved: {dest}\n")
 
-    print(f"\nDone. {included} ground-truth files in {output_dir}/")
-
-
-if __name__ == "__main__":
-    main()
+    print(f"\nDone. {included} ground-truth files in {output}/")

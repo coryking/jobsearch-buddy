@@ -1,22 +1,19 @@
-#!/usr/bin/env python3
 """Extract stratified job description samples from the production DB.
 
 Pulls active jobs with descriptions, round-robin across companies
 to maximize employer diversity.
-
-Usage:
-    uv run python eval/extract_samples.py --count 25
-    uv run python eval/extract_samples.py --count 100 --output eval/data/samples/
 """
 
 from __future__ import annotations
 
-import argparse
 import json
 import re
 from collections import defaultdict
 from itertools import cycle
 from pathlib import Path
+from typing import Annotated
+
+import typer
 
 from jobbuddy.store import JobStore
 
@@ -29,12 +26,15 @@ def sanitize_filename(title: str) -> str:
     return s[:60]
 
 
-def extract_samples(count: int, output_dir: Path) -> None:
-    output_dir.mkdir(parents=True, exist_ok=True)
+def extract(
+    count: Annotated[int, typer.Option(help="Number of samples to extract")] = 25,
+    output: Annotated[Path, typer.Option(help="Output directory")] = Path("eval/data/samples"),
+) -> None:
+    """Extract stratified job description samples from the DB."""
+    output.mkdir(parents=True, exist_ok=True)
 
     store = JobStore()
     try:
-        # Get all active jobs with descriptions, grouped by company
         rows = store.conn.execute(
             """SELECT id, company_slug, job_id, title, description
                FROM jobs
@@ -72,8 +72,6 @@ def extract_samples(count: int, output_dir: Path) -> None:
         except StopIteration:
             exhausted.add(slug)
 
-    print(f"Selected {len(selected)} samples from {len(selected) - len([s for s in selected if selected.count(s) > 1])} companies")
-
     # Write files + manifest
     manifest = {}
     for i, job in enumerate(selected, 1):
@@ -81,7 +79,7 @@ def extract_samples(count: int, output_dir: Path) -> None:
         safe_title = sanitize_filename(job["title"])
         filename = f"{i:03d}-{slug}-{safe_title}.txt"
 
-        filepath = output_dir / filename
+        filepath = output / filename
         filepath.write_text(job["description"], encoding="utf-8")
 
         manifest[filename] = {
@@ -91,7 +89,7 @@ def extract_samples(count: int, output_dir: Path) -> None:
             "db_pk": job["id"],
         }
 
-    manifest_path = output_dir / "sample_manifest.json"
+    manifest_path = output / "sample_manifest.json"
     manifest_path.write_text(
         json.dumps(manifest, indent=2, ensure_ascii=False),
         encoding="utf-8",
@@ -102,19 +100,6 @@ def extract_samples(count: int, output_dir: Path) -> None:
     for job in selected:
         company_counts[job["company_slug"]] += 1
 
-    print(f"\nWrote {len(selected)} samples to {output_dir}/")
+    print(f"\nWrote {len(selected)} samples to {output}/")
     print(f"Companies represented: {len(company_counts)}")
     print(f"Manifest: {manifest_path}")
-
-
-def main():
-    parser = argparse.ArgumentParser(description="Extract stratified job description samples")
-    parser.add_argument("--count", type=int, default=25, help="Number of samples to extract (default: 25)")
-    parser.add_argument("--output", type=Path, default=Path("eval/data/samples"), help="Output directory")
-    args = parser.parse_args()
-
-    extract_samples(args.count, args.output)
-
-
-if __name__ == "__main__":
-    main()
