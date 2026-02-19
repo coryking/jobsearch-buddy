@@ -98,22 +98,20 @@ def run(
     else:
         prompts = pick_prompts(PROMPTS_DIR, output)
 
+    # Resolve models once for all prompts
+    if model is None:
+        all_models = pick_models(prompts[0].stem, output)
+    else:
+        all_models = [model]
+
     # Build one flat queue across all prompts × models × samples
     work_items: list[dict] = []
-    all_models: list[str] = []
     skipped = 0
 
     for prompt_file in prompts:
         prompt_text = prompt_file.read_text(encoding="utf-8").strip()
 
-        if model is None:
-            models = pick_models(prompt_file.stem, output)
-        else:
-            models = [model]
-
-        for m in models:
-            if m not in all_models:
-                all_models.append(m)
+        for m in all_models:
             config = KNOWN_MODELS.get(m, ModelConfig())
             name = run_name if run_name else f"{prompt_file.stem}-{m}"
             output_dir = output / name
