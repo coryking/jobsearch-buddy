@@ -30,6 +30,8 @@ from jobbuddy.settings import get_settings
 @dataclass
 class _SampleResult:
     """Result from processing one sample file."""
+    model: str
+    run_name: str
     index: int
     filename: str
     input_chars: int
@@ -51,7 +53,6 @@ def run(
     workers: Annotated[int, typer.Option(help="Concurrent API workers")] = 5,
 ) -> None:
     """Run strip eval: prompt+model against samples."""
-    # Pick prompt first (need stem to check which models already ran)
     if prompt is None:
         prompt = pick_prompt(PROMPTS_DIR)
 
@@ -62,15 +63,39 @@ def run(
         print(f"Samples directory not found: {samples}")
         raise typer.Exit(1)
 
-    # Pick model(s)
     if model is None:
         models = pick_models(prompt.stem, output)
     else:
         models = [model]
 
+    sample_files = sorted(
+        f for f in samples.glob("*.txt")
+        if f.name != "sample_manifest.json"
+    )
+    if not sample_files:
+        print(f"No .txt samples found in {samples}")
+        raise typer.Exit(1)
+
+    prompt_text = prompt.read_text(encoding="utf-8").strip()
+
+    # Build work items: every (model, sample) pair
+    work_items: list[dict] = []
     for m in models:
+        model_params = KNOWN_MODELS.get(m, {})
         name = run_name if run_name else f"{prompt.stem}-{m}"
-        _run_eval(prompt, m, samples, name, output, workers)
+        output_dir = output / name
+        output_dir.mkdir(parents=True, exist_ok=True)
+        for i, sample_file in enumerate(sample_files, 1):
+            work_items.append({
+                "model": m,
+                "model_params": model_params,
+                "run_name": name,
+                "output_dir": output_dir,
+                "sample_file": sample_file,
+                "index": i,
+            })
+
+    _run_all(work_items, prompt, prompt_text, sample_files, models, output, workers)
 
 
 def _process_sample(
@@ -80,11 +105,13 @@ def _process_sample(
     prompt_text: str,
     sample_file: Path,
     output_dir: Path,
+    run_name: str,
     index: int,
-    running_files: set[str],
+    running_items: set[str],
 ) -> _SampleResult:
     """Process a single sample file. Runs in a worker thread."""
-    running_files.add(sample_file.name)
+    key = f"{model}:{sample_file.name}"
+    running_items.add(key)
     description = sample_file.read_text(encoding="utf-8")
     input_chars = len(description)
 
@@ -109,6 +136,8 @@ def _process_sample(
         reduction = ((input_chars - len(result_text)) / input_chars * 100) if input_chars else 0
 
         return _SampleResult(
+            model=model,
+            run_name=run_name,
             index=index,
             filename=sample_file.name,
             input_chars=input_chars,
@@ -124,6 +153,8 @@ def _process_sample(
     except Exception as e:
         elapsed = time.monotonic() - start
         return _SampleResult(
+            model=model,
+            run_name=run_name,
             index=index,
             filename=sample_file.name,
             input_chars=input_chars,
@@ -137,31 +168,23 @@ def _process_sample(
         )
 
 
-def _run_eval(
+def _run_all(
+    work_items: list[dict],
     prompt_file: Path,
-    model: str,
-    samples_dir: Path,
-    run_name: str,
+    prompt_text: str,
+    sample_files: list[Path],
+    models: list[str],
     output_base: Path,
     workers: int,
 ) -> None:
-    prompt_text = prompt_file.read_text(encoding="utf-8").strip()
-    output_dir = output_base / run_name
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    sample_files = sorted(
-        f for f in samples_dir.glob("*.txt")
-        if f.name != "sample_manifest.json"
-    )
-    if not sample_files:
-        print(f"No .txt samples found in {samples_dir}")
-        return
-
-    model_params = KNOWN_MODELS.get(model, {})
     console = Console()
-    params_str = ", ".join(f"{k}={v}" for k, v in model_params.items()) if model_params else "defaults"
-    console.print(f"Running {len(sample_files)} samples with model={model} ({params_str}), prompt={prompt_file.name}, workers={workers}")
-    console.print(f"Output: {output_dir}/")
+    multi_model = len(models) > 1
+
+    for m in models:
+        params = KNOWN_MODELS.get(m, {})
+        params_str = ", ".join(f"{k}={v}" for k, v in params.items()) if params else "defaults"
+        console.print(f"  {m} ({params_str})")
+    console.print(f"{len(work_items)} total items ({len(sample_files)} samples x {len(models)} models), workers={workers}")
 
     settings = get_settings()
     client = AzureOpenAI(
@@ -171,21 +194,20 @@ def _run_eval(
         timeout=60.0,
     )
 
-    total = len(sample_files)
+    total = len(work_items)
     done_count = 0
     error_count = 0
-    file_stats: list[dict] = []
-    errors: list[dict] = []
+    # Per-model collectors for metadata
+    model_stats: dict[str, list[dict]] = {m: [] for m in models}
+    model_errors: dict[str, list[dict]] = {m: [] for m in models}
     table_rows: list[tuple[str, ...]] = []
-
-    # Track which samples are currently being processed by workers
-    running_files: set[str] = set()
+    running_items: set[str] = set()
 
     def build_display() -> Group:
-        queued = total - done_count - error_count - len(running_files)
+        queued = total - done_count - error_count - len(running_items)
         parts = []
-        if running_files:
-            parts.append(f"[yellow bold]\u23f3 {len(running_files)} running[/yellow bold]")
+        if running_items:
+            parts.append(f"[yellow bold]\u23f3 {len(running_items)} running[/yellow bold]")
         if done_count:
             parts.append(f"[green]\u2713 {done_count} done[/green]")
         if error_count:
@@ -196,6 +218,8 @@ def _run_eval(
 
         table = Table(show_lines=False, pad_edge=False)
         table.add_column("#", justify="right", style="dim", width=4)
+        if multi_model:
+            table.add_column("Model", style="cyan", no_wrap=True)
         table.add_column("File", style="bold", no_wrap=True)
         table.add_column("Input", justify="right")
         table.add_column("Output", justify="right")
@@ -210,21 +234,23 @@ def _run_eval(
     with Live(build_display(), console=console, refresh_per_second=4) as live:
         with ThreadPoolExecutor(max_workers=workers) as executor:
             futures = {}
-            for i, sample_file in enumerate(sample_files, 1):
+            for item in work_items:
                 future = executor.submit(
                     _process_sample,
-                    client, model, model_params, prompt_text,
-                    sample_file, output_dir, i, running_files,
+                    client, item["model"], item["model_params"], prompt_text,
+                    item["sample_file"], item["output_dir"], item["run_name"],
+                    item["index"], running_items,
                 )
-                futures[future] = sample_file.name
+                key = f"{item['model']}:{item['sample_file'].name}"
+                futures[future] = key
 
             for future in as_completed(futures):
                 result = future.result()
-                running_files.discard(futures[future])
+                running_items.discard(futures[future])
 
                 if result.error is None:
                     done_count += 1
-                    file_stats.append({
+                    stat = {
                         "filename": result.filename,
                         "input_chars": result.input_chars,
                         "output_chars": result.output_chars,
@@ -232,83 +258,102 @@ def _run_eval(
                         "completion_tokens": result.completion_tokens,
                         "total_tokens": result.total_tokens,
                         "elapsed_seconds": result.elapsed_seconds,
-                    })
-                    table_rows.append((
-                        str(result.index),
+                    }
+                    model_stats[result.model].append(stat)
+
+                    row: list[str] = [str(result.index)]
+                    if multi_model:
+                        row.append(result.model)
+                    row.extend([
                         result.filename,
                         f"{result.input_chars:,}",
                         f"{result.output_chars:,}",
                         f"{result.reduction:.0f}%",
                         f"{result.elapsed_seconds:.1f}s",
                         f"{result.total_tokens:,}",
-                    ))
+                    ])
+                    table_rows.append(tuple(row))
                 else:
                     error_count += 1
-                    errors.append({
+                    model_errors[result.model].append({
                         "filename": result.filename,
                         "error": result.error,
                         "elapsed_seconds": result.elapsed_seconds,
                     })
-                    table_rows.append((
-                        str(result.index),
+
+                    row = [str(result.index)]
+                    if multi_model:
+                        row.append(result.model)
+                    row.extend([
                         result.filename,
                         f"{result.input_chars:,}",
                         "[red]ERROR[/red]",
                         "",
                         f"{result.elapsed_seconds:.1f}s",
                         "",
-                    ))
+                    ])
+                    table_rows.append(tuple(row))
 
                 live.update(build_display())
 
-    # Aggregate stats
-    if file_stats:
-        latencies = [s["elapsed_seconds"] for s in file_stats]
-        total_tokens = sum(s["total_tokens"] for s in file_stats)
-        prompt_tokens = sum(s["prompt_tokens"] for s in file_stats)
-        completion_tokens = sum(s["completion_tokens"] for s in file_stats)
+    # Write per-model run_meta.json
+    prompt_hash = hashlib.sha256(prompt_text.encode()).hexdigest()[:12]
+    timestamp = datetime.now(timezone.utc).isoformat()
 
-        aggregates = {
-            "mean_latency": round(statistics.mean(latencies), 3),
-            "median_latency": round(statistics.median(latencies), 3),
-            "p95_latency": round(sorted(latencies)[int(len(latencies) * 0.95)], 3),
-            "total_seconds": round(sum(latencies), 1),
-            "total_tokens": total_tokens,
-            "total_prompt_tokens": prompt_tokens,
-            "total_completion_tokens": completion_tokens,
+    for m in models:
+        stats = model_stats[m]
+        errs = model_errors[m]
+        run_name_m = f"{prompt_file.stem}-{m}"
+        output_dir = output_base / run_name_m
+
+        if stats:
+            latencies = [s["elapsed_seconds"] for s in stats]
+            aggregates = {
+                "mean_latency": round(statistics.mean(latencies), 3),
+                "median_latency": round(statistics.median(latencies), 3),
+                "p95_latency": round(sorted(latencies)[int(len(latencies) * 0.95)], 3),
+                "total_seconds": round(sum(latencies), 1),
+                "total_tokens": sum(s["total_tokens"] for s in stats),
+                "total_prompt_tokens": sum(s["prompt_tokens"] for s in stats),
+                "total_completion_tokens": sum(s["completion_tokens"] for s in stats),
+            }
+        else:
+            aggregates = {}
+
+        meta = {
+            "run_name": run_name_m,
+            "model": m,
+            "model_params": KNOWN_MODELS.get(m, {}),
+            "prompt_file": str(prompt_file),
+            "prompt_sha256": prompt_hash,
+            "timestamp": timestamp,
+            "sample_count": len(sample_files),
+            "success_count": len(stats),
+            "error_count": len(errs),
+            "workers": workers,
+            "aggregates": aggregates,
+            "files": stats,
+            "errors": errs,
         }
-    else:
-        aggregates = {}
 
-    meta = {
-        "run_name": run_name,
-        "model": model,
-        "model_params": model_params,
-        "prompt_file": str(prompt_file),
-        "prompt_sha256": hashlib.sha256(prompt_text.encode()).hexdigest()[:12],
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "sample_count": total,
-        "success_count": len(file_stats),
-        "error_count": len(errors),
-        "workers": workers,
-        "aggregates": aggregates,
-        "files": file_stats,
-        "errors": errors,
-    }
+        meta_path = output_dir / "run_meta.json"
+        meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
-    meta_path = output_dir / "run_meta.json"
-    meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
-
+    # Summary
     console.print()
     console.rule("[bold]Summary[/bold]")
-    console.print(f"  [green]{len(file_stats)} succeeded[/green], [red]{len(errors)} failed[/red]")
-    if aggregates:
-        console.print(f"  Latency: mean={aggregates['mean_latency']}s, median={aggregates['median_latency']}s, p95={aggregates['p95_latency']}s")
-        console.print(f"  Tokens: {aggregates['total_tokens']:,} total ({aggregates['total_prompt_tokens']:,} prompt + {aggregates['total_completion_tokens']:,} completion)")
-        console.print(f"  Total time: {aggregates['total_seconds']}s")
-    if errors:
-        console.print()
-        console.rule("[bold red]Errors[/bold red]")
-        for err in errors:
-            console.print(f"  [bold]{err['filename']}[/bold]: {err['error']}")
-    console.print(f"  Metadata: {meta_path}")
+    for m in models:
+        stats = model_stats[m]
+        errs = model_errors[m]
+        console.print(f"\n  [bold]{m}[/bold]: [green]{len(stats)} succeeded[/green], [red]{len(errs)} failed[/red]")
+        if stats:
+            latencies = [s["elapsed_seconds"] for s in stats]
+            total_tokens = sum(s["total_tokens"] for s in stats)
+            prompt_tokens = sum(s["prompt_tokens"] for s in stats)
+            completion_tokens = sum(s["completion_tokens"] for s in stats)
+            console.print(f"    Latency: mean={statistics.mean(latencies):.3f}s, median={statistics.median(latencies):.3f}s")
+            console.print(f"    Tokens: {total_tokens:,} total ({prompt_tokens:,} prompt + {completion_tokens:,} completion)")
+        if errs:
+            for err in errs:
+                console.print(f"    [red]{err['filename']}[/red]: {err['error']}")
+        console.print(f"    Metadata: {output_base / f'{prompt_file.stem}-{m}' / 'run_meta.json'}")
