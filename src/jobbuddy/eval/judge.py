@@ -8,12 +8,19 @@ from __future__ import annotations
 
 import csv
 import json
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Optional
 
 import typer
 from openai import AzureOpenAI
+from rich.console import Console, Group
+from rich.live import Live
+from rich.table import Table
+from rich.text import Text
 
 from jobbuddy.settings import get_settings
 
@@ -42,12 +49,77 @@ def _parse_judge_response(text: str) -> dict | None:
         return None
 
 
+@dataclass
+class _JudgeResult:
+    """Result from judging one sample."""
+    run_name: str
+    filename: str
+    score: int | None
+    reasoning: str | None
+    elapsed_seconds: float
+    error: str | None
+
+
+def _judge_one(
+    client: AzureOpenAI,
+    model: str,
+    prompt_text: str,
+    run_name: str,
+    run_file: Path,
+    original_file: Path,
+    running_items: set[str],
+) -> _JudgeResult:
+    """Judge a single sample. Runs in a worker thread."""
+    key = f"{run_name}:{run_file.name}"
+    running_items.add(key)
+
+    original = original_file.read_text(encoding="utf-8")
+    stripped = run_file.read_text(encoding="utf-8")
+
+    try:
+        start = time.monotonic()
+        user_content = f"ORIGINAL:\n{original}\n\n---\n\nSTRIPPED:\n{stripped}"
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": prompt_text},
+                {"role": "user", "content": user_content},
+            ],
+        )
+        elapsed = time.monotonic() - start
+
+        raw = response.choices[0].message.content.strip()
+        parsed = _parse_judge_response(raw)
+
+        if parsed is None:
+            return _JudgeResult(
+                run_name=run_name, filename=run_file.name,
+                score=None, reasoning=f"PARSE ERROR: {raw[:200]}",
+                elapsed_seconds=round(elapsed, 3), error="parse_error",
+            )
+
+        return _JudgeResult(
+            run_name=run_name, filename=run_file.name,
+            score=parsed["score"], reasoning=parsed.get("reasoning", ""),
+            elapsed_seconds=round(elapsed, 3), error=None,
+        )
+
+    except Exception as e:
+        elapsed = time.monotonic() - start
+        return _JudgeResult(
+            run_name=run_name, filename=run_file.name,
+            score=None, reasoning=None,
+            elapsed_seconds=round(elapsed, 3), error=str(e),
+        )
+
+
 def judge(
     run: Annotated[Optional[Path], typer.Option(help="Path to run output directory")] = None,
     samples: Annotated[Path, typer.Option(help="Path to original samples directory")] = Path("eval/data/samples"),
     scores: Annotated[Path, typer.Option(help="Path to scores CSV output")] = Path("eval/data/scores/judge_scores.csv"),
     model: Annotated[str, typer.Option(help="Judge model deployment name")] = "gpt-5-mini",
     judge_prompt: Annotated[Optional[Path], typer.Option(help="Path to judge prompt")] = None,
+    workers: Annotated[int, typer.Option(help="Concurrent API workers")] = 5,
 ) -> None:
     """LLM-as-judge auto-scoring of strip eval runs."""
     if run is None:
@@ -89,7 +161,21 @@ def judge(
         print("All files already judged!")
         return
 
-    print(f"Judging {len(remaining)} files for run '{run_name}' with model={model}")
+    # Filter to files that have originals
+    work_items = []
+    for run_file in remaining:
+        original_path = samples / run_file.name
+        if not original_path.exists():
+            print(f"  SKIP {run_file.name} (original not found)")
+            continue
+        work_items.append((run_file, original_path))
+
+    if not work_items:
+        print("No files to judge.")
+        return
+
+    console = Console()
+    console.print(f"Judging {len(work_items)} files for run '{run_name}' with model={model}, workers={workers}")
 
     settings = get_settings()
     client = AzureOpenAI(
@@ -99,72 +185,94 @@ def judge(
         timeout=60.0,
     )
 
+    total = len(work_items)
+    done_count = 0
+    error_count = 0
+    score_sum = 0
+    running_items: set[str] = set()
+    table_rows: list[tuple[str, ...]] = []
+
+    # CSV writer with lock for thread-safe flushing
     write_header = not scores.exists()
     scores.parent.mkdir(parents=True, exist_ok=True)
-
-    # Open CSV in append mode for the entire run so each score is flushed immediately
     scores_file = scores.open("a", newline="", encoding="utf-8")
     writer = csv.DictWriter(scores_file, fieldnames=CSV_HEADER)
     if write_header:
         writer.writeheader()
+    csv_lock = threading.Lock()
 
-    scored = 0
-    score_sum = 0
-    errors = 0
+    def build_display() -> Group:
+        queued = total - done_count - error_count - len(running_items)
+        parts = []
+        if running_items:
+            parts.append(f"[yellow bold]\u23f3 {len(running_items)} running[/yellow bold]")
+        if done_count:
+            mean = f" (mean={score_sum / done_count:.1f})" if done_count else ""
+            parts.append(f"[green]\u2713 {done_count} scored{mean}[/green]")
+        if error_count:
+            parts.append(f"[red]\u2717 {error_count} errors[/red]")
+        if queued > 0:
+            parts.append(f"[dim]\u00b7 {queued} queued[/dim]")
+        status = Text.from_markup("  \u2502  ".join(parts))
 
-    for i, run_file in enumerate(remaining, 1):
-        filename = run_file.name
-        original_path = samples / filename
+        table = Table(show_lines=False, pad_edge=False)
+        table.add_column("File", style="bold", no_wrap=True)
+        table.add_column("Score", justify="right")
+        table.add_column("Time", justify="right")
+        for row in table_rows:
+            table.add_row(*row)
 
-        if not original_path.exists():
-            print(f"  [{i}/{len(remaining)}] {filename}: SKIP (original not found)")
-            continue
+        return Group(status, table)
 
-        original = original_path.read_text(encoding="utf-8")
-        stripped = run_file.read_text(encoding="utf-8")
+    with Live(build_display(), console=console, refresh_per_second=4) as live:
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {}
+            for run_file, original_path in work_items:
+                future = executor.submit(
+                    _judge_one,
+                    client, model, prompt_text, run_name,
+                    run_file, original_path, running_items,
+                )
+                futures[future] = f"{run_name}:{run_file.name}"
 
-        print(f"  [{i}/{len(remaining)}] {filename}...", end=" ", flush=True)
+            for future in as_completed(futures):
+                result = future.result()
+                running_items.discard(futures[future])
 
-        try:
-            start = time.monotonic()
-            user_content = f"ORIGINAL:\n{original}\n\n---\n\nSTRIPPED:\n{stripped}"
-            response = client.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "system", "content": prompt_text},
-                    {"role": "user", "content": user_content},
-                ],
-            )
-            elapsed = time.monotonic() - start
+                if result.error is None:
+                    done_count += 1
+                    score_sum += result.score
 
-            raw = response.choices[0].message.content.strip()
-            parsed = _parse_judge_response(raw)
+                    with csv_lock:
+                        writer.writerow({
+                            "filename": result.filename,
+                            "run_name": result.run_name,
+                            "score": result.score,
+                            "reasoning": result.reasoning,
+                        })
+                        scores_file.flush()
 
-            if parsed is None:
-                print(f"PARSE ERROR ({elapsed:.1f}s)")
-                print(f"    Raw: {raw[:200]}")
-                errors += 1
-                continue
+                    table_rows.append((
+                        result.filename,
+                        f"[bold]{result.score}[/bold]",
+                        f"{result.elapsed_seconds:.1f}s",
+                    ))
+                else:
+                    error_count += 1
+                    style = "[red]PARSE[/red]" if result.error == "parse_error" else "[red]ERROR[/red]"
+                    table_rows.append((
+                        result.filename,
+                        style,
+                        f"{result.elapsed_seconds:.1f}s",
+                    ))
 
-            writer.writerow({
-                "filename": filename,
-                "run_name": run_name,
-                "score": parsed["score"],
-                "reasoning": parsed.get("reasoning", ""),
-            })
-            scores_file.flush()
-
-            scored += 1
-            score_sum += parsed["score"]
-            print(f"score={parsed['score']} {elapsed:.1f}s")
-
-        except Exception as e:
-            print(f"ERROR: {e}")
-            errors += 1
+                live.update(build_display())
 
     scores_file.close()
 
-    print(f"\nJudged: {scored} succeeded, {errors} failed")
-    if scored:
-        print(f"  mean score: {score_sum / scored:.2f}")
-    print(f"Scores saved to: {scores}")
+    console.print()
+    console.rule("[bold]Summary[/bold]")
+    console.print(f"  [green]{done_count} scored[/green], [red]{error_count} failed[/red]")
+    if done_count:
+        console.print(f"  Mean score: {score_sum / done_count:.2f}")
+    console.print(f"  Scores saved to: {scores}")
