@@ -15,6 +15,7 @@ from typing import Annotated, Optional
 import typer
 
 from jobbuddy.eval.judge import SCORE_FIELDS
+from jobbuddy.eval.models import KNOWN_MODELS, ModelConfig
 from jobbuddy.eval.utils import RUNS_DIR, pick_prompt, PROMPTS_DIR
 
 SCORES_DIR = Path("eval/data/scores")
@@ -198,7 +199,7 @@ def results(
         )
         if has_reasoning:
             cols.append("reason_tok")
-        cols.extend(["total_tok", "mean_latency", "total_latency"])
+        cols.extend(["total_tok", "cost", "mean_latency", "total_latency"])
         lines.append(",".join(cols))
 
         for m in models:
@@ -216,6 +217,12 @@ def results(
             mean_lat = statistics.mean(latencies)
             total_lat = sum(latencies)
 
+            # Cost: billable output = total - prompt (handles both OpenAI where
+            # completion includes reasoning, and xAI where they're additive)
+            cfg = KNOWN_MODELS.get(m, ModelConfig())
+            billable_output = total_tok - prompt_tok
+            cost = cfg.cost(prompt_tok, billable_output)
+
             vals = [
                 m,
                 str(n),
@@ -226,6 +233,7 @@ def results(
                 vals.append(_fmt_tokens(reason_tok) if reason_tok else "0")
             vals.extend([
                 _fmt_tokens(total_tok),
+                f"${cost:.4f}" if cost is not None else "-",
                 f"{mean_lat:.1f}s",
                 f"{total_lat:.0f}s",
             ])
