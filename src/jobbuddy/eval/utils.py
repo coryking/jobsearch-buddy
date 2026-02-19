@@ -10,13 +10,13 @@ import typer
 from rich.console import Console
 from rich.prompt import Prompt
 
-KNOWN_MODELS = [
-    "gpt-4.1-nano",
-    "gpt-4.1-mini",
-    "gpt-5-nano",
-    "gpt-5-mini",
-    "DeepSeek-V3.2",
-]
+KNOWN_MODELS: dict[str, dict] = {
+    "gpt-4.1-nano": {"temperature": 1.0},
+    "gpt-4.1-mini": {"temperature": 1.0},
+    "gpt-5-nano": {"reasoning_effort": "low"},
+    "gpt-5-mini": {"reasoning_effort": "low"},
+    "DeepSeek-V3.2": {"temperature": 1.0},
+}
 
 PROMPTS_DIR = Path("eval/prompts")
 RUNS_DIR = Path("eval/data/runs")
@@ -63,8 +63,9 @@ def pick_models(
         if run_dir.exists() and any(run_dir.glob("*.txt")):
             done.add(m)
 
-    remaining = [m for m in KNOWN_MODELS if m not in done]
-    completed = [m for m in KNOWN_MODELS if m in done]
+    all_models = list(KNOWN_MODELS.keys())
+    remaining = [m for m in all_models if m not in done]
+    completed = [m for m in all_models if m in done]
 
     choices: list[questionary.Choice] = []
     for m in remaining:

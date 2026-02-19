@@ -20,7 +20,7 @@ from rich.console import Console
 from rich.live import Live
 from rich.table import Table
 
-from jobbuddy.eval.utils import PROMPTS_DIR, pick_models, pick_prompt
+from jobbuddy.eval.utils import KNOWN_MODELS, PROMPTS_DIR, pick_models, pick_prompt
 from jobbuddy.settings import get_settings
 
 
@@ -73,8 +73,10 @@ def _run_eval(
         print(f"No .txt samples found in {samples_dir}")
         return
 
+    model_params = KNOWN_MODELS.get(model, {})
     console = Console()
-    console.print(f"Running {len(sample_files)} samples with model={model}, prompt={prompt_file.name}")
+    params_str = ", ".join(f"{k}={v}" for k, v in model_params.items()) if model_params else "defaults"
+    console.print(f"Running {len(sample_files)} samples with model={model} ({params_str}), prompt={prompt_file.name}")
     console.print(f"Output: {output_dir}/")
 
     settings = get_settings()
@@ -115,6 +117,7 @@ def _run_eval(
                         {"role": "system", "content": prompt},
                         {"role": "user", "content": description},
                     ],
+                    **model_params,
                 )
                 elapsed = time.monotonic() - start
 
@@ -188,6 +191,7 @@ def _run_eval(
     meta = {
         "run_name": run_name,
         "model": model,
+        "model_params": model_params,
         "prompt_file": str(prompt_file),
         "prompt_sha256": hashlib.sha256(prompt.encode()).hexdigest()[:12],
         "timestamp": datetime.now(timezone.utc).isoformat(),
