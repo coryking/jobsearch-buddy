@@ -104,7 +104,10 @@ def _flag_suspicious_removals(original: str, stripped: str) -> list[str]:
 def _score_sample(console: Console, filename: str, original: str, stripped: str, run_name: str) -> dict | None:
     """Show one sample and collect scores. Returns row dict, 'skip', or None to quit."""
     console.clear()
-    console.print(Rule(f"[bold]{filename}[/bold] — run: {run_name}"))
+    console.print("\n" * 5)
+    console.print(Rule("", style="bright_cyan"))
+    console.print(Rule(f"[bold bright_cyan]{filename}[/bold bright_cyan] — run: {run_name}", style="bright_cyan"))
+    console.print(Rule("", style="bright_cyan"))
     console.print()
 
     orig_len = len(original)
