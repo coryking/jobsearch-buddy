@@ -164,7 +164,7 @@ def _run_eval(
                     "[red]ERROR[/red]",
                     "",
                     f"{elapsed:.1f}s",
-                    str(e)[:40],
+                    "",
                 ))
 
             live.update(build_table())
@@ -213,4 +213,9 @@ def _run_eval(
         console.print(f"  Latency: mean={aggregates['mean_latency']}s, median={aggregates['median_latency']}s, p95={aggregates['p95_latency']}s")
         console.print(f"  Tokens: {aggregates['total_tokens']:,} total ({aggregates['total_prompt_tokens']:,} prompt + {aggregates['total_completion_tokens']:,} completion)")
         console.print(f"  Total time: {aggregates['total_seconds']}s")
+    if errors:
+        console.print()
+        console.rule("[bold red]Errors[/bold red]")
+        for err in errors:
+            console.print(f"  [bold]{err['filename']}[/bold]: {err['error']}")
     console.print(f"  Metadata: {meta_path}")
