@@ -19,6 +19,7 @@ import typer
 from openai import AzureOpenAI
 from rich.console import Console, Group
 
+from jobbuddy.eval import DEFAULT_WORKERS
 from jobbuddy.eval.models import KNOWN_MODELS, ModelConfig
 from rich.live import Live
 from rich.table import Table
@@ -157,7 +158,7 @@ def judge(
     scores: Annotated[Path, typer.Option(help="Path to scores CSV output")] = Path("eval/data/scores/judge_scores.csv"),
     model: Annotated[str, typer.Option(help="Judge model deployment name")] = "DeepSeek-R1-0528",
     judge_prompt: Annotated[Optional[Path], typer.Option(help="Path to judge prompt")] = None,
-    workers: Annotated[int, typer.Option(help="Concurrent API workers")] = 50,
+    workers: Annotated[int, typer.Option(help="Concurrent API workers")] = DEFAULT_WORKERS,
 ) -> None:
     """LLM-as-judge auto-scoring of strip eval runs.
 

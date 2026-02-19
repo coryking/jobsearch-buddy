@@ -16,6 +16,8 @@ from typing import Annotated, Optional
 
 import typer
 from openai import AzureOpenAI
+
+from jobbuddy.eval import DEFAULT_WORKERS
 from rich.console import Console, Group
 from rich.live import Live
 from rich.table import Table
@@ -73,7 +75,7 @@ def run(
     model: Annotated[Optional[str], typer.Option(help="Azure OpenAI model deployment name")] = None,
     samples: Annotated[Path, typer.Option(help="Samples directory")] = Path("eval/data/samples"),
     output: Annotated[Path, typer.Option(help="Base output directory for runs")] = Path("eval/data/runs"),
-    workers: Annotated[int, typer.Option(help="Concurrent API workers")] = 50,
+    workers: Annotated[int, typer.Option(help="Concurrent API workers")] = DEFAULT_WORKERS,
     force: Annotated[bool, typer.Option(help="Re-run all samples, ignoring existing outputs")] = False,
 ) -> None:
     """Run strip eval: prompt+model against samples."""
