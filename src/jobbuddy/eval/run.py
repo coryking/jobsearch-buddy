@@ -18,79 +18,23 @@ import typer
 from openai import AzureOpenAI
 from rich.console import Console
 from rich.live import Live
-from rich.prompt import Prompt
 from rich.table import Table
 
+from jobbuddy.eval.utils import PROMPTS_DIR, pick_models, pick_prompt
 from jobbuddy.settings import get_settings
-
-KNOWN_MODELS = [
-    "gpt-4.1-nano",
-    "gpt-4.1-mini",
-    "gpt-5-nano",
-    "gpt-5-mini",
-    "DeepSeek-V3.2",
-]
-
-PROMPTS_DIR = Path("eval/prompts")
-
-
-def _pick_model() -> str:
-    """Interactive model selection via Rich."""
-    console = Console()
-    console.print("\n[bold]Available models:[/bold]")
-    for i, m in enumerate(KNOWN_MODELS, 1):
-        console.print(f"  {i}. {m}")
-    while True:
-        choice = Prompt.ask("Select model", default="1")
-        try:
-            idx = int(choice)
-            if 1 <= idx <= len(KNOWN_MODELS):
-                return KNOWN_MODELS[idx - 1]
-        except ValueError:
-            # Allow typing the model name directly
-            if choice in KNOWN_MODELS:
-                return choice
-        console.print(f"  [red]Enter 1-{len(KNOWN_MODELS)} or a model name[/red]")
-
-
-def _pick_prompt() -> Path:
-    """Interactive prompt file selection via Rich."""
-    console = Console()
-    prompt_files = sorted(
-        f for f in PROMPTS_DIR.glob("*.txt")
-        if f.name != "judge.txt"
-    )
-    if not prompt_files:
-        console.print(f"[red]No prompt files found in {PROMPTS_DIR}[/red]")
-        raise typer.Exit(1)
-
-    console.print("\n[bold]Available prompts:[/bold]")
-    for i, p in enumerate(prompt_files, 1):
-        console.print(f"  {i}. {p.name}")
-    while True:
-        choice = Prompt.ask("Select prompt", default="1")
-        try:
-            idx = int(choice)
-            if 1 <= idx <= len(prompt_files):
-                return prompt_files[idx - 1]
-        except ValueError:
-            pass
-        console.print(f"  [red]Enter 1-{len(prompt_files)}[/red]")
 
 
 def run(
-    run_name: Annotated[str, typer.Option(help="Name for this run (becomes output subdir)")],
+    run_name: Annotated[Optional[str], typer.Option(help="Name for this run (becomes output subdir). Default: {prompt_stem}-{model}")] = None,
     prompt: Annotated[Optional[Path], typer.Option(help="Path to prompt text file")] = None,
     model: Annotated[Optional[str], typer.Option(help="Azure OpenAI model deployment name")] = None,
     samples: Annotated[Path, typer.Option(help="Samples directory")] = Path("eval/data/samples"),
     output: Annotated[Path, typer.Option(help="Base output directory for runs")] = Path("eval/data/runs"),
 ) -> None:
     """Run strip eval: prompt+model against samples."""
-    # Interactive selection if not provided
-    if model is None:
-        model = _pick_model()
+    # Pick prompt first (need stem to check which models already ran)
     if prompt is None:
-        prompt = _pick_prompt()
+        prompt = pick_prompt(PROMPTS_DIR)
 
     if not prompt.exists():
         print(f"Prompt file not found: {prompt}")
@@ -99,7 +43,15 @@ def run(
         print(f"Samples directory not found: {samples}")
         raise typer.Exit(1)
 
-    _run_eval(prompt, model, samples, run_name, output)
+    # Pick model(s)
+    if model is None:
+        models = pick_models(prompt.stem, output)
+    else:
+        models = [model]
+
+    for m in models:
+        name = run_name if run_name else f"{prompt.stem}-{m}"
+        _run_eval(prompt, m, samples, name, output)
 
 
 def _run_eval(

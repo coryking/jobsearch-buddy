@@ -63,8 +63,12 @@ These are your reference for what "correct" looks like.
 ### 3. Run a prompt+model combination
 
 ```bash
-# Interactive — prompts for model and prompt file selection:
-ats-eval run --run-name v1-gpt4.1nano
+# Full interactive — picks prompt (default: newest), then model checkboxes
+# (models without existing runs are pre-checked):
+ats-eval run
+
+# Single model, interactive prompt picker:
+ats-eval run --model gpt-5-nano
 
 # Explicit — no interactive prompts:
 ats-eval run \
@@ -73,7 +77,14 @@ ats-eval run \
     --run-name v1-gpt4.1nano
 ```
 
-Writes stripped outputs to `eval/data/runs/v1-gpt4.1nano/` plus `run_meta.json`
+When run interactively, the prompt picker defaults to the most recently modified
+prompt file. The model picker uses questionary checkboxes: models that already
+have a run for the selected prompt appear with "(done)" and unchecked; remaining
+models are pre-checked. Multi-selecting kicks off sequential runs.
+
+Run names auto-generate as `{prompt_stem}-{model}` when `--run-name` is omitted.
+
+Writes stripped outputs to `eval/data/runs/<run-name>/` plus `run_meta.json`
 with per-file timing, token counts, and aggregate stats.
 
 ### 4. Score manually

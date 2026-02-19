@@ -18,6 +18,7 @@ dependencies = [
     "openai>=1.0.0",
     "toml>=0.10.0",
     "typer>=0.23.1",
+    "questionary>=2.1.0",
 ]
 
 [project.scripts]
