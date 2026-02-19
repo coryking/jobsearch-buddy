@@ -15,6 +15,7 @@ from typing import Annotated, Optional
 
 import typer
 
+from jobbuddy.eval.judge import SCORE_FIELDS
 from jobbuddy.eval.utils import RUNS_DIR, pick_prompt, PROMPTS_DIR
 
 SCORES_DIR = Path("eval/data/scores")
@@ -82,15 +83,15 @@ def results(
         print(f"Run: ats-eval judge --run {runs_dir}/<run-name>/")
         raise typer.Exit(1)
 
-    # Pivot: filename → {model: {score, reasoning}}
+    # Pivot: filename → {model: {recall, precision, integrity, fidelity, reasoning}}
     pivot: dict[str, dict[str, dict]] = {}
     for row in filtered:
         fn = row["filename"]
         model = model_by_run.get(row["run_name"], row["run_name"])
-        pivot.setdefault(fn, {})[model] = {
-            "score": row.get("score", ""),
-            "reasoning": row.get("reasoning", ""),
-        }
+        entry = {"reasoning": row.get("reasoning", "")}
+        for f in SCORE_FIELDS:
+            entry[f] = row.get(f, "")
+        pivot.setdefault(fn, {})[model] = entry
 
     filenames = sorted(pivot.keys())
 
@@ -101,47 +102,49 @@ def results(
         f"prompt: {prompt_file}",
         f"scores: {scores_file}",
         f"runs:   {runs_dir}/{{{'|'.join(run_for_model[m] for m in models)}}}",
+        f"dimensions: R=recall P=precision I=integrity F=fidelity",
         "",
     ]
 
-    # --- Score matrix as CSV ---
+    # --- Score matrix as CSV (R/P/I/F compact format) ---
     header = "filename," + ",".join(models)
     lines.append(header)
 
-    model_scores: dict[str, list[float]] = {m: [] for m in models}
+    # Accumulate per-dimension scores for means
+    model_dim_scores: dict[str, dict[str, list[float]]] = {
+        m: {f: [] for f in SCORE_FIELDS} for m in models
+    }
     for fn in filenames:
         short = fn[:60] + "…" if len(fn) > 60 else fn
         cells = []
         for m in models:
             entry = pivot[fn].get(m)
-            if entry and entry["score"]:
-                score = entry["score"]
-                cells.append(str(score))
-                try:
-                    model_scores[m].append(float(score))
-                except ValueError:
-                    pass
+            if entry and entry.get(SCORE_FIELDS[0]):
+                dim_vals = []
+                for f in SCORE_FIELDS:
+                    v = entry.get(f, "")
+                    dim_vals.append(str(v))
+                    try:
+                        model_dim_scores[m][f].append(float(v))
+                    except (ValueError, TypeError):
+                        pass
+                cells.append("/".join(dim_vals))
             else:
                 cells.append("-")
         lines.append(f"{short},{','.join(cells)}")
 
-    # Mean row
+    # Mean row per dimension
     mean_cells = []
     for m in models:
-        if model_scores[m]:
-            mean_cells.append(f"{statistics.mean(model_scores[m]):.2f}")
-        else:
-            mean_cells.append("-")
+        dim_means = []
+        for f in SCORE_FIELDS:
+            vals = model_dim_scores[m][f]
+            if vals:
+                dim_means.append(f"{statistics.mean(vals):.1f}")
+            else:
+                dim_means.append("-")
+        mean_cells.append("/".join(dim_means))
     lines.append(f"MEAN,{','.join(mean_cells)}")
-
-    # Median row
-    median_cells = []
-    for m in models:
-        if model_scores[m]:
-            median_cells.append(f"{statistics.median(model_scores[m]):.1f}")
-        else:
-            median_cells.append("-")
-    lines.append(f"MEDIAN,{','.join(median_cells)}")
 
     lines.append("")
 
@@ -154,9 +157,13 @@ def results(
         for m in models:
             entry = pivot[fn].get(m)
             if entry:
-                score = entry["score"] or "?"
+                dim_strs = []
+                for f in SCORE_FIELDS:
+                    v = entry.get(f, "?")
+                    dim_strs.append(f"{f[0].upper()}{v}")
+                score_str = "/".join(dim_strs)
                 reasoning = entry["reasoning"] or "(no reasoning)"
-                lines.append(f"- {m} ({score}): {reasoning}")
+                lines.append(f"- {m} ({score_str}): {reasoning}")
             else:
                 lines.append(f"- {m}: (not scored)")
         lines.append("")

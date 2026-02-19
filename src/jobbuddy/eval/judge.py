@@ -26,7 +26,8 @@ from rich.text import Text
 
 from jobbuddy.settings import get_settings
 
-CSV_HEADER = ["filename", "run_name", "score", "reasoning"]
+SCORE_FIELDS = ["recall", "precision", "integrity", "fidelity"]
+CSV_HEADER = ["filename", "run_name", *SCORE_FIELDS, "reasoning"]
 
 
 def _load_judge_prompt(prompt_file: Path) -> str:
@@ -34,7 +35,7 @@ def _load_judge_prompt(prompt_file: Path) -> str:
 
 
 def _parse_judge_response(text: str) -> dict | None:
-    """Parse JSON score from judge response. Returns None on failure."""
+    """Parse JSON scores from judge response. Returns None on failure."""
     text = text.strip()
     if text.startswith("```"):
         lines = text.splitlines()
@@ -43,9 +44,10 @@ def _parse_judge_response(text: str) -> dict | None:
 
     try:
         data = json.loads(text)
-        val = data.get("score")
-        if not isinstance(val, int) or val < 1 or val > 5:
-            return None
+        for field in SCORE_FIELDS:
+            val = data.get(field)
+            if not isinstance(val, int) or val < 1 or val > 5:
+                return None
         return data
     except (json.JSONDecodeError, KeyError, TypeError):
         return None
@@ -56,7 +58,7 @@ class _JudgeResult:
     """Result from judging one sample."""
     run_name: str
     filename: str
-    score: int | None
+    scores: dict[str, int] | None  # {recall: N, precision: N, ...}
     reasoning: str | None
     elapsed_seconds: float
     error: str | None
@@ -97,13 +99,14 @@ def _judge_one(
         if parsed is None:
             return _JudgeResult(
                 run_name=run_name, filename=run_file.name,
-                score=None, reasoning=f"PARSE ERROR: {raw[:200]}",
+                scores=None, reasoning=f"PARSE ERROR: {raw[:200]}",
                 elapsed_seconds=round(elapsed, 3), error="parse_error",
             )
 
         return _JudgeResult(
             run_name=run_name, filename=run_file.name,
-            score=parsed["score"], reasoning=parsed.get("reasoning", ""),
+            scores={f: parsed[f] for f in SCORE_FIELDS},
+            reasoning=parsed.get("reasoning", ""),
             elapsed_seconds=round(elapsed, 3), error=None,
         )
 
@@ -111,7 +114,7 @@ def _judge_one(
         elapsed = time.monotonic() - start
         return _JudgeResult(
             run_name=run_name, filename=run_file.name,
-            score=None, reasoning=None,
+            scores=None, reasoning=None,
             elapsed_seconds=round(elapsed, 3), error=str(e),
         )
 
@@ -201,7 +204,7 @@ def judge(
     run_totals: dict[str, int] = {}
     for rn, _, _ in work_items:
         run_totals[rn] = run_totals.get(rn, 0) + 1
-    run_score_sums: dict[str, int] = {rn: 0 for rn in run_totals}
+    run_score_sums: dict[str, dict[str, int]] = {rn: {f: 0 for f in SCORE_FIELDS} for rn in run_totals}
     run_done_counts: dict[str, int] = {rn: 0 for rn in run_totals}
 
     settings = get_settings()
@@ -236,8 +239,11 @@ def judge(
             t = run_totals[rn]
             progress = f"{done}/{t}".rjust(7)
             if done:
-                mean = run_score_sums[rn] / done
-                run_lines.append(f"  {rn:<{name_w}}  {progress}  [green]mean={mean:.1f}[/green]")
+                dim_strs = []
+                for f in SCORE_FIELDS:
+                    m = run_score_sums[rn][f] / done
+                    dim_strs.append(f"{f[0].upper()}{m:.1f}")
+                run_lines.append(f"  {rn:<{name_w}}  {progress}  [green]{'/'.join(dim_strs)}[/green]")
             else:
                 run_lines.append(f"  {rn:<{name_w}}  {progress}")
         header = Text.from_markup(
@@ -260,7 +266,7 @@ def judge(
         table = Table(show_lines=False, pad_edge=False)
         table.add_column("Run", style="dim", no_wrap=True)
         table.add_column("File", style="bold", no_wrap=True)
-        table.add_column("Score", justify="right")
+        table.add_column("R/P/I/F", justify="right")
         table.add_column("Time", justify="right")
         # header(1) + run lines + status(1) + table header(2) + ellipsis(1) + margin(2)
         overhead = 7 + len(run_totals)
@@ -291,22 +297,26 @@ def judge(
 
                 if result.error is None:
                     done_count += 1
-                    run_score_sums[result.run_name] += result.score
+                    for f in SCORE_FIELDS:
+                        run_score_sums[result.run_name][f] += result.scores[f]
                     run_done_counts[result.run_name] += 1
 
                     with csv_lock:
-                        writer.writerow({
+                        row = {
                             "filename": result.filename,
                             "run_name": result.run_name,
-                            "score": result.score,
+                            **result.scores,
                             "reasoning": result.reasoning,
-                        })
+                        }
+                        writer.writerow(row)
                         scores_file.flush()
 
+                    s = result.scores
+                    score_str = f"[bold]{s['recall']}/{s['precision']}/{s['integrity']}/{s['fidelity']}[/bold]"
                     table_rows.append((
                         result.run_name,
                         result.filename,
-                        f"[bold]{result.score}[/bold]",
+                        score_str,
                         f"{result.elapsed_seconds:.1f}s",
                     ))
                 else:
@@ -328,8 +338,11 @@ def judge(
     for rn in sorted(run_totals):
         done = run_done_counts[rn]
         if done:
-            mean = run_score_sums[rn] / done
-            console.print(f"  {rn}: [green]{done} scored[/green] (mean={mean:.2f})")
+            dim_strs = []
+            for f in SCORE_FIELDS:
+                m = run_score_sums[rn][f] / done
+                dim_strs.append(f"{f}={m:.2f}")
+            console.print(f"  {rn}: [green]{done} scored[/green] ({', '.join(dim_strs)})")
         else:
             console.print(f"  {rn}: [red]0 scored[/red]")
     if error_count:

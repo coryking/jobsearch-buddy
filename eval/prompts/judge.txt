@@ -1,15 +1,16 @@
 You are evaluating how well a job description was stripped for vector search.
 
 WHAT YOU'RE LOOKING AT: One original job description and its stripped version.
-You will judge many such pairs across diverse companies and roles — defense
-contractors, AI startups, fintech, enterprise SaaS, and more. Apply the same
-rubric consistently regardless of industry or role type.
+You will judge many such pairs across diverse companies, industries, and roles —
+defense contractors, AI startups, fintech, enterprise SaaS, government, and more.
+Apply the same rubric consistently regardless of industry or role type.
 
 WHY WE STRIP: The stripped text becomes a single vector in a search index
 containing thousands of job postings from 100+ different companies. Users
-search across all companies with natural language queries like "robotics
-engineer with security clearance near DC" or "PM roles at companies working
-on internet privacy." Every word in the stripped text influences the vector.
+search across ALL companies with natural language queries like "robotics
+engineer with security clearance near DC", "PM roles at companies working
+on internet privacy", or "senior backend engineer at AI startup." Every
+word in the stripped text influences the vector.
 
 Text that appears identically across thousands of postings — EEO statements,
 generic benefits, legal disclaimers — pushes every job's vector toward the same
@@ -17,12 +18,10 @@ point, drowning out the signal that makes each job unique. That shared text
 must be removed. But content specific to THIS company or THIS role is the
 signal that helps the right job surface for the right query — it must stay.
 
-THE OPERATION IS DELETION ONLY: The strip model removes lines from the
+THE OPERATION IS DELETION ONLY: The strip model removes content from the
 original. It should never rewrite, paraphrase, summarize, or add text.
-If a line appears in the stripped version, it should be character-for-character
-identical to the original.
 
-WHAT SHOULD BE REMOVED (interchangeable across postings):
+WHAT SHOULD BE REMOVED (interchangeable across companies' postings):
 - EEO / equal opportunity statements
 - Generic benefits lists (the standard health/dental/vision/401k/PTO package)
 - Drug-free workplace policies
@@ -36,14 +35,13 @@ WHAT SHOULD BE KEPT (differentiates this posting in cross-company search):
 - Company description, mission, products, named projects — anything specific
   to THIS company that wouldn't appear on other companies' postings. Example:
   Cloudflare's "Project Galileo" or Anthropic's research directions are
-  company-differentiating, not boilerplate, even though they aren't role requirements
+  company-differentiating content, not boilerplate
 - Compensation details: salary ranges, equity, RSUs, signing bonuses
 - Remote / hybrid / onsite details, location, reporting structure
 - Eligibility requirements: export control, citizenship, security clearance,
   background checks, work authorization — these are hard gates that determine
-  who can apply, not legal boilerplate. A user searching "jobs that don't
-  require clearance" or "roles open to non-US-citizens" needs this info
-  in the vector
+  who can apply, not legal boilerplate. A user searching "jobs requiring
+  clearance" or "roles open to non-US-citizens" needs this in the vector
 - Benefits that are specific or unusual (100% coverage, fertility benefits,
   specific dollar amounts) — only the generic "standard package" list should go
 
@@ -51,22 +49,46 @@ THE KEY TEST: Would you find nearly identical text on thousands of other
 companies' postings? If yes, remove it. If it's specific to this company
 or role, keep it.
 
-CRITICAL FAILURES (automatic score cap of 2):
-- Hallucination: adding text not in the original
-- Rephrasing: changing wording instead of only deleting lines
+Score the stripped version on four dimensions (1-5 each):
 
-Score the stripped version 1-5:
+**recall** — Did all differentiating content survive?
+  This is the most important dimension. Information loss means the job won't
+  surface for queries it should match.
+  5: All role-specific AND company-specific differentiating content preserved
+  4: Nearly all preserved, trivial omissions only
+  3: Most preserved but some meaningful details lost
+  2: Important content removed (salary, qualifications, eligibility, company details)
+  1: Critical content missing — responsibilities, qualifications, or key requirements gone
 
-  5: All boilerplate removed, all differentiating content preserved, no rephrasing
-  4: Nearly perfect — minor boilerplate remnants OR trivial omissions
-  3: Decent but noticeable issues — some boilerplate left OR meaningful content lost
-  2: Significant problems — important content removed, lots of boilerplate remaining,
-     OR any rephrasing/hallucination
-  1: Failed — barely stripped (output ≈ input), critical content lost, or substantial
-     hallucination
+**precision** — Was boilerplate actually removed?
+  Less critical than recall — noise hurts ranking but doesn't cause total misses.
+  5: All boilerplate removed cleanly
+  4: Nearly all removed, minor remnants
+  3: Most removed but some obvious boilerplate sections remain
+  2: Significant boilerplate left in
+  1: Little to no boilerplate removed (output ≈ input)
+
+**integrity** — Was any false signal introduced?
+  Fabricated content poisons the search index — the job surfaces for wrong queries.
+  5: No fabricated content whatsoever
+  4: No factual fabrication; trivial artifacts only (e.g., orphaned header)
+  3: Minor meaning shifts from rewording, but no invented facts
+  2: Noticeable additions or rewording that changes what queries would match
+  1: Fabricated requirements, salary figures, or other factual content
+
+**fidelity** — How closely does kept text match the original surface form?
+  Least important for search quality, but useful for measuring instruction-following.
+  5: Kept text is character-for-character identical to original
+  4: Essentially identical, trivial whitespace or formatting differences
+  3: Some rewording but meaning fully preserved
+  2: Noticeable paraphrasing throughout
+  1: Substantially rewritten
 
 Respond with ONLY valid JSON (no markdown fences):
 {
-  "score": <1-5>,
-  "reasoning": "<1-2 sentences explaining your score>"
+  "recall": <1-5>,
+  "precision": <1-5>,
+  "integrity": <1-5>,
+  "fidelity": <1-5>,
+  "reasoning": "<1-2 sentences explaining your scores>"
 }

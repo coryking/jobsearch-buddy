@@ -96,7 +96,7 @@ ats-eval score \
 ```
 
 Shows original vs. stripped side-by-side with diff highlighting. Flags
-suspicious removals. Prompts for 3 scores (1-5 each). Saves to
+suspicious removals. Prompts for 4 dimension scores (1-5 each). Saves to
 `eval/data/scores/manual_scores.csv`. Supports resume (skip already-scored).
 
 ### 5. Iterate on prompts
@@ -154,15 +154,14 @@ files. If the judge agrees with you on those, trust it for the rest.
 
 ## Scoring Rubric
 
-Single score, 1-5: "How did it do?"
+Four dimensions, 1-5 each. Displayed as R/P/I/F (e.g., 5/4/5/3).
 
-| Score | Meaning |
-|-------|---------|
-| 5 | All boilerplate removed, all important content preserved, no rephrasing |
-| 4 | Minor issues — small boilerplate remnants or trivial omissions |
-| 3 | Decent but noticeable issues — some boilerplate left or meaningful content lost |
-| 2 | Significant problems — lots of boilerplate remaining or important content removed |
-| 1 | Failed — little removed, critical content lost, or substantial hallucination |
+| Dimension | What it measures | Weight |
+|-----------|-----------------|--------|
+| **Recall** | Did differentiating content survive? (most important — info loss is irreversible) | Highest |
+| **Precision** | Was boilerplate removed? (noise hurts ranking but doesn't cause total misses) | Medium |
+| **Integrity** | Any fabricated content? (false signal poisons the index) | High when it fails |
+| **Fidelity** | Does kept text match original surface form? (least important for search) | Lowest |
 
 ## Models
 
@@ -222,12 +221,12 @@ Per-run metadata with timing:
 
 `manual_scores.csv`:
 ```
-filename,run_name,score,notes
-001-stripe-sr-backend.txt,v1-gpt4.1nano,5,clean removal
+filename,run_name,recall,precision,integrity,fidelity,notes
+001-stripe-sr-backend.txt,v1-gpt4.1nano,5,5,5,5,clean removal
 ```
 
 `judge_scores.csv`:
 ```
-filename,run_name,score,reasoning
-001-stripe-sr-backend.txt,v1-gpt4.1nano,5,All boilerplate removed...
+filename,run_name,recall,precision,integrity,fidelity,reasoning
+001-stripe-sr-backend.txt,v1-gpt4.1nano,5,4,5,5,All boilerplate removed...
 ```
