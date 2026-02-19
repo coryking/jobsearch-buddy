@@ -46,7 +46,7 @@ class _SampleResult:
     output_chars: int | None
     prompt_tokens: int | None
     completion_tokens: int | None
-    reasoning_tokens: int | None
+    reasoning_tokens: int
     total_tokens: int | None
     elapsed_seconds: float
     reduction: float | None
@@ -155,7 +155,6 @@ def _process_sample(
 
         reduction = ((input_chars - len(result_text)) / input_chars * 100) if input_chars else 0
 
-        # Extract reasoning tokens if available (DeepSeek-R1, o1, o3, etc.)
         reasoning_tokens = 0
         if usage.completion_tokens_details:
             reasoning_tokens = getattr(usage.completion_tokens_details, "reasoning_tokens", 0) or 0
@@ -187,7 +186,7 @@ def _process_sample(
             output_chars=None,
             prompt_tokens=None,
             completion_tokens=None,
-            reasoning_tokens=None,
+            reasoning_tokens=0,
             total_tokens=None,
             elapsed_seconds=round(elapsed, 3),
             reduction=None,
@@ -247,11 +246,11 @@ def _run_all(
             parts.append(f"[dim]\u00b7 {queued} queued[/dim]")
         tok_total = token_totals["prompt"] + token_totals["completion"]
         if tok_total:
-            tok_parts = [f"In: {_fmt_tokens(token_totals['prompt'])}",
-                         f"Out: {_fmt_tokens(token_totals['completion'])}"]
+            tok_parts = [f"prompt: {_fmt_tokens(token_totals['prompt'])}",
+                         f"completion: {_fmt_tokens(token_totals['completion'])}"]
             if token_totals["reasoning"]:
-                tok_parts.append(f"Think: {_fmt_tokens(token_totals['reasoning'])}")
-            parts.append(f"[cyan]{' '.join(tok_parts)}[/cyan]")
+                tok_parts.append(f"reasoning: {_fmt_tokens(token_totals['reasoning'])}")
+            parts.append(f"[cyan]{' | '.join(tok_parts)}[/cyan]")
         status = Text.from_markup("  \u2502  ".join(parts))
 
         table = Table(show_lines=False, pad_edge=False)

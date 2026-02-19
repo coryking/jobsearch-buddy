@@ -69,7 +69,7 @@ class _JudgeResult:
     reasoning: str | None
     prompt_tokens: int | None
     completion_tokens: int | None
-    reasoning_tokens: int | None
+    reasoning_tokens: int
     elapsed_seconds: float
     error: str | None
 
@@ -137,7 +137,7 @@ def _judge_one(
             run_name=run_name, filename=run_file.name,
             scores=None, reasoning=None,
             prompt_tokens=None, completion_tokens=None,
-            reasoning_tokens=None,
+            reasoning_tokens=0,
             elapsed_seconds=round(elapsed, 3), error=str(e),
         )
 
@@ -287,11 +287,11 @@ def judge(
             parts.append(f"[dim]\u00b7 {queued} queued[/dim]")
         tok_total = token_totals["prompt"] + token_totals["completion"]
         if tok_total:
-            tok_parts = [f"In: {_fmt_tokens(token_totals['prompt'])}",
-                         f"Out: {_fmt_tokens(token_totals['completion'])}"]
+            tok_parts = [f"prompt: {_fmt_tokens(token_totals['prompt'])}",
+                         f"completion: {_fmt_tokens(token_totals['completion'])}"]
             if token_totals["reasoning"]:
-                tok_parts.append(f"Think: {_fmt_tokens(token_totals['reasoning'])}")
-            parts.append(f"[cyan]{' '.join(tok_parts)}[/cyan]")
+                tok_parts.append(f"reasoning: {_fmt_tokens(token_totals['reasoning'])}")
+            parts.append(f"[cyan]{' | '.join(tok_parts)}[/cyan]")
         status = Text.from_markup("  \u2502  ".join(parts))
 
         table = Table(show_lines=False, pad_edge=False)
@@ -385,8 +385,8 @@ def judge(
         console.print(f"  [red]{error_count} total errors[/red]")
     tok_total = token_totals["prompt"] + token_totals["completion"]
     if tok_total:
-        tok_parts = [f"In: {token_totals['prompt']:,}", f"Out: {token_totals['completion']:,}"]
+        tok_parts = [f"prompt: {token_totals['prompt']:,}", f"completion: {token_totals['completion']:,}"]
         if token_totals["reasoning"]:
-            tok_parts.append(f"Think: {token_totals['reasoning']:,}")
-        console.print(f"  Tokens: {' | '.join(tok_parts)} | Total: {tok_total:,}")
+            tok_parts.append(f"reasoning: {token_totals['reasoning']:,}")
+        console.print(f"  Tokens: {' | '.join(tok_parts)} | total: {tok_total:,}")
     console.print(f"  Scores saved to: {scores}")
