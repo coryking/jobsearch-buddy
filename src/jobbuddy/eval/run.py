@@ -78,14 +78,18 @@ def run(
 
     prompt_text = prompt.read_text(encoding="utf-8").strip()
 
-    # Build work items: every (model, sample) pair
+    # Build work items: every (model, sample) pair, skipping already-done
     work_items: list[dict] = []
+    skipped = 0
     for m in models:
         model_params = KNOWN_MODELS.get(m, {})
         name = run_name if run_name else f"{prompt.stem}-{m}"
         output_dir = output / name
         output_dir.mkdir(parents=True, exist_ok=True)
         for i, sample_file in enumerate(sample_files, 1):
+            if (output_dir / sample_file.name).exists():
+                skipped += 1
+                continue
             work_items.append({
                 "model": m,
                 "model_params": model_params,
@@ -94,6 +98,13 @@ def run(
                 "sample_file": sample_file,
                 "index": i,
             })
+
+    if skipped:
+        print(f"Skipping {skipped} already-completed samples")
+
+    if not work_items:
+        print("All samples already completed!")
+        raise typer.Exit(0)
 
     _run_all(work_items, prompt, prompt_text, sample_files, models, output, workers)
 
