@@ -302,6 +302,7 @@ def _run_all(
                         "output_chars": result.output_chars,
                         "prompt_tokens": result.prompt_tokens,
                         "completion_tokens": result.completion_tokens,
+                        "reasoning_tokens": result.reasoning_tokens,
                         "total_tokens": result.total_tokens,
                         "elapsed_seconds": result.elapsed_seconds,
                     }
@@ -362,6 +363,7 @@ def _run_all(
                 "total_tokens": sum(s["total_tokens"] for s in stats),
                 "total_prompt_tokens": sum(s["prompt_tokens"] for s in stats),
                 "total_completion_tokens": sum(s["completion_tokens"] for s in stats),
+                "total_reasoning_tokens": sum(s["reasoning_tokens"] for s in stats),
             }
         else:
             aggregates = {}
@@ -394,11 +396,14 @@ def _run_all(
         console.print(f"\n  [bold]{m}[/bold]: [green]{len(stats)} succeeded[/green], [red]{len(errs)} failed[/red]")
         if stats:
             latencies = [s["elapsed_seconds"] for s in stats]
-            total_tokens = sum(s["total_tokens"] for s in stats)
             prompt_tokens = sum(s["prompt_tokens"] for s in stats)
             completion_tokens = sum(s["completion_tokens"] for s in stats)
+            reasoning_tokens = sum(s["reasoning_tokens"] for s in stats)
             console.print(f"    Latency: mean={statistics.mean(latencies):.3f}s, median={statistics.median(latencies):.3f}s")
-            console.print(f"    Tokens: {total_tokens:,} total ({prompt_tokens:,} prompt + {completion_tokens:,} completion)")
+            tok_parts = [f"prompt: {prompt_tokens:,}", f"completion: {completion_tokens:,}"]
+            if reasoning_tokens:
+                tok_parts.append(f"reasoning: {reasoning_tokens:,}")
+            console.print(f"    Tokens: {' | '.join(tok_parts)} | total: {prompt_tokens + completion_tokens:,}")
         if errs:
             for err in errs:
                 console.print(f"    [red]{err['filename']}[/red]: {err['error']}")
