@@ -1,14 +1,13 @@
 """Tests for boilerplate stripping — store methods and StripPhase."""
 
-import queue
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from jobbuddy.models import Job
 from jobbuddy.store import JobStore
+from jobbuddy.sync.display import PhaseState
 from jobbuddy.sync.strip import StripPhase
-from jobbuddy.sync.types import Phase, PhaseDone, PhaseError, PhaseProgress, PhaseStarted
 
 
 def _make_job(id: str = "123", title: str = "PM", location: str = "Seattle", **kw) -> Job:
@@ -27,17 +26,6 @@ def store():
     s = JobStore(":memory:")
     yield s
     s.close()
-
-
-def _drain_events(eq):
-    """Drain all events from a SimpleQueue into a list."""
-    events = []
-    while True:
-        try:
-            events.append(eq.get_nowait())
-        except queue.Empty:
-            break
-    return events
 
 
 # ---------------------------------------------------------------------------
@@ -157,19 +145,26 @@ class TestEmbedTextStripped:
         store.upsert_jobs("acme", [_make_job("1", description="raw description")])
         pk = store.conn.execute("SELECT id FROM jobs WHERE job_id = '1'").fetchone()["id"]
 
+        # Register the embedding model (FK on job_embeddings)
+        store.conn.execute(
+            "INSERT OR IGNORE INTO embedding_models (model_key, model_name, dimensions, created_at) "
+            "VALUES ('text3small', 'text-embedding-3-small', 1536, '2025-01-01')"
+        )
+        store.conn.commit()
+
         # Embed with raw description
         job = _make_job("1", description="raw description")
         raw_text = job.embed_text("acme")
         raw_hash = hashlib.sha256(raw_text.encode()).hexdigest()
-        blob = struct.pack(f"<384f", *([0.1] * 384))
-        store.store_embedding(pk, "bge_small", blob, raw_hash)
+        blob = struct.pack(f"<1536f", *([0.1] * 1536))
+        store.store_embedding(pk, blob, raw_hash)
 
         # Should be up to date
-        assert store.jobs_needing_embeddings("bge_small", count_only=True) == 0
+        assert store.jobs_needing_embeddings(count_only=True) == 0
 
         # Set stripped description — hash changes, needs re-embedding
         store.update_stripped_description(pk, "stripped description")
-        assert store.jobs_needing_embeddings("bge_small", count_only=True) == 1
+        assert store.jobs_needing_embeddings(count_only=True) == 1
 
     def test_embed_text_falls_back_to_raw(self):
         """embed_text uses raw description when no stripped version available."""
@@ -191,33 +186,38 @@ class TestEmbedTextStripped:
 
 
 class TestStripPhase:
-    def _make_mock_settings(self, *, has_key=True):
+    """Tests for StripPhase directly — no sync_jobs() pipeline."""
+
+    def _make_mock_settings(self):
         settings = MagicMock()
-        settings.azure_openai_api_key = "fake-key" if has_key else None
-        settings.azure_openai_endpoint = "https://test.openai.azure.com/" if has_key else None
+        settings.azure_openai_api_key = "fake-key"
+        settings.azure_openai_endpoint = "https://test.openai.azure.com/"
         settings.azure_openai_api_version = "2024-12-01-preview"
         settings.azure_openai_model = "gpt-5-nano"
-        settings.strip_batch_size = 50
         return settings
 
-    @patch("jobbuddy.sync.strip.get_settings")
-    def test_strip_phase_noop_without_api_key(self, mock_settings, store):
-        """StripPhase does nothing when Azure OpenAI is not configured."""
-        mock_settings.return_value = self._make_mock_settings(has_key=False)
-        store.upsert_jobs("acme", [_make_job("1", description="desc")])
+    def _seed_jobs(self, db_path, jobs):
+        store = JobStore(db_path)
+        store.upsert_jobs("acme", jobs)
+        store.close()
 
-        eq = queue.SimpleQueue()
-        StripPhase(store, eq).run()
+    def test_strip_phase_noop_when_no_work(self, tmp_path):
+        """StripPhase returns early when no jobs need stripping."""
+        db = str(tmp_path / "test.db")
+        self._seed_jobs(db, [_make_job("1")])  # no description → nothing to strip
 
-        events = _drain_events(eq)
-        assert len(events) == 0
+        display = PhaseState("Strip")
+        StripPhase(db, display=display, max_workers=1).run()
+
+        assert display.status == "pending"  # never started
 
     @patch("jobbuddy.sync.strip.AzureOpenAI")
     @patch("jobbuddy.sync.strip.get_settings")
-    def test_strip_phase_calls_llm(self, mock_settings, mock_client_cls, store):
+    def test_strip_phase_calls_llm(self, mock_settings, mock_client_cls, tmp_path):
         """StripPhase calls Azure OpenAI for unstripped jobs."""
         mock_settings.return_value = self._make_mock_settings()
-        store.upsert_jobs("acme", [
+        db = str(tmp_path / "test.db")
+        self._seed_jobs(db, [
             _make_job("1", description="raw description with boilerplate"),
             _make_job("2", description="another raw description"),
         ])
@@ -228,39 +228,39 @@ class TestStripPhase:
         mock_client.chat.completions.create.return_value = mock_response
         mock_client_cls.return_value = mock_client
 
-        eq = queue.SimpleQueue()
-        StripPhase(store, eq).run()
+        display = PhaseState("Strip")
+        StripPhase(db, display=display, max_workers=1).run()
 
         assert mock_client.chat.completions.create.call_count == 2
-
-        events = _drain_events(eq)
-        starts = [e for e in events if isinstance(e, PhaseStarted) and e.phase == Phase.STRIP]
-        assert len(starts) == 1
-        assert starts[0].total == 2
-
-        dones = [e for e in events if isinstance(e, PhaseDone) and e.phase == Phase.STRIP]
-        assert len(dones) == 1
+        assert display.total == 2
+        assert display.done == 2
+        assert display.status == "idle"
 
         # Verify descriptions were updated
+        store = JobStore(db)
         row1 = store.conn.execute("SELECT description_stripped FROM jobs WHERE job_id = '1'").fetchone()
         row2 = store.conn.execute("SELECT description_stripped FROM jobs WHERE job_id = '2'").fetchone()
         assert row1["description_stripped"] == "cleaned description"
         assert row2["description_stripped"] == "cleaned description"
+        store.close()
 
     @patch("jobbuddy.sync.strip.AzureOpenAI")
     @patch("jobbuddy.sync.strip.get_settings")
-    def test_strip_phase_skips_already_stripped(self, mock_settings, mock_client_cls, store):
+    def test_strip_phase_skips_already_stripped(self, mock_settings, mock_client_cls, tmp_path):
         """StripPhase skips jobs that already have stripped descriptions."""
         mock_settings.return_value = self._make_mock_settings()
-        store.upsert_jobs("acme", [
+        db = str(tmp_path / "test.db")
+        self._seed_jobs(db, [
             _make_job("1", description="raw"),
             _make_job("2", description="raw"),
         ])
         # Manually mark job 1 as stripped
+        store = JobStore(db)
         store.conn.execute(
             "UPDATE jobs SET description_stripped = 'already clean' WHERE job_id = '1'"
         )
         store.conn.commit()
+        store.close()
 
         mock_response = MagicMock()
         mock_response.choices[0].message.content = "cleaned"
@@ -268,18 +268,18 @@ class TestStripPhase:
         mock_client.chat.completions.create.return_value = mock_response
         mock_client_cls.return_value = mock_client
 
-        eq = queue.SimpleQueue()
-        StripPhase(store, eq).run()
+        display = PhaseState("Strip")
+        StripPhase(db, display=display, max_workers=1).run()
 
-        # Only job 2 should have been processed
         assert mock_client.chat.completions.create.call_count == 1
 
     @patch("jobbuddy.sync.strip.AzureOpenAI")
     @patch("jobbuddy.sync.strip.get_settings")
-    def test_strip_phase_error_isolation(self, mock_settings, mock_client_cls, store):
+    def test_strip_phase_error_isolation(self, mock_settings, mock_client_cls, tmp_path):
         """One job failing to strip doesn't block others."""
         mock_settings.return_value = self._make_mock_settings()
-        store.upsert_jobs("acme", [
+        db = str(tmp_path / "test.db")
+        self._seed_jobs(db, [
             _make_job("1", description="first"),
             _make_job("2", description="second"),
         ])
@@ -299,25 +299,18 @@ class TestStripPhase:
         mock_client.chat.completions.create.side_effect = side_effect
         mock_client_cls.return_value = mock_client
 
-        eq = queue.SimpleQueue()
-        StripPhase(store, eq).run()
+        display = PhaseState("Strip")
+        StripPhase(db, display=display, max_workers=1).run()
 
-        events = _drain_events(eq)
+        assert display.errors == 1
+        # WorkerPhase re-polls: the failed job retries and succeeds on next pass
+        assert display.done == 2
 
-        # Progress should report both (one failed, one succeeded)
-        progress = [e for e in events if isinstance(e, PhaseProgress) and e.phase == Phase.STRIP]
-        assert len(progress) == 2
-
-        dones = [e for e in events if isinstance(e, PhaseDone) and e.phase == Phase.STRIP]
-        assert len(dones) == 1
-
-        # Error event should fire
-        errors = [e for e in events if isinstance(e, PhaseError) and e.phase == Phase.STRIP]
-        assert len(errors) == 1
-
-        # One should have been stripped, one should not
+        # Both end up stripped (transient error retried via DB-as-queue)
+        store = JobStore(db)
         rows = store.conn.execute(
             "SELECT job_id, description_stripped FROM jobs ORDER BY job_id"
         ).fetchall()
         stripped_count = sum(1 for r in rows if r["description_stripped"] is not None)
-        assert stripped_count == 1
+        assert stripped_count == 2
+        store.close()

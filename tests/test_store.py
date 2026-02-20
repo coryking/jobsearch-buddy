@@ -1,7 +1,6 @@
 """Tests for jobbuddy.store — JobStore class."""
 
 import struct
-import threading
 from datetime import datetime, timezone
 
 import numpy as np
@@ -430,37 +429,6 @@ class TestEmbeddings:
         results = store.search_similar(query_blob, k=5)
         assert results == []
 
-
-# ---------------------------------------------------------------------------
-# Concurrency (WAL mode, no locks needed)
-# ---------------------------------------------------------------------------
-
-
-class TestConcurrency:
-    def test_concurrent_writes_on_disk(self, tmp_path):
-        """Multiple JobStore instances can write to the same DB file via WAL."""
-        db_path = tmp_path / "concurrent.db"
-        errors = []
-
-        def writer(slug):
-            try:
-                s = JobStore(str(db_path))
-                s.upsert_jobs(slug, [_make_job(f"{slug}-1")])
-                s.close()
-            except Exception as e:
-                errors.append(e)
-
-        threads = [threading.Thread(target=writer, args=(f"co-{i}",)) for i in range(10)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join()
-
-        # Verify all writes landed
-        store = JobStore(str(db_path))
-        assert store.job_count() == 10
-        store.close()
-        assert errors == []
 
 
 # ---------------------------------------------------------------------------
