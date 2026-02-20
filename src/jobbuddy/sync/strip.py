@@ -99,7 +99,7 @@ class StripPhase(WorkerPhase):
                 {"role": "system", "content": STRIP_SYSTEM_PROMPT},
                 {"role": "user", "content": f"<job_description>\n{description}\n</job_description>"},
             ],
-            max_tokens=max_tokens,
+            max_completion_tokens=max_tokens,
         )
         stripped = response.choices[0].message.content.strip()
 
