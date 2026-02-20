@@ -217,6 +217,7 @@ class TestStripPhase:
 
         mock_response = MagicMock()
         mock_response.choices[0].message.content = "cleaned description"
+        mock_response.usage.total_tokens = 100
         mock_client = MagicMock()
         mock_client.chat.completions.create.return_value = mock_response
         mock_client_cls.return_value = mock_client
@@ -257,6 +258,7 @@ class TestStripPhase:
 
         mock_response = MagicMock()
         mock_response.choices[0].message.content = "cleaned"
+        mock_response.usage.total_tokens = 50
         mock_client = MagicMock()
         mock_client.chat.completions.create.return_value = mock_response
         mock_client_cls.return_value = mock_client
@@ -286,6 +288,7 @@ class TestStripPhase:
                 raise Exception("API error")
             response = MagicMock()
             response.choices[0].message.content = "cleaned"
+            response.usage.total_tokens = 50
             return response
 
         mock_client = MagicMock()

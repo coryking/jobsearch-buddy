@@ -69,7 +69,10 @@ class PhaseState:
     errors: int = 0
     last_ok_at: float | None = None  # time.monotonic()
     detail: str = ""  # sub-heading: company names, etc.
+    info: str = ""  # phase-controlled column (tokens, jobs, etc.)
     rate: RollingRate = field(default_factory=RollingRate)
+    _info_counter: int = field(default=0, repr=False)
+    _info_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def start(self, total: int, detail: str = "") -> None:
         self.status = "active"
@@ -82,6 +85,12 @@ class PhaseState:
         self.rate.record()
         if detail is not None:
             self.detail = detail
+
+    def add_to_info_counter(self, n: int, label: str = "tok") -> None:
+        """Thread-safe accumulator. Updates the info display string."""
+        with self._info_lock:
+            self._info_counter += n
+            self.info = f"{humanize.metric(self._info_counter, '.1f')}{label}"
 
     def record_error(self) -> None:
         self.errors += 1
@@ -136,10 +145,10 @@ def _format_last_ok(phase: PhaseState) -> str:
 
 
 def _format_errors(phase: PhaseState) -> str:
-    """Format error count, red if > 0."""
+    """Format error count, red if > 0, dash if 0."""
     if phase.errors > 0:
         return f"[red]{humanize.intcomma(phase.errors)}[/red]"
-    return str(phase.errors)
+    return "\u2014"
 
 
 def _format_status(phase: PhaseState) -> str:
@@ -173,18 +182,19 @@ def build_display(state: SyncDisplayState, filter_phases: list[str] | None = Non
 
     table = Table(
         title="ats sync",
-        show_header=False,
+        show_header=True,
         show_lines=False,
         pad_edge=True,
         box=None,
         title_style="bold",
+        header_style="dim",
     )
     table.add_column("Phase", style="bold", no_wrap=True, min_width=10)
     table.add_column("Status", no_wrap=True, min_width=10)
     table.add_column("Progress", justify="right", no_wrap=True, min_width=12)
     table.add_column("Rate", justify="right", no_wrap=True, min_width=7)
+    table.add_column("Info", justify="right", no_wrap=True, min_width=8)
     table.add_column("Err", justify="right", no_wrap=True, min_width=5)
-    table.add_column("Last OK", justify="right", no_wrap=True, min_width=7)
 
     for phase in phases:
         progress = _format_progress(phase) + _suffix_for_phase(phase)
@@ -195,8 +205,8 @@ def build_display(state: SyncDisplayState, filter_phases: list[str] | None = Non
             _format_status(phase),
             progress,
             _format_rate(phase),
+            phase.info or "\u2014",
             _format_errors(phase),
-            _format_last_ok(phase),
             style=style,
         )
 

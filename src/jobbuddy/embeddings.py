@@ -47,19 +47,22 @@ def _get_client() -> AzureOpenAI:
     return _client
 
 
-def embed_texts(texts: list[str]) -> list[list[float]]:
+def embed_texts(texts: list[str]) -> tuple[list[list[float]], int]:
     """Embed a batch of texts in a single API call.
 
     Caller is responsible for chunking into batches <= MAX_BATCH_SIZE.
     Raises openai.APIError on failure.
+
+    Returns (vectors, total_tokens).
     """
     if not texts:
-        return []
+        return [], 0
     if len(texts) > MAX_BATCH_SIZE:
         raise ValueError(f"Batch too large: {len(texts)} > {MAX_BATCH_SIZE}")
     client = _get_client()
     response = client.embeddings.create(input=texts, model=DEPLOYMENT_NAME)
-    return [item.embedding for item in response.data]
+    total_tokens = response.usage.total_tokens if response.usage else 0
+    return [item.embedding for item in response.data], total_tokens
 
 
 def embed_query(text: str) -> list[float]:

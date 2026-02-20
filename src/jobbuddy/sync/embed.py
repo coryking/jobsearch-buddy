@@ -23,9 +23,10 @@ class EmbedPhase(WorkerPhase):
     """
 
     def __init__(self, db_path: str | Path, *, display: PhaseState,
-                 max_workers: int = 4):
+                 max_workers: int = 4, slug: str | None = None):
         super().__init__(db_path, max_workers=max_workers, display=display)
         self._batch_size = compute_batch_size()
+        self._slug = slug
 
     @property
     def batch_size(self) -> int:
@@ -33,11 +34,11 @@ class EmbedPhase(WorkerPhase):
         return self._batch_size
 
     def count_remaining(self) -> int:
-        return self._reader.jobs_needing_embeddings(count_only=True)
+        return self._reader.jobs_needing_embeddings(slug=self._slug, count_only=True)
 
     def poll_work(self, batch_size: int) -> list[list[dict]]:
         """Return a single batch of jobs as a one-element list (one work unit)."""
-        jobs = self._reader.jobs_needing_embeddings(limit=batch_size)
+        jobs = self._reader.jobs_needing_embeddings(slug=self._slug, limit=batch_size)
         if not jobs:
             return []
         return [jobs]  # one work unit = one batch
@@ -47,17 +48,14 @@ class EmbedPhase(WorkerPhase):
         jobs = item
         texts = [j["text"] for j in jobs]
 
-        # Collect unique company slugs for display detail
-        slugs = list(dict.fromkeys(j["company_slug"] for j in jobs))
-        detail = ", ".join(slugs[:5])
-        if len(slugs) > 5:
-            detail += f" +{len(slugs) - 5}"
-
         try:
-            vectors = embed_texts(texts)
+            vectors, total_tokens = embed_texts(texts)
         except Exception as e:
             log.warning("Embedding batch failed (%d jobs): %s", len(jobs), e)
             raise
+
+        if total_tokens:
+            self.display.add_to_info_counter(total_tokens)
 
         store = self._get_thread_store()
         for job_info, vec in zip(jobs, vectors):
@@ -67,4 +65,6 @@ class EmbedPhase(WorkerPhase):
                 blob,
                 job_info["text_hash"],
             )
-            self.display.advance(detail=detail)
+            self.display.advance(
+                detail=f"{job_info['company_slug']}: {job_info['title']}"
+            )

@@ -116,18 +116,20 @@ def sync_jobs(
                 max_workers=max_workers,
             ).run()
 
-        # Phase 3: Strip boilerplate (global -- backfills existing jobs too)
+        # Phase 3: Strip boilerplate
         settings = get_settings()
         if settings.azure_openai_api_key and settings.azure_openai_endpoint:
             StripPhase(
                 db_path_str,
                 display=display_state.strip,
+                slug=company_slug,
             ).run()
 
         # Phase 4: Embed
         EmbedPhase(
             db_path_str,
             display=display_state.embed,
+            slug=company_slug,
         ).run()
 
         events.put(Done())

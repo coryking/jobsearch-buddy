@@ -67,9 +67,10 @@ class StripPhase(WorkerPhase):
     """Strip boilerplate from job descriptions using Azure OpenAI."""
 
     def __init__(self, db_path: str | Path, *, display: PhaseState,
-                 max_workers: int = 60):
+                 max_workers: int = 60, slug: str | None = None):
         super().__init__(db_path, max_workers=max_workers, display=display)
         self._client: AzureOpenAI | None = None
+        self._slug = slug
 
     def on_phase_start(self) -> None:
         settings = get_settings()
@@ -81,10 +82,10 @@ class StripPhase(WorkerPhase):
         )
 
     def count_remaining(self) -> int:
-        return self._reader.get_jobs_needing_stripping(count_only=True)
+        return self._reader.get_jobs_needing_stripping(slug=self._slug, count_only=True)
 
     def poll_work(self, batch_size: int) -> list[dict]:
-        return self._reader.get_jobs_needing_stripping(limit=batch_size)
+        return self._reader.get_jobs_needing_stripping(limit=batch_size, slug=self._slug)
 
     def process_item(self, item: dict) -> None:
         description = item["description"]
@@ -103,6 +104,9 @@ class StripPhase(WorkerPhase):
         )
         stripped = response.choices[0].message.content.strip()
 
+        if response.usage:
+            self.display.add_to_info_counter(response.usage.total_tokens)
+
         store = self._get_thread_store()
         store.update_stripped_description(item["id"], stripped)
-        self.display.advance(detail=item["company_slug"])
+        self.display.advance(detail=f"{item['company_slug']}: {item['title']}")

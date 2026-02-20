@@ -379,25 +379,36 @@ class JobStore:
                 [(desc, slug, job_id) for job_id, desc in descs.items()],
             )
 
-    def get_jobs_needing_stripping(self, limit: int = 50, *, count_only: bool = False) -> int | list[dict]:
+    def get_jobs_needing_stripping(self, limit: int = 50, *, slug: str | None = None, count_only: bool = False) -> int | list[dict]:
         """Return active jobs with descriptions but no stripped version.
 
         With count_only=True, returns just the count (no LIMIT applied).
         """
+        conditions = [
+            "description IS NOT NULL",
+            "description_stripped IS NULL",
+            "disappeared_at IS NULL",
+        ]
+        params: list = []
+
+        if slug:
+            conditions.append("company_slug = ?")
+            params.append(slug)
+
+        where = " AND ".join(conditions)
+
         if count_only:
             row = self.conn.execute(
-                """SELECT COUNT(*) FROM jobs
-                   WHERE description IS NOT NULL AND description_stripped IS NULL
-                   AND disappeared_at IS NULL"""
+                f"SELECT COUNT(*) FROM jobs WHERE {where}", params
             ).fetchone()
             return row[0]
 
+        params.append(limit)
         rows = self.conn.execute(
-            """SELECT id, company_slug, job_id, title, description FROM jobs
-               WHERE description IS NOT NULL AND description_stripped IS NULL
-               AND disappeared_at IS NULL
+            f"""SELECT id, company_slug, job_id, title, description FROM jobs
+               WHERE {where}
                LIMIT ?""",
-            (limit,),
+            params,
         ).fetchall()
         return [dict(row) for row in rows]
 

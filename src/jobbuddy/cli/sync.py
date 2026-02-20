@@ -4,6 +4,7 @@ import queue
 import threading
 from typing import Optional
 
+import humanize
 import typer
 
 from jobbuddy.cli import app, console
@@ -38,23 +39,30 @@ def _consume_events(events, display_state):
 
         match event:
             case Done():
+                fetch.finish()
                 break
 
             case FetchStarted(slug=slug):
                 fetch.detail = slug
 
             case FetchProgress(slug=slug, fetched=fetched, total=total):
-                fetch.detail = slug
+                fetch.detail = f"{slug}: {humanize.intcomma(fetched)}/{humanize.intcomma(total)} jobs"
 
             case FetchResult(result=sr):
                 if sr.ok:
                     fetch.advance(detail=sr.slug)
+                    if sr.job_count:
+                        fetch.add_to_info_counter(sr.job_count, " jobs")
                 else:
                     fetch.record_error()
                     fetch.advance(detail=sr.slug)
+                if fetch.total is not None and fetch.done >= fetch.total:
+                    fetch.finish()
 
             case CompanySkipped(slug=slug, reason=reason):
                 fetch.advance(detail=f"{slug} (skipped)")
+                if fetch.total is not None and fetch.done >= fetch.total:
+                    fetch.finish()
 
             case RetryEvent(slug=slug, job_id=job_id, attempt=attempt, max_attempts=max_attempts, wait_seconds=wait, reason=reason):
                 target = slug if slug else job_id

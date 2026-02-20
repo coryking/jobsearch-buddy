@@ -48,7 +48,7 @@ def _mock_response(n: int = 1, dim: int = DIMENSIONS):
             index=i,
         )
         data.append(item)
-    return SimpleNamespace(data=data)
+    return SimpleNamespace(data=data, usage=SimpleNamespace(total_tokens=n * 100))
 
 
 @pytest.fixture(autouse=True)
@@ -147,15 +147,17 @@ class TestGetClient:
 
 class TestEmbedTexts:
     def test_empty_list_returns_empty(self, mock_client):
-        result = embed_texts([])
-        assert result == []
+        vectors, tokens = embed_texts([])
+        assert vectors == []
+        assert tokens == 0
         mock_client.embeddings.create.assert_not_called()
 
     def test_returns_embeddings(self, mock_client):
         mock_client.embeddings.create.return_value = _mock_response(2)
-        result = embed_texts(["hello", "world"])
-        assert len(result) == 2
-        assert len(result[0]) == DIMENSIONS
+        vectors, tokens = embed_texts(["hello", "world"])
+        assert len(vectors) == 2
+        assert len(vectors[0]) == DIMENSIONS
+        assert tokens == 200
         mock_client.embeddings.create.assert_called_once_with(
             input=["hello", "world"], model=DEPLOYMENT_NAME
         )
@@ -168,8 +170,8 @@ class TestEmbedTexts:
     def test_max_batch_size_allowed(self, mock_client):
         mock_client.embeddings.create.return_value = _mock_response(MAX_BATCH_SIZE)
         texts = ["x"] * MAX_BATCH_SIZE
-        result = embed_texts(texts)
-        assert len(result) == MAX_BATCH_SIZE
+        vectors, _ = embed_texts(texts)
+        assert len(vectors) == MAX_BATCH_SIZE
 
 
 # ---------------------------------------------------------------------------
