@@ -10,9 +10,10 @@ import threading
 from pathlib import Path
 
 from jobbuddy.embeddings import compute_batch_size, embed_texts, serialize_f32
+from jobbuddy.models import Job
 from jobbuddy.sync.base import WorkerPhase
 from jobbuddy.sync.display import PhaseState
-from jobbuddy.types import EmbedBatch, EmbedWorkItem
+from jobbuddy.types import EmbedBatch
 
 log = logging.getLogger(__name__)
 
@@ -50,25 +51,35 @@ class EmbedPhase(WorkerPhase["EmbedBatch"]):
     def process_item(self, item: EmbedBatch) -> None:
         """Embed a batch of jobs and store results."""
         jobs = item
-        texts = [j["text"] for j in jobs]
+        texts = []
+        valid_jobs = []
+        for j in jobs:
+            job = Job(
+                id=j["job_id"], title=j["title"],
+                location=j["location"] or "", url="", apply_url="",
+                department=j["department"],
+            )
+            text = job.embed_text(j["company_slug"], description_stripped=j["description_stripped"])
+            if text:
+                texts.append(text)
+                valid_jobs.append(j)
+
+        if not texts:
+            return
 
         try:
             vectors, total_tokens = embed_texts(texts)
         except Exception as e:
-            log.warning("Embedding batch failed (%d jobs): %s", len(jobs), e)
+            log.warning("Embedding batch failed (%d jobs): %s", len(valid_jobs), e)
             raise
 
         if total_tokens:
             self.display.add_to_info_counter(total_tokens)
 
         store = self._get_thread_store()
-        for job_info, vec in zip(jobs, vectors):
+        for job_info, vec in zip(valid_jobs, vectors):
             blob = serialize_f32(vec)
-            store.store_embedding(
-                job_info["id"],
-                blob,
-                job_info["text_hash"],
-            )
+            store.store_embedding(job_info["id"], blob)
             self.display.advance(
                 detail=f"{job_info['company_slug']}: {job_info['title']}"
             )

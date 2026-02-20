@@ -33,9 +33,9 @@ class EmbedWorkItem(TypedDict):
     company_slug: str
     job_id: str
     title: str
-    text: str
-    text_hash: str
-    has_embedding: bool
+    department: str | None
+    location: str | None
+    description_stripped: str
 
 
 EmbedBatch = list[EmbedWorkItem]

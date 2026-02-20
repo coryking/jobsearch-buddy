@@ -1,6 +1,5 @@
 """Tests for jobbuddy.search — VectorSearch class."""
 
-import hashlib
 import struct
 from unittest.mock import patch
 
@@ -9,7 +8,6 @@ import pytest
 
 from jobbuddy.models import Job
 from jobbuddy.search import SearchResult, VectorSearch
-from jobbuddy.store import JobStore
 
 
 def _make_job(id: str = "123", title: str = "PM", location: str = "Seattle", **kw) -> Job:
@@ -21,10 +19,6 @@ def _make_job(id: str = "123", title: str = "PM", location: str = "Seattle", **k
         apply_url=f"https://example.com/jobs/{id}/apply",
         **kw,
     )
-
-
-def _text_hash(text: str) -> str:
-    return hashlib.sha256(text.encode()).hexdigest()
 
 
 def _fake_vec(dimensions: int, seed: int = 0) -> np.ndarray:
@@ -53,15 +47,11 @@ def vs():
 
     for job_id_str in ["1", "2", "3"]:
         row = store.conn.execute(
-            "SELECT id, company_slug, description FROM jobs WHERE job_id = ?", (job_id_str,)
+            "SELECT id FROM jobs WHERE job_id = ?", (job_id_str,)
         ).fetchone()
-        surr_id = row["id"]
-        job = _make_job(job_id_str, description=row["description"])
-        text = job.embed_text(row["company_slug"])
-        h = _text_hash(text)
         vec = _fake_vec(DIMS, seed=int(job_id_str))
         blob = struct.pack(f"<{len(vec)}f", *vec)
-        store.store_embedding(surr_id, blob, h)
+        store.store_embedding(row["id"], blob)
 
     yield search
     search.close()

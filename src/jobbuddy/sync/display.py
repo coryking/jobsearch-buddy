@@ -86,11 +86,11 @@ class PhaseState:
         if detail is not None:
             self.detail = detail
 
-    def add_to_info_counter(self, n: int, label: str = "tok") -> None:
+    def add_to_info_counter(self, n: int, label: str = " tok") -> None:
         """Thread-safe accumulator. Updates the info display string."""
         with self._info_lock:
             self._info_counter += n
-            self.info = f"{humanize.metric(self._info_counter, '.1f')}{label}"
+            self.info = f"{humanize.metric(self._info_counter)}{label}"
 
     def record_error(self) -> None:
         self.errors += 1

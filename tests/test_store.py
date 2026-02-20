@@ -3,7 +3,6 @@
 import struct
 from datetime import datetime, timezone
 
-import numpy as np
 import pytest
 
 from jobbuddy.models import Job
@@ -264,13 +263,6 @@ class TestEmbeddings:
             ids.append(row["id"])
         return ids
 
-    def _get_text_hash(self, job_id_str, desc):
-        """Compute the actual text_hash for a job's embed_text."""
-        import hashlib
-        job = _make_job(job_id_str, description=desc)
-        text = job.embed_text("acme", description_stripped=desc)
-        return hashlib.sha256(text.encode()).hexdigest()
-
     def _make_embedding(self, dims=1536, val=0.1):
         """Create a float32 embedding blob."""
         vec = [val] * dims
@@ -310,16 +302,14 @@ class TestEmbeddings:
         ids = self._insert_jobs_with_stripped(store, "Build AI.")
         job_id = ids[0]
         blob = self._make_embedding()
-        text_hash = self._get_text_hash("1", "Build AI.")
 
-        store.store_embedding(job_id, blob, text_hash)
+        store.store_embedding(job_id, blob)
 
         # Check job_embeddings
         row = store.conn.execute(
             "SELECT * FROM job_embeddings WHERE job_id = ?", (job_id,)
         ).fetchone()
         assert row is not None
-        assert row["text_hash"] == text_hash
 
         # Check vec_jobs has the entry
         vec_row = store.conn.execute(
@@ -328,36 +318,61 @@ class TestEmbeddings:
         assert vec_row is not None
 
     def test_store_embedding_makes_job_not_needing(self, store):
-        """After storing an embedding with correct hash, the job no longer needs one."""
+        """After storing an embedding, the job no longer needs one."""
         ids = self._insert_jobs_with_stripped(store, "Build AI.")
         job_id = ids[0]
         assert store.count_jobs_needing_embeddings() == 1
 
         blob = self._make_embedding()
-        text_hash = self._get_text_hash("1", "Build AI.")
-
-        store.store_embedding(job_id, blob, text_hash)
+        store.store_embedding(job_id, blob)
         assert store.count_jobs_needing_embeddings() == 0
 
-    def test_hash_mismatch_triggers_re_embedding(self, store):
-        """Changed description hash means the job needs re-embedding."""
+    def test_update_stripped_description_deletes_embedding(self, store):
+        """Updating stripped description cascades: deletes the stale embedding."""
         ids = self._insert_jobs_with_stripped(store, "version 1")
         job_id = ids[0]
         blob = self._make_embedding()
 
-        store.store_embedding(job_id, blob, "old_hash")
-        # The text_hash won't match the actual embed_text hash
-        jobs = store.list_jobs_needing_embeddings()
-        assert len(jobs) == 1  # needs re-embedding because hash doesn't match
+        store.store_embedding(job_id, blob)
+        assert store.count_jobs_needing_embeddings() == 0
+
+        # Re-strip triggers re-embed
+        store.update_stripped_description(job_id, "version 2")
+        assert store.count_jobs_needing_embeddings() == 1
+
+        # Both tables should be cleaned
+        emb_row = store.conn.execute(
+            "SELECT * FROM job_embeddings WHERE job_id = ?", (job_id,)
+        ).fetchone()
+        assert emb_row is None
+        vec_row = store.conn.execute(
+            "SELECT * FROM vec_jobs WHERE job_id = ?", (job_id,)
+        ).fetchone()
+        assert vec_row is None
+
+    def test_clear_stripped_descriptions_deletes_embeddings(self, store):
+        """Clearing all stripped descriptions also deletes all embeddings."""
+        ids = self._insert_jobs_with_stripped(store, "Build AI.", "Lead teams.")
+        blob = self._make_embedding()
+        for job_id in ids:
+            store.store_embedding(job_id, blob)
+
+        assert store.count_jobs_needing_embeddings() == 0
+        store.clear_stripped_descriptions()
+
+        # Embeddings should be gone
+        count = store.conn.execute("SELECT COUNT(*) FROM job_embeddings").fetchone()[0]
+        assert count == 0
+        vec_count = store.conn.execute("SELECT COUNT(*) FROM vec_jobs").fetchone()[0]
+        assert vec_count == 0
 
     def test_delete_embedding(self, store):
         """delete_embedding removes from both job_embeddings and vec_jobs."""
         ids = self._insert_jobs_with_stripped(store, "Build AI.")
         job_id = ids[0]
         blob = self._make_embedding()
-        text_hash = self._get_text_hash("1", "Build AI.")
 
-        store.store_embedding(job_id, blob, text_hash)
+        store.store_embedding(job_id, blob)
         store.delete_embedding(job_id)
         assert store.count_jobs_needing_embeddings() == 1
 
@@ -377,8 +392,8 @@ class TestEmbeddings:
         vec2 = [0.0, 1.0] + [0.0] * 1534
         blob2 = struct.pack(f"<1536f", *vec2)
 
-        store.store_embedding(ids[0], blob1, "hash1")
-        store.store_embedding(ids[1], blob2, "hash2")
+        store.store_embedding(ids[0], blob1)
+        store.store_embedding(ids[1], blob2)
 
         # Query with vec similar to job 1
         query_vec = [1.0] + [0.0] * 1535
@@ -397,6 +412,31 @@ class TestEmbeddings:
         query_blob = struct.pack(f"<1536f", *query_vec)
         results = store.search_similar(query_blob, k=5)
         assert results == []
+
+    def test_list_needing_embeddings_limit_skips_already_embedded(self, store):
+        """LIMIT applies to jobs that actually need embeddings, not all jobs.
+
+        Regression test: old code applied LIMIT at the SQL level to all jobs
+        with stripped descriptions, then filtered out already-embedded jobs in
+        Python. After the first batch was embedded, poll_work returned [] and
+        the embed phase hung forever.
+        """
+        # Create 5 jobs with stripped descriptions
+        ids = self._insert_jobs_with_stripped(
+            store, "desc A", "desc B", "desc C", "desc D", "desc E"
+        )
+
+        # Embed jobs 1 and 2
+        blob = self._make_embedding()
+        store.store_embedding(ids[0], blob)
+        store.store_embedding(ids[1], blob)
+
+        # Verify: 3 jobs still need embeddings
+        assert store.count_jobs_needing_embeddings() == 3
+
+        # With limit=3, we should get all 3 remaining jobs
+        jobs = store.list_jobs_needing_embeddings(limit=3)
+        assert len(jobs) == 3
 
 
 

@@ -138,24 +138,22 @@ class TestStoreStripping:
 
 class TestEmbedTextStripped:
     def test_embed_text_prefers_stripped(self, store):
-        """jobs_needing_embeddings detects hash change when description_stripped is set."""
-        import hashlib
+        """update_stripped_description deletes embedding, triggering re-embed."""
         import struct
 
         store.upsert_jobs("acme", [_make_job("1", description="raw description")])
         pk = store.conn.execute("SELECT id FROM jobs WHERE job_id = '1'").fetchone()["id"]
 
-        # Embed with raw description
-        job = _make_job("1", description="raw description")
-        raw_text = job.embed_text("acme")
-        raw_hash = hashlib.sha256(raw_text.encode()).hexdigest()
-        blob = struct.pack(f"<1536f", *([0.1] * 1536))
-        store.store_embedding(pk, blob, raw_hash)
+        # Give it a stripped description so it's eligible for embedding
+        store.conn.execute("UPDATE jobs SET description_stripped = 'raw description' WHERE id = ?", (pk,))
+        store.conn.commit()
 
-        # Should be up to date
+        # Embed it
+        blob = struct.pack(f"<1536f", *([0.1] * 1536))
+        store.store_embedding(pk, blob)
         assert store.count_jobs_needing_embeddings() == 0
 
-        # Set stripped description — hash changes, needs re-embedding
+        # Update stripped description — cascade deletes embedding
         store.update_stripped_description(pk, "stripped description")
         assert store.count_jobs_needing_embeddings() == 1
 

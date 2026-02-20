@@ -5,7 +5,6 @@ on (company_slug, job_id). Embeddings stored as BLOBs in job_embeddings,
 with a vec0 virtual table (sqlite-vec) for cosine similarity search.
 """
 
-import hashlib
 import json
 import logging
 import sqlite3
@@ -35,11 +34,6 @@ def _validate_date(value: str | None) -> str | None:
         return value[:10]
     except (ValueError, TypeError):
         return None
-
-
-def _text_hash(text: str) -> str:
-    """SHA-256 hex digest of embedding text."""
-    return hashlib.sha256(text.encode()).hexdigest()
 
 
 class JobStore:
@@ -221,10 +215,27 @@ class JobStore:
             conn.execute("DROP TABLE IF EXISTS job_embeddings")
             conn.execute("DROP TABLE IF EXISTS embedding_models")
 
+        # Migration: drop text_hash column if present (old schema)
+        existing_emb = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='job_embeddings'"
+        ).fetchone()
+        if existing_emb:
+            emb_cols = {row[1] for row in conn.execute("PRAGMA table_info(job_embeddings)").fetchall()}
+            if "text_hash" in emb_cols:
+                log.info("Migrating job_embeddings: dropping text_hash column")
+                conn.execute("""
+                    CREATE TABLE job_embeddings_new (
+                        job_id    INTEGER PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE,
+                        embedding BLOB NOT NULL
+                    )
+                """)
+                conn.execute("INSERT INTO job_embeddings_new SELECT job_id, embedding FROM job_embeddings")
+                conn.execute("DROP TABLE job_embeddings")
+                conn.execute("ALTER TABLE job_embeddings_new RENAME TO job_embeddings")
+
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS job_embeddings (
-                job_id    INTEGER PRIMARY KEY REFERENCES jobs(id),
-                text_hash TEXT NOT NULL,
+                job_id    INTEGER PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE,
                 embedding BLOB NOT NULL
             );
         """)
@@ -433,16 +444,43 @@ class JobStore:
         return [dict(row) for row in rows]  # type: ignore[return-value]
 
     def update_stripped_description(self, job_pk: int, stripped: str) -> None:
-        """Set the stripped description for a job."""
+        """Set the stripped description for a job.
+
+        Deletes any existing embedding so the job gets re-embedded with the
+        new stripped text on the next embed pass.
+        """
         with self.conn:
             self.conn.execute(
                 "UPDATE jobs SET description_stripped = ? WHERE id = ?",
                 (stripped, job_pk),
             )
+            # Cascade: invalidate stale embedding.  vec_jobs is cleaned up
+            # by ON DELETE CASCADE on job_embeddings.
+            self.conn.execute(
+                "DELETE FROM job_embeddings WHERE job_id = ?", (job_pk,)
+            )
+            self.conn.execute(
+                "DELETE FROM vec_jobs WHERE job_id = ?", (job_pk,)
+            )
 
     def clear_stripped_descriptions(self) -> int:
-        """Set description_stripped to NULL for all jobs. Returns count affected."""
+        """Set description_stripped to NULL for all jobs. Returns count affected.
+
+        Embeddings for affected jobs are deleted (no stripped text = nothing to embed).
+        """
         with self.conn:
+            # Delete embeddings for jobs that have stripped descriptions
+            # (those are the ones about to be cleared)
+            self.conn.execute("""
+                DELETE FROM job_embeddings WHERE job_id IN (
+                    SELECT id FROM jobs WHERE description_stripped IS NOT NULL
+                )
+            """)
+            self.conn.execute("""
+                DELETE FROM vec_jobs WHERE job_id IN (
+                    SELECT id FROM jobs WHERE description_stripped IS NOT NULL
+                )
+            """)
             cur = self.conn.execute(
                 "UPDATE jobs SET description_stripped = NULL WHERE description_stripped IS NOT NULL"
             )
@@ -466,14 +504,13 @@ class JobStore:
     # Embeddings
     # -------------------------------------------------------------------
 
-    def store_embedding(self, job_id: int, embedding: bytes, text_hash: str) -> None:
-        """Dual-write: job_embeddings (audit/hash) + vec_jobs (search index)."""
+    def store_embedding(self, job_id: int, embedding: bytes) -> None:
+        """Dual-write: job_embeddings + vec_jobs (search index)."""
         self.conn.execute("""
-            INSERT INTO job_embeddings (job_id, text_hash, embedding)
-            VALUES (?, ?, ?)
-            ON CONFLICT(job_id) DO UPDATE SET
-                text_hash = excluded.text_hash, embedding = excluded.embedding
-        """, (job_id, text_hash, embedding))
+            INSERT INTO job_embeddings (job_id, embedding)
+            VALUES (?, ?)
+            ON CONFLICT(job_id) DO UPDATE SET embedding = excluded.embedding
+        """, (job_id, embedding))
         self.conn.execute("""
             INSERT OR REPLACE INTO vec_jobs(job_id, embedding) VALUES (?, ?)
         """, (job_id, embedding))
@@ -502,7 +539,12 @@ class JobStore:
         return [dict(r) for r in rows]
 
     def _embedding_conditions(self, slug: str | None = None) -> tuple[str, list[str]]:
-        conditions = ["j.description_stripped IS NOT NULL", "j.disappeared_at IS NULL"]
+        """WHERE clause for jobs needing embeddings: has stripped text, no embedding row."""
+        conditions = [
+            "j.description_stripped IS NOT NULL",
+            "j.disappeared_at IS NULL",
+            "e.job_id IS NULL",
+        ]
         params: list[str] = []
         if slug:
             conditions.append("j.company_slug = ?")
@@ -510,57 +552,22 @@ class JobStore:
         return " AND ".join(conditions), params
 
     def count_jobs_needing_embeddings(self, slug: str | None = None) -> int:
-        """Count jobs with description_stripped but no up-to-date embedding."""
+        """Count jobs with stripped descriptions but no embedding."""
         where, params = self._embedding_conditions(slug)
-
-        # Count jobs where no embedding exists
         row = self.conn.execute(f"""
             SELECT COUNT(*) FROM jobs j
             LEFT JOIN job_embeddings e ON j.id = e.job_id
-            WHERE {where} AND e.job_id IS NULL
-        """, params).fetchone()
-        no_embedding = row[0]
-
-        # Also count hash mismatches (description changed)
-        row2 = self.conn.execute(f"""
-            SELECT COUNT(*) FROM jobs j
-            JOIN job_embeddings e ON j.id = e.job_id
             WHERE {where}
         """, params).fetchone()
-        has_embedding = row2[0]
-
-        if has_embedding == 0:
-            return no_embedding
-
-        # Check hash mismatches by loading them
-        rows = self.conn.execute(f"""
-            SELECT j.id, j.company_slug, j.job_id, j.title, j.department,
-                   j.location, j.description, j.description_stripped, e.text_hash
-            FROM jobs j
-            JOIN job_embeddings e ON j.id = e.job_id
-            WHERE {where}
-        """, params).fetchall()
-        mismatches = 0
-        for r in rows:
-            job = Job(
-                id=r["job_id"], title=r["title"],
-                location=r["location"] or "", url="", apply_url="",
-                department=r["department"], description=r["description"],
-            )
-            text = job.embed_text(r["company_slug"], description_stripped=r["description_stripped"])
-            if text and _text_hash(text) != r["text_hash"]:
-                mismatches += 1
-
-        return no_embedding + mismatches
+        return row[0]
 
     def list_jobs_needing_embeddings(self, slug: str | None = None, limit: int = 0) -> list[EmbedWorkItem]:
-        """Jobs with description_stripped but no up-to-date embedding."""
+        """Jobs with stripped descriptions but no embedding."""
         where, params = self._embedding_conditions(slug)
 
         sql = f"""
-            SELECT j.id, j.company_slug, j.job_id, j.title, j.department,
-                   j.location, j.description, j.description_stripped,
-                   e.job_id AS has_embedding, e.text_hash
+            SELECT j.id, j.company_slug, j.job_id, j.title,
+                   j.department, j.location, j.description_stripped
             FROM jobs j
             LEFT JOIN job_embeddings e ON j.id = e.job_id
             WHERE {where}
@@ -571,33 +578,7 @@ class JobStore:
             all_params.append(str(limit))
 
         rows = self.conn.execute(sql, all_params).fetchall()
-
-        result: list[EmbedWorkItem] = []
-        for r in rows:
-            job = Job(
-                id=r["job_id"], title=r["title"],
-                location=r["location"] or "", url="", apply_url="",
-                department=r["department"], description=r["description"],
-            )
-            text = job.embed_text(r["company_slug"], description_stripped=r["description_stripped"])
-            if not text:
-                continue
-
-            h = _text_hash(text)
-            if r["has_embedding"] is not None and r["text_hash"] == h:
-                continue  # up to date
-
-            result.append({
-                "id": r["id"],
-                "company_slug": r["company_slug"],
-                "job_id": r["job_id"],
-                "title": r["title"],
-                "text": text,
-                "text_hash": h,
-                "has_embedding": r["has_embedding"] is not None,
-            })
-
-        return result
+        return [dict(r) for r in rows]  # type: ignore[return-value]
 
     # -------------------------------------------------------------------
     # Sync bookkeeping

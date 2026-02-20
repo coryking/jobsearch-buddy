@@ -46,8 +46,7 @@ class Job(BaseModel):
         """Build semantically rich text for embedding. Returns None if no description.
 
         Uses description_stripped (LLM-cleaned) when available, falling back to
-        the raw description. This means populating description_stripped changes
-        the text_hash, triggering automatic re-embedding.
+        the raw description.
         """
         desc = description_stripped or self.description
         if not desc:
