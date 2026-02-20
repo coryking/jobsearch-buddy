@@ -122,7 +122,7 @@ class JobStore:
                 team           TEXT,
                 salary         TEXT,
                 description    TEXT,
-                description_stripped TEXT,
+                description_stripped TEXT CHECK(description_stripped IS NULL OR LENGTH(description_stripped) > 0),
                 ats_metadata   TEXT,
                 last_seen      TIMESTAMP NOT NULL,
                 disappeared_at TIMESTAMP,
@@ -203,6 +203,16 @@ class JobStore:
         for col_name, col_type in migrations:
             if col_name not in cols:
                 conn.execute(f"ALTER TABLE jobs ADD COLUMN {col_name} {col_type}")
+
+        # Clean up empty description_stripped strings (from LLM returning empty
+        # content). These poison the embed phase — set back to NULL so strip
+        # retries them.
+        cleaned = conn.execute(
+            "UPDATE jobs SET description_stripped = NULL WHERE description_stripped = ''"
+        ).rowcount
+        if cleaned:
+            log.info("Cleaned %d empty description_stripped values → NULL", cleaned)
+
         conn.commit()
 
     def _init_embedding_tables(self, conn: sqlite3.Connection) -> None:
@@ -446,13 +456,17 @@ class JobStore:
     def update_stripped_description(self, job_pk: int, stripped: str) -> None:
         """Set the stripped description for a job.
 
-        Deletes any existing embedding so the job gets re-embedded with the
-        new stripped text on the next embed pass.
+        Empty/whitespace-only strings are stored as NULL so the job gets
+        re-stripped on the next pass. Deletes any existing embedding so the
+        job gets re-embedded with the new stripped text.
         """
+        value = stripped.strip() if stripped else None
+        if not value:
+            value = None
         with self.conn:
             self.conn.execute(
                 "UPDATE jobs SET description_stripped = ? WHERE id = ?",
-                (stripped, job_pk),
+                (value, job_pk),
             )
             # Cascade: invalidate stale embedding.  vec_jobs is cleaned up
             # by ON DELETE CASCADE on job_embeddings.

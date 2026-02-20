@@ -41,6 +41,16 @@ KNOWN_MODELS: dict[str, ModelConfig] = {
         api_params={"reasoning_effort": "low"},
         input_cost_per_m=0.05, output_cost_per_m=0.40, rpm=5_000,
     ),
+    "gpt-5-nano-medium": ModelConfig(
+        deployment="gpt-5-nano",
+        api_params={"reasoning_effort": "medium"},
+        input_cost_per_m=0.05, output_cost_per_m=0.40, rpm=5_000,
+    ),
+    "gpt-5-nano-high": ModelConfig(
+        deployment="gpt-5-nano",
+        api_params={"reasoning_effort": "high"},
+        input_cost_per_m=0.05, output_cost_per_m=0.40, rpm=5_000,
+    ),
     "gpt-5-mini": ModelConfig(
         api_params={"reasoning_effort": "low"},
         input_cost_per_m=0.30, output_cost_per_m=1.00, rpm=1_000,

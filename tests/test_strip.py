@@ -268,6 +268,51 @@ class TestStripPhase:
 
     @patch("jobbuddy.sync.strip.AzureOpenAI")
     @patch("jobbuddy.sync.strip.get_settings")
+    def test_strip_phase_errors_on_empty_llm_response(self, mock_settings, mock_client_cls, tmp_path):
+        """Empty LLM response is an error, not a silent skip.
+
+        Regression: LLM returning empty content wrote description_stripped=''
+        which poisoned the embed phase (infinite silent retry on unfixable jobs).
+        The phase should record an error, then retry via DB-as-queue.
+        """
+        mock_settings.return_value = self._make_mock_settings()
+        db = str(tmp_path / "test.db")
+        self._seed_jobs(db, [_make_job("1", description="real job description")])
+
+        call_count = 0
+
+        def side_effect(**kwargs):
+            nonlocal call_count
+            call_count += 1
+            response = MagicMock()
+            response.usage.total_tokens = 10
+            if call_count == 1:
+                response.choices[0].message.content = ""  # empty on first try
+            else:
+                response.choices[0].message.content = "cleaned description"
+            return response
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = side_effect
+        mock_client_cls.return_value = mock_client
+
+        display = PhaseState("Strip")
+        StripPhase(db, display=display, max_workers=1).run()
+
+        # First call returned empty → error recorded, then retried successfully
+        assert display.errors >= 1
+        assert display.done >= 1
+
+        # Final state: real stripped content, not empty string
+        store = JobStore(db)
+        row = store.conn.execute(
+            "SELECT description_stripped FROM jobs WHERE job_id = '1'"
+        ).fetchone()
+        assert row["description_stripped"] == "cleaned description"
+        store.close()
+
+    @patch("jobbuddy.sync.strip.AzureOpenAI")
+    @patch("jobbuddy.sync.strip.get_settings")
     def test_strip_phase_error_isolation(self, mock_settings, mock_client_cls, tmp_path):
         """One job failing to strip doesn't block others."""
         mock_settings.return_value = self._make_mock_settings()

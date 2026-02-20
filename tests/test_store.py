@@ -413,6 +413,46 @@ class TestEmbeddings:
         results = store.search_similar(query_blob, k=5)
         assert results == []
 
+    def test_check_constraint_rejects_empty_stripped_description(self, store):
+        """DB CHECK constraint prevents description_stripped='' from being stored.
+
+        Regression: empty strings from failed LLM calls passed IS NOT NULL checks
+        but produced no embed text, causing infinite silent retry loops.
+        """
+        import sqlite3
+
+        store.upsert_jobs("acme", [_make_job("1", description="full desc")])
+        with pytest.raises(sqlite3.IntegrityError):
+            store.conn.execute(
+                "UPDATE jobs SET description_stripped = '' WHERE job_id = '1'"
+            )
+
+    def test_update_stripped_description_rejects_empty(self, store):
+        """update_stripped_description stores NULL instead of empty string.
+
+        Ensures failed LLM responses don't poison the pipeline.
+        """
+        ids = self._insert_jobs_with_stripped(store, "real content")
+        job_id = ids[0]
+
+        # Writing empty string should store NULL instead
+        store.update_stripped_description(job_id, "")
+        row = store.conn.execute(
+            "SELECT description_stripped FROM jobs WHERE id = ?", (job_id,)
+        ).fetchone()
+        assert row["description_stripped"] is None
+
+    def test_update_stripped_description_rejects_whitespace_only(self, store):
+        """update_stripped_description stores NULL for whitespace-only strings."""
+        ids = self._insert_jobs_with_stripped(store, "real content")
+        job_id = ids[0]
+
+        store.update_stripped_description(job_id, "   \n\t  ")
+        row = store.conn.execute(
+            "SELECT description_stripped FROM jobs WHERE id = ?", (job_id,)
+        ).fetchone()
+        assert row["description_stripped"] is None
+
     def test_list_needing_embeddings_limit_skips_already_embedded(self, store):
         """LIMIT applies to jobs that actually need embeddings, not all jobs.
 

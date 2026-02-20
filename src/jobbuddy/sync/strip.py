@@ -92,21 +92,32 @@ class StripPhase(WorkerPhase["StripWorkItem"]):
         description = item["description"]
         settings = get_settings()
 
-        # max_tokens: approximate upper bound (description chars / 4)
-        max_tokens = max(len(description) // 4, 256)
+        # max_completion_tokens covers both visible output and reasoning tokens.
+        # visible budget: ~len/4 (chars-to-tokens approximation)
+        # reasoning budget: 1200 (p99 was 1088 at reasoning_effort=low, eval v9)
+        max_tokens = max(len(description) // 4, 256) + 1200
 
         response = self._client.chat.completions.create(
             model=settings.azure_openai_model,
+            reasoning_effort="low",
             messages=[
                 {"role": "system", "content": STRIP_SYSTEM_PROMPT},
                 {"role": "user", "content": f"<job_description>\n{description}\n</job_description>"},
             ],
             max_completion_tokens=max_tokens,
         )
-        stripped = response.choices[0].message.content.strip()
 
         if response.usage:
             self.display.add_to_info_counter(response.usage.total_tokens)
+
+        content = response.choices[0].message.content
+        stripped = content.strip() if content else ""
+        if not stripped:
+            log.error(
+                "LLM returned empty content for %s/%s (%s) — will retry",
+                item["company_slug"], item["job_id"], item["title"],
+            )
+            raise ValueError(f"Empty strip result for {item['company_slug']}/{item['job_id']}")
 
         store = self._get_thread_store()
         store.update_stripped_description(item["id"], stripped)
