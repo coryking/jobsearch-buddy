@@ -1,4 +1,4 @@
-"""Tests for jobbuddy.store — JobStore class (replaces cache.py)."""
+"""Tests for jobbuddy.store — JobStore class."""
 
 import struct
 import threading
@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 from jobbuddy.models import Job
-from jobbuddy.store import JobStore
+from jobbuddy.store import JobStore, _EMBED_MODEL_KEY
 
 
 def _make_job(id: str = "123", title: str = "PM", location: str = "Seattle", **kw) -> Job:
@@ -60,16 +60,23 @@ class TestSchema:
         ).fetchall()}
         assert "job_embeddings" in tables
 
-    def test_no_vec_jobs_table(self, store):
-        """Old sqlite-vec virtual table should not exist."""
-        tables = {row[0] for row in store.conn.execute(
-            "SELECT name FROM sqlite_master WHERE type IN ('table', 'shadow')"
-        ).fetchall()}
-        assert "vec_jobs" not in tables
+    def test_vec_jobs_table_exists(self, store):
+        """vec0 virtual table for cosine similarity search."""
+        # vec0 tables show up in sqlite_master
+        row = store.conn.execute(
+            "SELECT name FROM sqlite_master WHERE name = 'vec_jobs'"
+        ).fetchone()
+        assert row is not None
 
     def test_foreign_keys_enabled(self, store):
         fk = store.conn.execute("PRAGMA foreign_keys").fetchone()[0]
         assert fk == 1
+
+    def test_context_manager(self):
+        """JobStore works as a context manager."""
+        with JobStore(":memory:") as store:
+            store.upsert_jobs("acme", [_make_job("1")])
+            assert store.job_count() == 1
 
 
 # ---------------------------------------------------------------------------
@@ -228,17 +235,29 @@ class TestSyncBookkeeping:
 
 
 # ---------------------------------------------------------------------------
-# Embeddings
+# Embeddings (single-model, sqlite-vec)
 # ---------------------------------------------------------------------------
 
 
 class TestEmbeddings:
-    def _insert_jobs_with_desc(self, store, *descs):
-        """Insert multiple jobs with descriptions in a single upsert (avoids disappearances)."""
-        jobs = [_make_job(str(i + 1), description=desc) for i, desc in enumerate(descs)]
+    """Tests for the single-model embedding store with sqlite-vec vec0 table."""
+
+    def _insert_jobs_with_stripped(self, store, *stripped_descs):
+        """Insert jobs with description_stripped set (the gate for needing embeddings)."""
+        jobs = [
+            _make_job(str(i + 1), description=f"full desc {i}", description_stripped=desc)
+            for i, desc in enumerate(stripped_descs)
+        ]
         store.upsert_jobs("acme", jobs)
+        # Set description_stripped via direct SQL since upsert doesn't handle it
+        for i, desc in enumerate(stripped_descs):
+            store.conn.execute(
+                "UPDATE jobs SET description_stripped = ? WHERE job_id = ?",
+                (desc, str(i + 1)),
+            )
+        store.conn.commit()
         ids = []
-        for i in range(len(descs)):
+        for i in range(len(stripped_descs)):
             row = store.conn.execute(
                 "SELECT id FROM jobs WHERE job_id = ?", (str(i + 1),)
             ).fetchone()
@@ -249,111 +268,185 @@ class TestEmbeddings:
         """Compute the actual text_hash for a job's embed_text."""
         import hashlib
         job = _make_job(job_id_str, description=desc)
-        text = job.embed_text("acme")
+        text = job.embed_text("acme", description_stripped=desc)
         return hashlib.sha256(text.encode()).hexdigest()
 
+    def _make_embedding(self, dims=1536, val=0.1):
+        """Create a float32 embedding blob."""
+        vec = [val] * dims
+        return struct.pack(f"<{len(vec)}f", *vec)
+
     def test_jobs_needing_embeddings_count(self, store):
-        self._insert_jobs_with_desc(store, "Build AI.", "Lead teams.")
-        # Also add a job with no description
+        """Jobs with description_stripped need embeddings; those without don't."""
+        self._insert_jobs_with_stripped(store, "Build AI.", "Lead teams.")
+        # Add a third job with no description_stripped
         store.upsert_jobs("acme", [
             _make_job("1", description="Build AI."),
             _make_job("2", description="Lead teams."),
-            _make_job("3"),  # no description
+            _make_job("3"),  # no description or stripped
         ])
-        count = store.jobs_needing_embeddings("bge_small", count_only=True)
+        # Re-set stripped on 1 and 2
+        store.conn.execute("UPDATE jobs SET description_stripped = 'Build AI.' WHERE job_id = '1'")
+        store.conn.execute("UPDATE jobs SET description_stripped = 'Lead teams.' WHERE job_id = '2'")
+        store.conn.commit()
+        count = store.jobs_needing_embeddings(count_only=True)
         assert count == 2
 
     def test_jobs_needing_embeddings_list(self, store):
-        self._insert_jobs_with_desc(store, "Build AI.", "Lead teams.")
-        jobs = store.jobs_needing_embeddings("bge_small", count_only=False)
+        self._insert_jobs_with_stripped(store, "Build AI.", "Lead teams.")
+        jobs = store.jobs_needing_embeddings(count_only=False)
         assert len(jobs) == 2
         assert all("id" in j and "job_id" in j for j in jobs)
 
     def test_count_and_list_consistency(self, store):
-        """Count and list modes return consistent results (smell #4 regression test)."""
-        self._insert_jobs_with_desc(store, "Build AI.", "Lead teams.")
-        count = store.jobs_needing_embeddings("bge_small", count_only=True)
-        jobs = store.jobs_needing_embeddings("bge_small", count_only=False)
+        """Count and list modes return consistent results."""
+        self._insert_jobs_with_stripped(store, "Build AI.", "Lead teams.")
+        count = store.jobs_needing_embeddings(count_only=True)
+        jobs = store.jobs_needing_embeddings(count_only=False)
         assert count == len(jobs)
 
-    def test_store_and_load_embeddings(self, store):
-        """Round-trip: store embeddings then load as numpy matrix."""
-        ids = self._insert_jobs_with_desc(store, "Build AI.")
+    def test_store_embedding_dual_write(self, store):
+        """store_embedding writes to both job_embeddings and vec_jobs."""
+        ids = self._insert_jobs_with_stripped(store, "Build AI.")
         job_id = ids[0]
-        vec = [0.1] * 384
-        blob = struct.pack(f"<{len(vec)}f", *vec)
+        blob = self._make_embedding()
         text_hash = self._get_text_hash("1", "Build AI.")
-        store.store_embedding(job_id, "bge_small", blob, text_hash)
 
-        matrix, loaded_ids = store.load_embeddings("bge_small")
-        assert matrix.shape == (1, 384)
-        assert loaded_ids == [job_id]
-        np.testing.assert_array_almost_equal(matrix[0][:3], [0.1, 0.1, 0.1])
+        # Register the model first (store_embedding expects it in embedding_models)
+        store.conn.execute(
+            "INSERT OR IGNORE INTO embedding_models (model_key, model_name, dimensions, created_at) VALUES (?, ?, ?, ?)",
+            (_EMBED_MODEL_KEY, "text-embedding-3-small", 1536, "2025-01-01"),
+        )
+        store.conn.commit()
+
+        store.store_embedding(job_id, blob, text_hash)
+
+        # Check job_embeddings
+        row = store.conn.execute(
+            "SELECT * FROM job_embeddings WHERE job_id = ?", (job_id,)
+        ).fetchone()
+        assert row is not None
+        assert row["model_key"] == _EMBED_MODEL_KEY
+        assert row["text_hash"] == text_hash
+
+        # Check vec_jobs has the entry
+        vec_row = store.conn.execute(
+            "SELECT * FROM vec_jobs WHERE job_id = ?", (job_id,)
+        ).fetchone()
+        assert vec_row is not None
 
     def test_store_embedding_makes_job_not_needing(self, store):
         """After storing an embedding with correct hash, the job no longer needs one."""
-        ids = self._insert_jobs_with_desc(store, "Build AI.")
+        ids = self._insert_jobs_with_stripped(store, "Build AI.")
         job_id = ids[0]
-        assert store.jobs_needing_embeddings("bge_small", count_only=True) == 1
-        vec = [0.1] * 384
-        blob = struct.pack(f"<{len(vec)}f", *vec)
-        text_hash = self._get_text_hash("1", "Build AI.")
-        store.store_embedding(job_id, "bge_small", blob, text_hash)
-        assert store.jobs_needing_embeddings("bge_small", count_only=True) == 0
+        assert store.jobs_needing_embeddings(count_only=True) == 1
 
-    def test_different_models_independent(self, store):
-        """Embedding for one model doesn't satisfy another."""
-        ids = self._insert_jobs_with_desc(store, "Build AI.")
-        job_id = ids[0]
-        vec = [0.1] * 384
-        blob = struct.pack(f"<{len(vec)}f", *vec)
+        blob = self._make_embedding()
         text_hash = self._get_text_hash("1", "Build AI.")
-        store.store_embedding(job_id, "bge_small", blob, text_hash)
-        assert store.jobs_needing_embeddings("bge_small", count_only=True) == 0
-        assert store.jobs_needing_embeddings("nomic_v15", count_only=True) == 1
+
+        store.conn.execute(
+            "INSERT OR IGNORE INTO embedding_models (model_key, model_name, dimensions, created_at) VALUES (?, ?, ?, ?)",
+            (_EMBED_MODEL_KEY, "text-embedding-3-small", 1536, "2025-01-01"),
+        )
+        store.conn.commit()
+
+        store.store_embedding(job_id, blob, text_hash)
+        assert store.jobs_needing_embeddings(count_only=True) == 0
 
     def test_hash_mismatch_triggers_re_embedding(self, store):
         """Changed description hash means the job needs re-embedding."""
-        ids = self._insert_jobs_with_desc(store, "version 1")
+        ids = self._insert_jobs_with_stripped(store, "version 1")
         job_id = ids[0]
-        vec = [0.1] * 384
-        blob = struct.pack(f"<{len(vec)}f", *vec)
-        store.store_embedding(job_id, "bge_small", blob, "old_hash")
+        blob = self._make_embedding()
+
+        store.conn.execute(
+            "INSERT OR IGNORE INTO embedding_models (model_key, model_name, dimensions, created_at) VALUES (?, ?, ?, ?)",
+            (_EMBED_MODEL_KEY, "text-embedding-3-small", 1536, "2025-01-01"),
+        )
+        store.conn.commit()
+
+        store.store_embedding(job_id, blob, "old_hash")
         # The text_hash won't match the actual embed_text hash
-        jobs = store.jobs_needing_embeddings("bge_small", count_only=False)
+        jobs = store.jobs_needing_embeddings(count_only=False)
         assert len(jobs) == 1  # needs re-embedding because hash doesn't match
 
     def test_delete_embedding(self, store):
-        ids = self._insert_jobs_with_desc(store, "Build AI.")
+        """delete_embedding removes from both job_embeddings and vec_jobs."""
+        ids = self._insert_jobs_with_stripped(store, "Build AI.")
         job_id = ids[0]
-        vec = [0.1] * 384
-        blob = struct.pack(f"<{len(vec)}f", *vec)
+        blob = self._make_embedding()
         text_hash = self._get_text_hash("1", "Build AI.")
-        store.store_embedding(job_id, "bge_small", blob, text_hash)
-        store.delete_embedding(job_id, "bge_small")
-        assert store.jobs_needing_embeddings("bge_small", count_only=True) == 1
 
-    def test_load_embeddings_empty(self, store):
-        """Loading embeddings when none exist returns empty."""
-        matrix, ids = store.load_embeddings("bge_small")
-        assert matrix.shape[0] == 0
-        assert ids == []
+        store.conn.execute(
+            "INSERT OR IGNORE INTO embedding_models (model_key, model_name, dimensions, created_at) VALUES (?, ?, ?, ?)",
+            (_EMBED_MODEL_KEY, "text-embedding-3-small", 1536, "2025-01-01"),
+        )
+        store.conn.commit()
+
+        store.store_embedding(job_id, blob, text_hash)
+        store.delete_embedding(job_id)
+        assert store.jobs_needing_embeddings(count_only=True) == 1
+
+        # vec_jobs should also be empty
+        vec_row = store.conn.execute(
+            "SELECT * FROM vec_jobs WHERE job_id = ?", (job_id,)
+        ).fetchone()
+        assert vec_row is None
+
+    def test_search_similar(self, store):
+        """search_similar returns jobs ranked by cosine distance."""
+        ids = self._insert_jobs_with_stripped(store, "AI engineer role", "Marketing manager role")
+
+        store.conn.execute(
+            "INSERT OR IGNORE INTO embedding_models (model_key, model_name, dimensions, created_at) VALUES (?, ?, ?, ?)",
+            (_EMBED_MODEL_KEY, "text-embedding-3-small", 1536, "2025-01-01"),
+        )
+        store.conn.commit()
+
+        # Create two distinct embeddings
+        vec1 = [1.0] + [0.0] * 1535
+        blob1 = struct.pack(f"<1536f", *vec1)
+        vec2 = [0.0, 1.0] + [0.0] * 1534
+        blob2 = struct.pack(f"<1536f", *vec2)
+
+        store.store_embedding(ids[0], blob1, "hash1")
+        store.store_embedding(ids[1], blob2, "hash2")
+
+        # Query with vec similar to job 1
+        query_vec = [1.0] + [0.0] * 1535
+        query_blob = struct.pack(f"<1536f", *query_vec)
+
+        results = store.search_similar(query_blob, k=2)
+        assert len(results) == 2
+        # First result should be the closer one (job 1)
+        assert results[0]["job_id"] == ids[0]
+        assert "distance" in results[0]
+        assert "title" in results[0]
+
+    def test_search_similar_empty(self, store):
+        """search_similar returns empty list when no embeddings exist."""
+        query_vec = [0.1] * 1536
+        query_blob = struct.pack(f"<1536f", *query_vec)
+        results = store.search_similar(query_blob, k=5)
+        assert results == []
 
 
 # ---------------------------------------------------------------------------
-# Thread safety
+# Concurrency (WAL mode, no locks needed)
 # ---------------------------------------------------------------------------
 
 
-class TestThreadSafety:
-    def test_concurrent_writes(self):
-        """Thread-safe store handles concurrent writes without error."""
-        store = JobStore(":memory:", thread_safe=True)
+class TestConcurrency:
+    def test_concurrent_writes_on_disk(self, tmp_path):
+        """Multiple JobStore instances can write to the same DB file via WAL."""
+        db_path = tmp_path / "concurrent.db"
         errors = []
 
         def writer(slug):
             try:
-                store.upsert_jobs(slug, [_make_job(f"{slug}-1")])
+                s = JobStore(str(db_path))
+                s.upsert_jobs(slug, [_make_job(f"{slug}-1")])
+                s.close()
             except Exception as e:
                 errors.append(e)
 
@@ -363,6 +456,9 @@ class TestThreadSafety:
         for t in threads:
             t.join()
 
+        # Verify all writes landed
+        store = JobStore(str(db_path))
+        assert store.job_count() == 10
         store.close()
         assert errors == []
 

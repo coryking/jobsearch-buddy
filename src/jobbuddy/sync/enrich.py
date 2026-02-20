@@ -1,47 +1,42 @@
-"""EnrichPhase — description enrichment for stub fetchers."""
+"""EnrichPhase -- description enrichment for stub fetchers.
+
+Stub fetchers (Workday, etc.) return job listings without descriptions.
+This phase fetches full descriptions from ATS URLs, one company at a time.
+"""
 
 from __future__ import annotations
 
 import json
 import logging
-import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
+
 from jobbuddy.fetchers import get_fetcher
 from jobbuddy.models import Company
-from jobbuddy.store import JobStore
-from jobbuddy.sync.types import (
-    EventQueue,
-    Phase,
-    PhaseDone,
-    PhaseProgress,
-    PhaseStarted,
-    RetryEvent,
-)
+from jobbuddy.sync.base import WorkerPhase
+from jobbuddy.sync.display import PhaseState
 
 log = logging.getLogger(__name__)
 
 
-class EnrichPhase:
-    def __init__(
-        self,
-        store: JobStore,
-        slugs: list[str],
-        targets: list[Company],
-        max_workers: int,
-        events: EventQueue,
-    ):
-        self.store = store
+class EnrichPhase(WorkerPhase):
+    """Fetch full descriptions for jobs from stub fetchers.
+
+    Work unit = (company_slug, [job_dicts], {job_id: metadata_dict}).
+    Sequential per-company (rate limit mitigation), but the phase itself
+    runs companies through the thread pool.
+    """
+
+    def __init__(self, db_path: str | Path, *, slugs: list[str],
+                 targets: list[Company], display: PhaseState,
+                 max_workers: int = 5):
+        super().__init__(db_path, max_workers=max_workers, display=display)
         self.slugs = slugs
         self.slug_to_company = {c.slug: c for c in targets}
-        self.max_workers = max_workers
-        self.events = events
+        self._enrich_plan: list[tuple[str, list[str], dict[str, dict]]] = []
 
-    def run(self) -> None:
-        """Enrich descriptions for stub fetchers."""
-        enrich_total = 0
-        # (slug, [job_ids], {job_id: metadata_dict})
-        enrich_plan: list[tuple[str, list[str], dict[str, dict]]] = []
-
+    def count_remaining(self) -> int:
+        """Build enrichment plan and return total jobs needing descriptions."""
+        total = 0
         for slug in self.slugs:
             company = self.slug_to_company.get(slug)
             if not company:
@@ -49,7 +44,7 @@ class EnrichPhase:
             fetcher = get_fetcher(company)
             if fetcher.descriptions_in_listing:
                 continue
-            needing = self.store.get_jobs_needing_descriptions(slug)
+            needing = self._reader.get_jobs_needing_descriptions(slug)
             if not needing:
                 continue
             job_ids = [j["job_id"] for j in needing]
@@ -57,53 +52,35 @@ class EnrichPhase:
                 j["job_id"]: json.loads(j["ats_metadata"] or "{}")
                 for j in needing
             }
-            enrich_plan.append((slug, job_ids, jobs_meta))
-            enrich_total += len(job_ids)
+            self._enrich_plan.append((slug, job_ids, jobs_meta))
+            total += len(job_ids)
+        return total
 
-        if enrich_total == 0:
-            return
+    def poll_work(self, batch_size: int) -> list[tuple[str, list[str], dict[str, dict]]]:
+        """Return one company at a time from the pre-built plan."""
+        if not self._enrich_plan:
+            return []
+        return [self._enrich_plan.pop(0)]
 
-        self.events.put(PhaseStarted(Phase.ENRICH, enrich_total))
+    def process_item(self, item: tuple[str, list[str], dict[str, dict]]) -> None:
+        slug, job_ids, jobs_meta = item
+        company = self.slug_to_company[slug]
+        fetcher = get_fetcher(company)
+        store = self._get_thread_store()
 
-        enrich_done = 0
-        enrich_lock = threading.Lock()
+        def _on_fetched(job_id: str, desc: str) -> None:
+            store.update_descriptions(slug, {job_id: desc})
+            self.display.advance(detail=slug)
 
-        def _enrich_company(slug: str, job_ids: list[str], jobs_meta: dict[str, dict]) -> None:
-            nonlocal enrich_done
-            company = self.slug_to_company[slug]
-            try:
-                fetcher = get_fetcher(company)
-
-                def _on_fetched(job_id: str, desc: str, _slug: str = slug) -> None:
-                    nonlocal enrich_done
-                    with enrich_lock:
-                        self.store.update_descriptions(_slug, {job_id: desc})
-                        enrich_done += 1
-                        self.events.put(PhaseProgress(Phase.ENRICH, enrich_done, enrich_total))
-
-                def _on_retry(attempt: int, max_attempts: int, wait: float, reason: str) -> None:
-                    self.events.put(RetryEvent(
-                        Phase.ENRICH, slug, "", attempt, max_attempts, wait, reason,
-                    ))
-
-                fetcher.fetch_descriptions(
-                    job_ids,
-                    metadata=jobs_meta,
-                    on_fetched=_on_fetched,
-                    on_retry=_on_retry,
-                )
-            except Exception as e:
-                log.warning("Description enrichment failed for %s: %s", slug, e)
-                with enrich_lock:
-                    enrich_done += len(job_ids)
-                    self.events.put(PhaseProgress(Phase.ENRICH, enrich_done, enrich_total))
-
-        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            futures = [
-                executor.submit(_enrich_company, slug, job_ids, jobs_meta)
-                for slug, job_ids, jobs_meta in enrich_plan
-            ]
-            for future in as_completed(futures):
-                future.result()
-
-        self.events.put(PhaseDone(Phase.ENRICH))
+        try:
+            fetcher.fetch_descriptions(
+                job_ids,
+                metadata=jobs_meta,
+                on_fetched=_on_fetched,
+            )
+        except Exception as e:
+            log.warning("Description enrichment failed for %s: %s", slug, e)
+            # Count remaining jobs in this company as done (with errors implied)
+            remaining = len(job_ids) - self.display.done
+            # Just log -- the base class _safe_process will record the error
+            raise

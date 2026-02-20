@@ -1,22 +1,23 @@
-"""Sync pipeline — fetch, enrich, strip, embed job listings.
+"""Sync pipeline -- fetch, enrich, strip, embed job listings.
 
 Orchestrates four phases:
 1. FetchPhase: parallel company fetching via ThreadPoolExecutor
 2. EnrichPhase: description enrichment for stub fetchers
-3. StripPhase: LLM-based boilerplate removal (Azure OpenAI)
-4. EmbedPhase: per-model embedding generation
+3. StripPhase: LLM-based boilerplate removal (Azure OpenAI gpt-5-nano)
+4. EmbedPhase: embedding generation (Azure OpenAI text-embedding-3-small)
 
-Phases communicate via an EventQueue (queue.SimpleQueue[SyncEvent]). The CLI
-drains the queue on a consumer thread for real-time progress display. Callers
-that don't care about events can pass events=None — a local queue is created
-and events are silently discarded.
+Phases use DB-as-queue: each polls SQLite for work items and updates
+PhaseState objects for live display. No event queue for inter-phase
+coordination -- phases are independent and idempotent.
 """
 
 import queue
 from pathlib import Path
 
 from jobbuddy.registry import list_companies, lookup_by_name
+from jobbuddy.settings import get_settings
 from jobbuddy.store import JobStore
+from jobbuddy.sync.display import PhaseState, SyncDisplayState
 from jobbuddy.sync.types import (
     CompanySkipped,
     Done,
@@ -40,17 +41,29 @@ def sync_jobs(
     max_workers: int = 5,
     events: EventQueue | None = None,
     db_path: Path | str | None = None,
+    display_state: SyncDisplayState | None = None,
 ) -> list[SyncResult]:
     """Sync job listings from ATS boards into the SQLite cache.
 
-    Four phases: fetch → enrich → strip → embed. Each phase is independent
-    and communicates through the store. Progress events are pushed onto the
-    EventQueue for real-time display.
+    Four phases: fetch -> enrich -> strip -> embed. Each phase is independent
+    and communicates through the store. Progress is reflected in the
+    SyncDisplayState for live TUI rendering.
+
+    Args:
+        company_slug: Sync only this company (None = all).
+        stale_hours: Skip companies synced within this many hours.
+        max_workers: Thread pool size for fetch phase.
+        events: Legacy event queue (kept for backward compatibility).
+        db_path: Path to SQLite DB (None = default from settings).
+        display_state: Shared display state for Rich Live TUI.
     """
     import random
 
     if events is None:
         events = queue.SimpleQueue()
+
+    if display_state is None:
+        display_state = SyncDisplayState()
 
     registry = list_companies()
 
@@ -65,7 +78,12 @@ def sync_jobs(
     else:
         targets = [c for c in registry.values() if c.ats is not None]
 
-    store = JobStore(db_path, thread_safe=True)
+    # Resolve DB path
+    if db_path is None:
+        db_path = get_settings().db_path
+    db_path_str = str(db_path)
+
+    store = JobStore(db_path)
 
     try:
         # Filter by staleness
@@ -90,14 +108,27 @@ def sync_jobs(
 
         # Phase 2: Enrich descriptions for stub fetchers
         if slugs_to_embed:
-            EnrichPhase(store, slugs_to_embed, targets, max_workers, events).run()
+            EnrichPhase(
+                db_path_str,
+                slugs=slugs_to_embed,
+                targets=targets,
+                display=display_state.enrich,
+                max_workers=max_workers,
+            ).run()
 
-        # Phase 3: Strip boilerplate (global — backfills existing jobs too)
-        # StripPhase(store, events).run()
+        # Phase 3: Strip boilerplate (global -- backfills existing jobs too)
+        settings = get_settings()
+        if settings.azure_openai_api_key and settings.azure_openai_endpoint:
+            StripPhase(
+                db_path_str,
+                display=display_state.strip,
+            ).run()
 
         # Phase 4: Embed
-        if slugs_to_embed:
-            EmbedPhase(store, slugs_to_embed, events).run()
+        EmbedPhase(
+            db_path_str,
+            display=display_state.embed,
+        ).run()
 
         events.put(Done())
         return results

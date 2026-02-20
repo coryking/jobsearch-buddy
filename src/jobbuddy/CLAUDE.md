@@ -35,7 +35,7 @@ returns error strings. Don't add try/except in core for expected error paths.
 ### Dual Interface Rule
 
 New logic goes in `core.py` so both CLI and MCP get it. Typer/Rich deps stay
-in `cli.py`; FastMCP deps stay in `mcp_server.py`.
+in `cli/`; FastMCP deps stay in `mcp_server.py`.
 
 ### Testing Philosophy
 

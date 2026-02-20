@@ -306,7 +306,7 @@ def search_jobs(
 def semantic_search_jobs(
     query: Annotated[str, Field(description="Pass the user's words directly — do not rewrite or summarize")],
     limit: Annotated[int, Field(default=20, description="Max results (default 20)")] = 20,
-    model: Annotated[str, Field(default="bge_small", description="Embedding model key (e.g. 'bge_small', 'arctic')")] = "bge_small",
+    model: Annotated[str, Field(default="text3small", description="Embedding model key (ignored, kept for backwards compat)")] = "text3small",
 ) -> str:
     """Find jobs by meaning rather than keywords. Uses vector similarity over job descriptions.
 
@@ -324,7 +324,7 @@ def semantic_search_jobs(
 
     search = VectorSearch()
     try:
-        results = search.search(query, model_key=model, limit=limit)
+        results = search.search(query, limit=limit)
 
         if not results:
             return "No semantic matches found. Descriptions may not be cached yet — try running `ats sync` to populate."

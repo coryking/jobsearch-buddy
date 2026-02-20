@@ -1,79 +1,70 @@
-"""EmbedPhase — per-model embedding generation."""
+"""EmbedPhase -- embedding generation via Azure OpenAI text-embedding-3-small.
+
+Single model. Batch processing to maximize throughput within API limits.
+"""
 
 from __future__ import annotations
 
 import logging
-from jobbuddy.embeddings import MODEL_REGISTRY, embed_texts_iter, get_model, serialize_f32, unload_models
-from jobbuddy.store import JobStore
-from jobbuddy.sync.types import (
-    EventQueue,
-    ModelLoaded,
-    ModelUnloaded,
-    Phase,
-    PhaseDone,
-    PhaseProgress,
-    PhaseStarted,
-)
+from pathlib import Path
+
+from jobbuddy.embeddings import compute_batch_size, embed_texts, serialize_f32
+from jobbuddy.sync.base import WorkerPhase
+from jobbuddy.sync.display import PhaseState
 
 log = logging.getLogger(__name__)
 
 
-class EmbedPhase:
-    def __init__(
-        self,
-        store: JobStore,
-        slugs: list[str],
-        events: EventQueue,
-    ):
-        self.store = store
-        self.slugs = slugs
-        self.events = events
+class EmbedPhase(WorkerPhase):
+    """Generate embeddings for jobs with stripped descriptions.
 
-    def run(self) -> None:
-        """Generate embeddings for all models sequentially."""
-        for i, config in enumerate(MODEL_REGISTRY.values()):
-            # Free memory from the previous model before loading the next
-            if i > 0:
-                prev_config = list(MODEL_REGISTRY.values())[i - 1]
-                self.events.put(ModelUnloaded(prev_config.model_key, prev_config.model_name, ""))
-                unload_models()
-            # Count jobs needing embeddings across synced companies
-            total = 0
-            for slug in self.slugs:
-                total += self.store.jobs_needing_embeddings(
-                    config.model_key, slug=slug, count_only=True
-                )
+    Work unit = a batch of jobs (list of dicts from store.jobs_needing_embeddings).
+    Each batch is embedded in a single API call, then results are stored individually.
+    """
 
-            detail = f"{config.model_name}, {config.dimensions}d"
-            self.events.put(PhaseStarted(Phase.EMBED, total, detail))
+    def __init__(self, db_path: str | Path, *, display: PhaseState,
+                 max_workers: int = 4):
+        super().__init__(db_path, max_workers=max_workers, display=display)
+        self._batch_size = compute_batch_size()
 
-            if total > 0:
-                # Trigger model load (lazy) so we can report it
-                get_model(config.model_key)
-                self.events.put(ModelLoaded(config.model_key, config.model_name, "onnx"))
-                self._embed_model(config.model_key, total)
+    @property
+    def batch_size(self) -> int:
+        """Override: use embedding-optimal batch size, not worker * 2."""
+        return self._batch_size
 
-            self.events.put(PhaseDone(Phase.EMBED))
+    def count_remaining(self) -> int:
+        return self._reader.jobs_needing_embeddings(count_only=True)
 
-    def _embed_model(self, model_key: str, total: int) -> None:
-        """Generate embeddings for a single model across all synced companies."""
-        done = 0
-        for slug in self.slugs:
-            jobs = self.store.jobs_needing_embeddings(model_key, slug=slug, count_only=False)
-            if not jobs:
-                continue
+    def poll_work(self, batch_size: int) -> list[list[dict]]:
+        """Return a single batch of jobs as a one-element list (one work unit)."""
+        jobs = self._reader.jobs_needing_embeddings(limit=batch_size)
+        if not jobs:
+            return []
+        return [jobs]  # one work unit = one batch
 
-            texts = [j["text"] for j in jobs]
-            try:
-                for job_info, vec in zip(jobs, embed_texts_iter(texts, model_key)):
-                    blob = serialize_f32(vec)
-                    self.store.store_embedding(
-                        job_info["id"],
-                        model_key,
-                        blob,
-                        job_info["text_hash"],
-                    )
-                    done += 1
-                    self.events.put(PhaseProgress(Phase.EMBED, done, total))
-            except Exception as e:
-                log.warning("Embedding generation failed for %s/%s: %s", slug, model_key, e)
+    def process_item(self, item: list[dict]) -> None:
+        """Embed a batch of jobs and store results."""
+        jobs = item
+        texts = [j["text"] for j in jobs]
+
+        # Collect unique company slugs for display detail
+        slugs = list(dict.fromkeys(j["company_slug"] for j in jobs))
+        detail = ", ".join(slugs[:5])
+        if len(slugs) > 5:
+            detail += f" +{len(slugs) - 5}"
+
+        try:
+            vectors = embed_texts(texts)
+        except Exception as e:
+            log.warning("Embedding batch failed (%d jobs): %s", len(jobs), e)
+            raise
+
+        store = self._get_thread_store()
+        for job_info, vec in zip(jobs, vectors):
+            blob = serialize_f32(vec)
+            store.store_embedding(
+                job_info["id"],
+                blob,
+                job_info["text_hash"],
+            )
+            self.display.advance(detail=detail)

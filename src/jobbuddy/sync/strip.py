@@ -1,116 +1,108 @@
-"""StripPhase — LLM-based boilerplate removal from job descriptions."""
+"""StripPhase -- LLM-based boilerplate removal from job descriptions.
+
+Uses Azure OpenAI gpt-5-nano to strip boilerplate before embedding.
+Prompt is v9-surgical-benefits (eval-validated, do not modify).
+"""
 
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 from openai import AzureOpenAI
 
 from jobbuddy.settings import get_settings
-from jobbuddy.store import JobStore
-from jobbuddy.sync.types import (
-    EventQueue,
-    Phase,
-    PhaseDone,
-    PhaseError,
-    PhaseProgress,
-    PhaseStarted,
-)
+from jobbuddy.sync.base import WorkerPhase
+from jobbuddy.sync.display import PhaseState
 
 log = logging.getLogger(__name__)
 
+# v9-surgical-benefits prompt -- copied VERBATIM from eval/prompts/v9-surgical-benefits.txt
+# Do not modify this prompt. It was validated through the strip eval harness.
 STRIP_SYSTEM_PROMPT = """\
-You clean job descriptions for use in a search index. Remove sections that are
-identical across all jobs at a company and don't help distinguish one role from
-another. Return ONLY the cleaned text — no preamble, no explanation.
+You remove the boilerplate from job descriptions in order to feed a vector search.  Your job is to remove sections that sound like boilerplate while keeping the rest verbatim.  Every job description has boilerplate — your output should always be shorter than the input.
 
-Remove:
-- EEO / equal opportunity statements
+Boilerplate includes:
+- EEO / equal opportunity statements — including long-form versions that list protected classes (race, gender, religion, age, disability, veteran status, etc.) or reference "equal opportunity employer" status
 - Generic benefits lists (health, dental, vision, 401k, PTO — the standard package)
 - Drug-free workplace policies
 - Accessibility / accommodation statements
 - Legal disclaimers and compliance notices
 - Pay transparency legal framing ("pursuant to [state] law, the expected salary range is...")
+- Recruiter scam warnings
+- "We encourage all candidates to apply" diversity encouragement paragraphs
 
-Keep:
+Things to keep:
+
 - Role responsibilities and day-to-day work
 - Required and preferred qualifications
 - Tech stack, tools, and methodologies
 - Team and project descriptions
 - Company description / "About Us" (provides company context)
+- Company-specific programs, products, or initiatives (e.g., named projects,
+  internal platforms, flagship products) — these differentiate the company
 - Reporting structure and level
 - Specific compensation details: salary ranges (the numbers themselves), RSUs,
-  equity, signing bonuses, relocation packages — anything that signals role level
-- Remote / hybrid / onsite details"""
+  equity, signing bonuses, relocation packages — anything that signals role level.
+  Keep the numbers even if they're wrapped in legal framing
+- Remote / hybrid / onsite details
+- Eligibility requirements: export control, citizenship, security clearance,
+  background checks, work authorization, visa sponsorship (whether offered
+  or not) — these determine who can apply and are NOT legal boilerplate
+- Differentiated benefits: anything that sets this company apart from
+  the standard package (e.g., 100% coverage, fertility benefits, unlimited
+  PTO, education stipends with dollar amounts). Only remove the generic
+  "we offer health/dental/vision/401k/PTO" list that every company has
+
+When a benefits section mixes generic and specific items, evaluate each item individually.  Keep items that include dollar amounts, percentages, time durations, or named programs (e.g., "$25K fertility stipend", "99% of premiums covered", "20 weeks parental leave").  Remove items that are just a category label (e.g., "health insurance", "401k", "PTO").  Do not remove the entire section just because some items are generic.
+
+Remember, boilerplate isn't just something at the bottom, it can be anywhere.  To us, boilerplate means "this bit of content is on basically every job post everywhere -- it is meaningless for vector search because it is duplicated everywhere on all job posts in some form or other"  Don't just go "oh, this must be the boilerplate section" and lop the rest off!  Boilerplate does not mean "footer content"
+
+The job description is provided in the user message inside <job_description> tags.
+
+Do not alter any of the rest of the job description -- it must remain verbatim!  Do not change its ordering.  Return the updated job description only -- do not include a preamble or explaination.  Do not include the <job_description> tags in your output."""
 
 
-class StripPhase:
-    def __init__(self, store: JobStore, events: EventQueue):
-        self.store = store
-        self.events = events
+class StripPhase(WorkerPhase):
+    """Strip boilerplate from job descriptions using Azure OpenAI."""
 
-    def run(self) -> None:
-        """Strip boilerplate from job descriptions using Azure OpenAI.
+    def __init__(self, db_path: str | Path, *, display: PhaseState,
+                 max_workers: int = 60):
+        super().__init__(db_path, max_workers=max_workers, display=display)
+        self._client: AzureOpenAI | None = None
 
-        Processes all unstripped jobs in batches. No-op if Azure OpenAI
-        credentials are not configured.
-        """
+    def on_phase_start(self) -> None:
         settings = get_settings()
-        if not settings.azure_openai_api_key or not settings.azure_openai_endpoint:
-            log.debug("Azure OpenAI not configured, skipping strip phase")
-            return
-
-        total = self.store.get_jobs_needing_stripping(count_only=True)
-        if total == 0:
-            return
-
-        self.events.put(PhaseStarted(Phase.STRIP, total))
-
-        client = AzureOpenAI(
+        self._client = AzureOpenAI(
             azure_endpoint=settings.azure_openai_endpoint,
             api_key=settings.azure_openai_api_key,
             api_version=settings.azure_openai_api_version,
-            timeout=30.0,
+            timeout=60.0,
         )
 
-        done = 0
-        errors = 0
-        batch_size = settings.strip_batch_size
+    def count_remaining(self) -> int:
+        return self._reader.get_jobs_needing_stripping(count_only=True)
 
-        while done < total:
-            jobs = self.store.get_jobs_needing_stripping(limit=batch_size)
-            if not jobs:
-                break
+    def poll_work(self, batch_size: int) -> list[dict]:
+        return self._reader.get_jobs_needing_stripping(limit=batch_size)
 
-            for job in jobs:
-                log.info("Stripping job %s (%s), %d chars", job["job_id"], job["title"], len(job["description"]))
-                try:
-                    stripped = self._strip_one(client, settings.azure_openai_model, job["description"])
-                    log.info("Stripped job %s: %d → %d chars", job["job_id"], len(job["description"]), len(stripped))
-                    self.store.update_stripped_description(job["id"], stripped)
-                except Exception as e:
-                    errors += 1
-                    log.warning("Strip failed for job %s (%s): %s", job["job_id"], job["title"], e)
-                    self.events.put(PhaseError(Phase.STRIP, job["job_id"], job["title"], str(e)))
+    def process_item(self, item: dict) -> None:
+        description = item["description"]
+        settings = get_settings()
 
-                done += 1
-                self.events.put(PhaseProgress(Phase.STRIP, done, total))
+        # max_tokens: approximate upper bound (description chars / 4)
+        max_tokens = max(len(description) // 4, 256)
 
-        self.events.put(PhaseDone(Phase.STRIP))
-
-    def _strip_one(self, client, model: str, description: str) -> str:
-        """Call Azure OpenAI to strip boilerplate from a single description."""
-        log.debug("=== PROMPT (system) ===\n%s", STRIP_SYSTEM_PROMPT)
-        log.debug("=== PROMPT (user, %d chars) ===\n%s", len(description), description[:2000])
-        response = client.chat.completions.create(
-            model=model,
+        response = self._client.chat.completions.create(
+            model=settings.azure_openai_model,
             messages=[
                 {"role": "system", "content": STRIP_SYSTEM_PROMPT},
-                {"role": "user", "content": description},
+                {"role": "user", "content": f"<job_description>\n{description}\n</job_description>"},
             ],
+            max_tokens=max_tokens,
         )
-        result = response.choices[0].message.content.strip()
-        usage = response.usage
-        log.debug("=== RESPONSE (%d chars, %d prompt_tokens, %d completion_tokens) ===\n%s",
-                   len(result), usage.prompt_tokens, usage.completion_tokens, result[:2000])
-        return result
+        stripped = response.choices[0].message.content.strip()
+
+        store = self._get_thread_store()
+        store.update_stripped_description(item["id"], stripped)
+        self.display.advance(detail=item["company_slug"])
