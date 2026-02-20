@@ -525,8 +525,9 @@ class JobStore:
             VALUES (?, ?)
             ON CONFLICT(job_id) DO UPDATE SET embedding = excluded.embedding
         """, (job_id, embedding))
+        self.conn.execute("DELETE FROM vec_jobs WHERE job_id = ?", (job_id,))
         self.conn.execute("""
-            INSERT OR REPLACE INTO vec_jobs(job_id, embedding) VALUES (?, ?)
+            INSERT INTO vec_jobs(job_id, embedding) VALUES (?, ?)
         """, (job_id, embedding))
         self.conn.commit()
 

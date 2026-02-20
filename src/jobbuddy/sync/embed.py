@@ -49,7 +49,7 @@ class EmbedPhase(WorkerPhase["EmbedBatch"]):
         jobs = self._get_reader().list_jobs_needing_embeddings(slug=self._slug, limit=batch_size)
         if not jobs:
             return []
-        return [jobs]  # one work unit = one batch
+        return [jobs]
 
     def process_item(self, item: EmbedBatch) -> None:
         """Embed a batch of jobs and store results."""
