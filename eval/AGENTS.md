@@ -181,30 +181,34 @@ Auto-scores using gpt-5-mini. Writes to `eval/data/scores/judge_scores.csv`.
 
 ### 8. View results
 
-```bash
-# Score matrix + cost table (interactive prompt picker):
-ats-eval results summary
+Both subcommands output JSON, designed for LLM consumption and `jq` piping.
 
-# Explicit prompt:
+```bash
+# All models for a prompt (interactive picker if omitted):
 ats-eval results summary v4-edges
+
+# Filter to specific model(s):
+ats-eval results summary v4-edges --model gpt-5-nano --model DeepSeek-V3.2
 
 # Judge reasoning for specific files:
 ats-eval results notes v4-edges cloudflare anthropic
 
-# Filter to a single model:
+# Narrow to one model:
 ats-eval results notes v4-edges cloudflare --model DeepSeek-V3.2
+
+# Extract specific data with jq:
+ats-eval results summary v6-xml-wrap --model gpt-5-nano | jq '.models["gpt-5-nano"].mean'
 ```
 
-`results summary` is compact (typically <100 lines) and designed to be read in
-full — just run it and consume the entire output. It contains the score matrix,
-cost table, and paths to the prompts/runs used.
+`results summary` returns JSON with per-model scores, cost, and perf data.
+Access model data by key: `["models"]["gpt-5-nano"]["mean"]["recall"]`.
+Per-file scores are nested under each model, so no cross-referencing needed.
 
-`results notes` shows judge reasoning for files matching the given substring(s),
-along with paths to the original sample and each model's stripped output. Use
-`--model` to narrow to one model. When scores look surprising, **spot-check by
-reading the actual files** — the output includes paths you can open directly.
-Compare the original sample against the stripped version to verify the judge's
-assessment. Don't just read the reasoning; look at the files themselves.
+`results notes` returns JSON with judge reasoning for files matching the given
+substring(s), with paths to the original sample and each model's stripped
+output. When scores look surprising, **spot-check by reading the actual
+files** — the output includes paths you can open directly. Compare the original
+sample against the stripped version to verify the judge's assessment.
 
 ### 9. Validate judge vs. human
 

@@ -1,13 +1,14 @@
 """Display eval results for a prompt across all models.
 
 Two subcommands:
-  summary — score matrix + cost table (compact, LLM-friendly)
-  notes   — judge reasoning for specific files/models
+  summary — JSON: scores, cost, perf per model
+  notes   — JSON: judge reasoning for specific files/models
 """
 
 from __future__ import annotations
 
 import csv
+import json
 import statistics
 from pathlib import Path
 from typing import Annotated, Optional
@@ -122,11 +123,95 @@ def _load_judge_scores(scores_path: Path) -> list[dict]:
         return list(csv.DictReader(f))
 
 
-def _fmt_tokens(n: int) -> str:
-    """Format token count: 1234 → '1.2K', 12345 → '12.3K', 500 → '500'."""
-    if n >= 1000:
-        return f"{n / 1000:.1f}K"
-    return str(n)
+def _build_model_data(
+    m: str,
+    filenames: list[str],
+    pivot: dict[str, dict[str, dict]],
+    run_for_model: dict[str, str],
+    dir_by_run: dict[str, Path],
+) -> dict:
+    """Build the JSON data for a single model."""
+    rn = run_for_model[m]
+    run_dir = dir_by_run[rn]
+
+    # Per-file scores and dimension accumulators
+    scores = {}
+    dim_accum: dict[str, list[float]] = {f: [] for f in SCORE_FIELDS}
+    for fn in filenames:
+        entry = pivot[fn].get(m)
+        if entry and entry.get(SCORE_FIELDS[0]):
+            file_scores = {}
+            for f in SCORE_FIELDS:
+                v = entry.get(f, "")
+                try:
+                    fv = float(v)
+                    file_scores[f] = int(fv) if fv == int(fv) else fv
+                    dim_accum[f].append(fv)
+                except (ValueError, TypeError):
+                    file_scores[f] = None
+            scores[fn] = file_scores
+
+    # Mean scores
+    mean = {}
+    for f in SCORE_FIELDS:
+        vals = dim_accum[f]
+        mean[f] = round(statistics.mean(vals), 1) if vals else None
+
+    # Cost / perf from run_stats.csv
+    rows = _load_run_stats(run_dir)
+    model_data: dict = {
+        "run_dir": str(run_dir),
+        "mean": mean,
+        "scores": scores,
+    }
+
+    if rows:
+        n = len(rows)
+        prompt_tok = sum(int(r["prompt_tokens"]) for r in rows)
+        compl_tok_total = sum(int(r["completion_tokens"]) for r in rows)
+        reason_tok_total = sum(int(r.get("reasoning_tokens", 0) or 0) for r in rows)
+        total_tok = sum(int(r["total_tokens"]) for r in rows)
+
+        latencies = [float(r["elapsed_seconds"]) for r in rows]
+        input_per_sample = [int(r["prompt_tokens"]) for r in rows]
+        visible_per_sample = [
+            int(r["total_tokens"]) - int(r["prompt_tokens"])
+            - int(r.get("reasoning_tokens", 0) or 0)
+            for r in rows
+        ]
+        visible_tps = [
+            vis / float(r["elapsed_seconds"])
+            for r, vis in zip(rows, visible_per_sample)
+            if float(r["elapsed_seconds"]) > 0
+        ]
+
+        def _stat_triple(vals: list[float]) -> dict | None:
+            if not vals:
+                return None
+            return {
+                "mean": round(statistics.mean(vals), 1),
+                "median": round(statistics.median(vals), 1),
+                "stdev": round(statistics.stdev(vals), 1) if len(vals) > 1 else 0.0,
+            }
+
+        cfg = KNOWN_MODELS.get(m, ModelConfig())
+        billable_output = total_tok - prompt_tok
+        cost_usd = cfg.cost(prompt_tok, billable_output)
+
+        model_data["cost"] = {
+            "usd": round(cost_usd, 4) if cost_usd is not None else None,
+            "input_tokens": prompt_tok,
+            "output_tokens": compl_tok_total,
+            "reasoning_tokens": reason_tok_total if reason_tok_total else None,
+        }
+        model_data["perf"] = {
+            "n": n,
+            "rpm": cfg.rpm if cfg.rpm else None,
+            "latency": _stat_triple(latencies),
+            "visible_tok_per_sec": _stat_triple(visible_tps),
+        }
+
+    return model_data
 
 
 # --- Subcommands ---
@@ -137,152 +222,53 @@ def summary(
         Optional[str],
         typer.Argument(help="Prompt stem (e.g. 'v4-edges'). Interactive picker if omitted."),
     ] = None,
+    model: Annotated[
+        Optional[list[str]],
+        typer.Option(help="Filter to specific model(s). Repeat for multiple: --model gpt-5-nano --model gpt-5-mini"),
+    ] = None,
     runs_dir: Annotated[Path, typer.Option(help="Runs directory")] = RUNS_DIR,
     scores_file: Annotated[
         Path, typer.Option(help="Judge scores CSV")
     ] = SCORES_DIR / "judge_scores.csv",
 ) -> None:
-    """Score matrix and cost table for a prompt across all models."""
+    """Score matrix, cost, and perf for a prompt across all models (JSON)."""
     prompt_runs = _load_prompt_runs(runs_dir)
     prompt = _resolve_prompt(prompt, prompt_runs)
     _validate_prompt(prompt, prompt_runs)
 
     runs = prompt_runs[prompt]
-    models, filenames, pivot, run_for_model, dir_by_run = _build_pivot(runs, scores_file)
+    models_all, filenames, pivot, run_for_model, dir_by_run = _build_pivot(runs, scores_file)
+
+    # Filter models if requested
+    if model:
+        missing = [m for m in model if m not in models_all]
+        if missing:
+            print(f"Model(s) not found: {', '.join(missing)}. Available: {', '.join(models_all)}")
+            raise typer.Exit(1)
+        models = [m for m in models_all if m in model]
+    else:
+        models = models_all
 
     if not filenames:
         print(f"No judge scores found for prompt '{prompt}'.")
         print(f"Run: ats-eval judge --run {runs_dir}/<run-name>/")
         raise typer.Exit(1)
 
-    # --- Header ---
-    lines = [
-        f"## Eval Results: {prompt}",
-        f"strip prompt: {PROMPTS_DIR / f'{prompt}.txt'}",
-        f"judge prompt: {PROMPTS_DIR / 'judge.txt'}",
-        f"scores: {scores_file}",
-        f"runs:   {runs_dir}/{{{'|'.join(run_for_model[m] for m in models)}}}",
-        f"dimensions: R=recall P=precision I=integrity F=fidelity",
-        "",
-    ]
-
-    # --- Score matrix ---
-    header = "filename," + ",".join(models)
-    lines.append(header)
-
-    model_dim_scores: dict[str, dict[str, list[float]]] = {
-        m: {f: [] for f in SCORE_FIELDS} for m in models
+    result = {
+        "prompt": prompt,
+        "strip_prompt": str(PROMPTS_DIR / f"{prompt}.txt"),
+        "judge_prompt": str(PROMPTS_DIR / "judge.txt"),
+        "scores_file": str(scores_file),
+        "dimensions": list(SCORE_FIELDS),
+        "models": {},
     }
-    for fn in filenames:
-        short = fn[:60] + "…" if len(fn) > 60 else fn
-        cells = []
-        for m in models:
-            entry = pivot[fn].get(m)
-            if entry and entry.get(SCORE_FIELDS[0]):
-                dim_vals = []
-                for f in SCORE_FIELDS:
-                    v = entry.get(f, "")
-                    dim_vals.append(str(v))
-                    try:
-                        model_dim_scores[m][f].append(float(v))
-                    except (ValueError, TypeError):
-                        pass
-                cells.append("/".join(dim_vals))
-            else:
-                cells.append("-")
-        lines.append(f"{short},{','.join(cells)}")
 
-    # Mean row
-    mean_cells = []
     for m in models:
-        dim_means = []
-        for f in SCORE_FIELDS:
-            vals = model_dim_scores[m][f]
-            if vals:
-                dim_means.append(f"{statistics.mean(vals):.1f}")
-            else:
-                dim_means.append("-")
-        mean_cells.append("/".join(dim_means))
-    lines.append(f"MEAN,{','.join(mean_cells)}")
-    lines.append("")
+        result["models"][m] = _build_model_data(
+            m, filenames, pivot, run_for_model, dir_by_run,
+        )
 
-    # --- Cost / Performance ---
-    model_stats: dict[str, list[dict]] = {}
-    for m in models:
-        rn = run_for_model[m]
-        model_stats[m] = _load_run_stats(dir_by_run[rn])
-
-    has_any_stats = any(model_stats[m] for m in models)
-    if has_any_stats:
-        lines.append("## Cost / Performance")
-        lines.append("")
-        cols = ["model", "n", "cost", "RPM",
-                "latency (mean/med/std)",
-                "visible tok/s (mean/med/std)",
-                "input_tok (mean/med/std)",
-                "output_tok (mean/med/std)"]
-        lines.append(",".join(cols))
-
-        for m in models:
-            rows = model_stats[m]
-            if not rows:
-                vals = [m] + ["-"] * (len(cols) - 1)
-                lines.append(",".join(vals))
-                continue
-            n = len(rows)
-            prompt_tok = sum(int(r["prompt_tokens"]) for r in rows)
-            compl_tok_total = sum(int(r["completion_tokens"]) for r in rows)
-            reason_tok_total = sum(int(r.get("reasoning_tokens", 0) or 0) for r in rows)
-            total_tok = sum(int(r["total_tokens"]) for r in rows)
-
-            # Per-sample metrics for stats
-            latencies = [float(r["elapsed_seconds"]) for r in rows]
-            input_per_sample = [int(r["prompt_tokens"]) for r in rows]
-            # Visible output = total - prompt - reasoning.  This is correct
-            # regardless of whether the API nests reasoning inside completion
-            # (OpenAI) or reports them separately (grok).
-            visible_per_sample = [
-                int(r["total_tokens"]) - int(r["prompt_tokens"])
-                - int(r.get("reasoning_tokens", 0) or 0)
-                for r in rows
-            ]
-            # Visible tok/s per sample
-            visible_tps = [
-                vis / float(r["elapsed_seconds"])
-                for r, vis in zip(rows, visible_per_sample)
-                if float(r["elapsed_seconds"]) > 0
-            ]
-
-            def _stats(vals: list[float]) -> str:
-                if not vals:
-                    return "-"
-                m_ = statistics.mean(vals)
-                med = statistics.median(vals)
-                std = statistics.stdev(vals) if len(vals) > 1 else 0.0
-                return f"{m_:.1f}/{med:.1f}/{std:.1f}"
-
-            cfg = KNOWN_MODELS.get(m, ModelConfig())
-            billable_output = total_tok - prompt_tok
-            cost = cfg.cost(prompt_tok, billable_output)
-            rpm_str = f"{cfg.rpm:,}" if cfg.rpm else "-"
-
-            vals = [
-                m,
-                str(n),
-                f"${cost:.4f}" if cost is not None else "-",
-                rpm_str,
-                _stats(latencies),
-                _stats(visible_tps),
-                _stats([float(v) for v in input_per_sample]),
-                _stats([float(v) for v in visible_per_sample]),
-            ]
-            lines.append(",".join(vals))
-
-        lines.append("")
-
-    lines.append("Use `ats-eval results notes <prompt> <filename>` for judge reasoning.")
-
-    print("\n".join(lines))
+    print(json.dumps(result, indent=2))
 
 
 @results_app.command()
@@ -296,20 +282,20 @@ def notes(
         typer.Argument(help="Filename substring(s) to show notes for."),
     ],
     model: Annotated[
-        Optional[str],
-        typer.Option(help="Filter to a single model."),
+        Optional[list[str]],
+        typer.Option(help="Filter to specific model(s). Repeat for multiple."),
     ] = None,
     runs_dir: Annotated[Path, typer.Option(help="Runs directory")] = RUNS_DIR,
     scores_file: Annotated[
         Path, typer.Option(help="Judge scores CSV")
     ] = SCORES_DIR / "judge_scores.csv",
 ) -> None:
-    """Show judge reasoning for specific files."""
+    """Judge reasoning for specific files (JSON)."""
     prompt_runs = _load_prompt_runs(runs_dir)
     _validate_prompt(prompt, prompt_runs)
 
     runs = prompt_runs[prompt]
-    models, filenames, pivot, run_for_model, dir_by_run = _build_pivot(runs, scores_file)
+    models_all, filenames, pivot, run_for_model, dir_by_run = _build_pivot(runs, scores_file)
 
     if not filenames:
         print(f"No judge scores found for prompt '{prompt}'.")
@@ -317,10 +303,13 @@ def notes(
 
     # Filter models
     if model:
-        if model not in models:
-            print(f"Model '{model}' not found. Available: {', '.join(models)}")
+        missing = [m for m in model if m not in models_all]
+        if missing:
+            print(f"Model(s) not found: {', '.join(missing)}. Available: {', '.join(models_all)}")
             raise typer.Exit(1)
-        models = [model]
+        models = [m for m in models_all if m in model]
+    else:
+        models = models_all
 
     # Filter filenames by substring match
     filters = [f.lower() for f in filename]
@@ -336,30 +325,34 @@ def notes(
 
     samples_dir = Path("eval/data/samples")
 
-    lines = [f"## Notes: {prompt}"]
-    if model:
-        lines[0] += f" ({model})"
-    lines.append("")
+    result: dict = {
+        "prompt": prompt,
+        "files": {},
+    }
 
     for fn in matched:
-        short = fn[:60] + "…" if len(fn) > 60 else fn
-        lines.append(f"### {short}")
-        lines.append(f"original: {samples_dir / fn}")
+        file_data: dict = {
+            "original": str(samples_dir / fn),
+            "models": {},
+        }
         for m in models:
             rn = run_for_model.get(m, "")
-            lines.append(f"stripped ({m}): {runs_dir / rn / fn}")
+            model_entry: dict = {
+                "stripped": str(runs_dir / rn / fn),
+            }
             entry = pivot[fn].get(m)
             if entry:
-                dim_strs = []
+                scores = {}
                 for f in SCORE_FIELDS:
-                    v = entry.get(f, "?")
-                    dim_strs.append(f"{f[0].upper()}{v}")
-                score_str = "/".join(dim_strs)
-                reasoning = entry["reasoning"] or "(no reasoning)"
-                lines.append(f"  score: {score_str}")
-                lines.append(f"  reasoning: {reasoning}")
-            else:
-                lines.append(f"  (not scored)")
-        lines.append("")
+                    v = entry.get(f, "")
+                    try:
+                        fv = float(v)
+                        scores[f] = int(fv) if fv == int(fv) else fv
+                    except (ValueError, TypeError):
+                        scores[f] = None
+                model_entry["scores"] = scores
+                model_entry["reasoning"] = entry.get("reasoning", "")
+            file_data["models"][m] = model_entry
+        result["files"][fn] = file_data
 
-    print("\n".join(lines))
+    print(json.dumps(result, indent=2))

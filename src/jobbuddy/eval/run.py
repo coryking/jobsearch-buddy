@@ -23,16 +23,11 @@ from rich.live import Live
 from rich.table import Table
 from rich.text import Text
 
+import humanize
+
 from jobbuddy.eval.models import KNOWN_MODELS, ModelConfig
 from jobbuddy.eval.utils import PROMPTS_DIR, pick_models, pick_prompts
 from jobbuddy.settings import get_settings
-
-
-def _fmt_tokens(n: int) -> str:
-    """Format token count: 1234 → '1.2K', 12345 → '12.3K', 500 → '500'."""
-    if n >= 1000:
-        return f"{n / 1000:.1f}K"
-    return str(n)
 
 
 _CSV_COLUMNS = [
@@ -287,7 +282,7 @@ def _run_all(
             progress = f"{done_m}/{total_m}".rjust(7)
             if done_m:
                 mt = model_tokens[m]
-                tok_str = f"tok: {_fmt_tokens(mt['prompt'] + mt['completion'])}"
+                tok_str = f"tok: {humanize.metric(mt['prompt'] + mt['completion'])}"
                 lat = model_latencies[m]
                 avg_lat = f"avg: {statistics.mean(lat):.1f}s"
                 model_lines.append(f"  {m:<{name_w}}  {progress}  [cyan]{tok_str}[/cyan]  [dim]{avg_lat}[/dim]")

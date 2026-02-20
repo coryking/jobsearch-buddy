@@ -15,6 +15,18 @@ routing hints, not API docs:
 - **Tool docstrings**: Lead with *when to use*, not *what it does internally*.
 - **Field `description`s**: Format hints, examples, valid values. Dense, not verbose.
 
+### Human-Readable Formatting
+
+Use the `humanize` library for formatting numbers, file sizes, time deltas, etc.
+in user-facing output (CLI, Rich displays, logs). When touching code that
+hand-rolls number formatting (e.g. `f"{n:,}"`, custom `_fmt_tokens()` helpers),
+clean it up to use `humanize` instead. Common functions:
+
+- `humanize.intcomma(n)` — `1234567` → `"1,234,567"` (replaces `f"{n:,}"`)
+- `humanize.metric(n)` — `12345` → `"12.3k"` (compact display in dashboards)
+- `humanize.naturalsize(n)` — bytes → `"1.2 MB"`
+- `humanize.naturaldelta(seconds)` — `3661` → `"an hour"`
+
 ### Error Handling
 
 `core.py` raises `ValueError` on errors. CLI catches and exits, MCP catches and

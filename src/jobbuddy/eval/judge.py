@@ -25,16 +25,12 @@ from rich.live import Live
 from rich.table import Table
 from rich.text import Text
 
+import humanize
+
 from jobbuddy.settings import get_settings
 
 SCORE_FIELDS = ["recall", "precision", "integrity", "fidelity"]
 
-
-def _fmt_tokens(n: int) -> str:
-    """Format token count: 1234 → '1.2K', 12345 → '12.3K', 500 → '500'."""
-    if n >= 1000:
-        return f"{n / 1000:.1f}K"
-    return str(n)
 CSV_HEADER = ["filename", "run_name", *SCORE_FIELDS, "reasoning"]
 
 
@@ -293,10 +289,10 @@ def judge(
             parts.append(f"[dim]\u00b7 {queued} queued[/dim]")
         tok_total = token_totals["prompt"] + token_totals["completion"]
         if tok_total:
-            tok_parts = [f"prompt: {_fmt_tokens(token_totals['prompt'])}",
-                         f"completion: {_fmt_tokens(token_totals['completion'])}"]
+            tok_parts = [f"prompt: {humanize.metric(token_totals['prompt'])}",
+                         f"completion: {humanize.metric(token_totals['completion'])}"]
             if token_totals["reasoning"]:
-                tok_parts.append(f"reasoning: {_fmt_tokens(token_totals['reasoning'])}")
+                tok_parts.append(f"reasoning: {humanize.metric(token_totals['reasoning'])}")
             parts.append(f"[cyan]{' | '.join(tok_parts)}[/cyan]")
         status = Text.from_markup("  \u2502  ".join(parts))
 
@@ -391,8 +387,8 @@ def judge(
         console.print(f"  [red]{error_count} total errors[/red]")
     tok_total = token_totals["prompt"] + token_totals["completion"]
     if tok_total:
-        tok_parts = [f"prompt: {token_totals['prompt']:,}", f"completion: {token_totals['completion']:,}"]
+        tok_parts = [f"prompt: {humanize.intcomma(token_totals['prompt'])}", f"completion: {humanize.intcomma(token_totals['completion'])}"]
         if token_totals["reasoning"]:
-            tok_parts.append(f"reasoning: {token_totals['reasoning']:,}")
-        console.print(f"  Tokens: {' | '.join(tok_parts)} | total: {tok_total:,}")
+            tok_parts.append(f"reasoning: {humanize.intcomma(token_totals['reasoning'])}")
+        console.print(f"  Tokens: {' | '.join(tok_parts)} | total: {humanize.intcomma(tok_total)}")
     console.print(f"  Scores saved to: {scores}")
