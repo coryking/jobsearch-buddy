@@ -289,20 +289,20 @@ class TestEmbeddings:
         store.conn.execute("UPDATE jobs SET description_stripped = 'Build AI.' WHERE job_id = '1'")
         store.conn.execute("UPDATE jobs SET description_stripped = 'Lead teams.' WHERE job_id = '2'")
         store.conn.commit()
-        count = store.jobs_needing_embeddings(count_only=True)
+        count = store.count_jobs_needing_embeddings()
         assert count == 2
 
     def test_jobs_needing_embeddings_list(self, store):
         self._insert_jobs_with_stripped(store, "Build AI.", "Lead teams.")
-        jobs = store.jobs_needing_embeddings(count_only=False)
+        jobs = store.list_jobs_needing_embeddings()
         assert len(jobs) == 2
         assert all("id" in j and "job_id" in j for j in jobs)
 
     def test_count_and_list_consistency(self, store):
         """Count and list modes return consistent results."""
         self._insert_jobs_with_stripped(store, "Build AI.", "Lead teams.")
-        count = store.jobs_needing_embeddings(count_only=True)
-        jobs = store.jobs_needing_embeddings(count_only=False)
+        count = store.count_jobs_needing_embeddings()
+        jobs = store.list_jobs_needing_embeddings()
         assert count == len(jobs)
 
     def test_store_embedding_dual_write(self, store):
@@ -331,13 +331,13 @@ class TestEmbeddings:
         """After storing an embedding with correct hash, the job no longer needs one."""
         ids = self._insert_jobs_with_stripped(store, "Build AI.")
         job_id = ids[0]
-        assert store.jobs_needing_embeddings(count_only=True) == 1
+        assert store.count_jobs_needing_embeddings() == 1
 
         blob = self._make_embedding()
         text_hash = self._get_text_hash("1", "Build AI.")
 
         store.store_embedding(job_id, blob, text_hash)
-        assert store.jobs_needing_embeddings(count_only=True) == 0
+        assert store.count_jobs_needing_embeddings() == 0
 
     def test_hash_mismatch_triggers_re_embedding(self, store):
         """Changed description hash means the job needs re-embedding."""
@@ -347,7 +347,7 @@ class TestEmbeddings:
 
         store.store_embedding(job_id, blob, "old_hash")
         # The text_hash won't match the actual embed_text hash
-        jobs = store.jobs_needing_embeddings(count_only=False)
+        jobs = store.list_jobs_needing_embeddings()
         assert len(jobs) == 1  # needs re-embedding because hash doesn't match
 
     def test_delete_embedding(self, store):
@@ -359,7 +359,7 @@ class TestEmbeddings:
 
         store.store_embedding(job_id, blob, text_hash)
         store.delete_embedding(job_id)
-        assert store.jobs_needing_embeddings(count_only=True) == 1
+        assert store.count_jobs_needing_embeddings() == 1
 
         # vec_jobs should also be empty
         vec_row = store.conn.execute(

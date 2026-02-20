@@ -7,7 +7,9 @@ import threading
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any
+from typing import Generic, TypeVar
+
+T = TypeVar("T")
 
 from jobbuddy.store import JobStore
 from jobbuddy.sync.display import PhaseState
@@ -15,11 +17,12 @@ from jobbuddy.sync.display import PhaseState
 log = logging.getLogger(__name__)
 
 
-class WorkerPhase(ABC):
+class WorkerPhase(ABC, Generic[T]):
     """Subclasses implement: count_remaining(), poll_work(), process_item().
 
     Base handles: poll loop, ThreadPoolExecutor, display updates, shutdown.
     Each worker thread gets its own DB connection via _get_thread_store().
+    Type parameter T is the work item type (e.g. StripWorkItem, EmbedBatch).
     """
 
     def __init__(self, db_path: str | Path, *, max_workers: int,
@@ -43,10 +46,10 @@ class WorkerPhase(ABC):
     def count_remaining(self) -> int: ...
 
     @abstractmethod
-    def poll_work(self, batch_size: int) -> list[Any]: ...
+    def poll_work(self, batch_size: int) -> list[T]: ...
 
     @abstractmethod
-    def process_item(self, item: Any) -> None: ...
+    def process_item(self, item: T) -> None: ...
 
     def on_phase_start(self) -> None: pass
     def on_phase_end(self) -> None: pass
@@ -114,7 +117,7 @@ class WorkerPhase(ABC):
     def shutdown(self) -> None:
         self._shutdown.set()
 
-    def _safe_process(self, item: Any) -> None:
+    def _safe_process(self, item: T) -> None:
         try:
             self.process_item(item)
         except Exception as e:

@@ -16,6 +16,7 @@ from typing import ClassVar
 import sqlite_vec
 
 from jobbuddy.models import Job
+from jobbuddy.types import EmbedWorkItem, StripWorkItem
 
 log = logging.getLogger(__name__)
 
@@ -398,38 +399,38 @@ class JobStore:
                 [(desc, slug, job_id) for job_id, desc in descs.items()],
             )
 
-    def get_jobs_needing_stripping(self, limit: int = 50, *, slug: str | None = None, count_only: bool = False) -> int | list[dict]:
-        """Return active jobs with descriptions but no stripped version.
-
-        With count_only=True, returns just the count (no LIMIT applied).
-        """
+    def _stripping_conditions(self, slug: str | None = None) -> tuple[str, list[str]]:
         conditions = [
             "description IS NOT NULL",
             "description_stripped IS NULL",
             "disappeared_at IS NULL",
         ]
-        params: list = []
-
+        params: list[str] = []
         if slug:
             conditions.append("company_slug = ?")
             params.append(slug)
+        return " AND ".join(conditions), params
 
-        where = " AND ".join(conditions)
+    def count_jobs_needing_stripping(self, *, slug: str | None = None) -> int:
+        """Count active jobs with descriptions but no stripped version."""
+        where, params = self._stripping_conditions(slug)
+        row = self.conn.execute(
+            f"SELECT COUNT(*) FROM jobs WHERE {where}", params
+        ).fetchone()
+        return row[0]
 
-        if count_only:
-            row = self.conn.execute(
-                f"SELECT COUNT(*) FROM jobs WHERE {where}", params
-            ).fetchone()
-            return row[0]
-
-        params.append(limit)
+    def get_jobs_needing_stripping(self, limit: int = 50, *, slug: str | None = None) -> list[StripWorkItem]:
+        """Return active jobs with descriptions but no stripped version."""
+        where, params = self._stripping_conditions(slug)
+        all_params: list[str | int] = list(params)
+        all_params.append(limit)
         rows = self.conn.execute(
             f"""SELECT id, company_slug, job_id, title, description FROM jobs
                WHERE {where}
                LIMIT ?""",
-            params,
+            all_params,
         ).fetchall()
-        return [dict(row) for row in rows]
+        return [dict(row) for row in rows]  # type: ignore[return-value]
 
     def update_stripped_description(self, job_pk: int, stripped: str) -> None:
         """Set the stripped description for a job."""
@@ -500,67 +501,62 @@ class JobStore:
         """, (query_embedding, k)).fetchall()
         return [dict(r) for r in rows]
 
-    def jobs_needing_embeddings(
-        self, slug: str | None = None, *, count_only: bool = False, limit: int = 0
-    ) -> int | list[dict]:
-        """Jobs with description_stripped but no up-to-date embedding.
-
-        Gate on description_stripped IS NOT NULL (not description).
-        """
+    def _embedding_conditions(self, slug: str | None = None) -> tuple[str, list[str]]:
         conditions = ["j.description_stripped IS NOT NULL", "j.disappeared_at IS NULL"]
         params: list[str] = []
-
         if slug:
             conditions.append("j.company_slug = ?")
             params.append(slug)
+        return " AND ".join(conditions), params
 
-        where = " AND ".join(conditions)
+    def count_jobs_needing_embeddings(self, slug: str | None = None) -> int:
+        """Count jobs with description_stripped but no up-to-date embedding."""
+        where, params = self._embedding_conditions(slug)
 
-        if count_only:
-            # Count jobs where no embedding exists
-            sql = f"""
-                SELECT COUNT(*) FROM jobs j
-                LEFT JOIN job_embeddings e ON j.id = e.job_id
-                WHERE {where} AND e.job_id IS NULL
-            """
-            row = self.conn.execute(sql, params).fetchone()
-            no_embedding = row[0]
+        # Count jobs where no embedding exists
+        row = self.conn.execute(f"""
+            SELECT COUNT(*) FROM jobs j
+            LEFT JOIN job_embeddings e ON j.id = e.job_id
+            WHERE {where} AND e.job_id IS NULL
+        """, params).fetchone()
+        no_embedding = row[0]
 
-            # Also count hash mismatches (description changed)
-            sql2 = f"""
-                SELECT COUNT(*) FROM jobs j
-                JOIN job_embeddings e ON j.id = e.job_id
-                WHERE {where}
-            """
-            row2 = self.conn.execute(sql2, params).fetchone()
-            has_embedding = row2[0]
+        # Also count hash mismatches (description changed)
+        row2 = self.conn.execute(f"""
+            SELECT COUNT(*) FROM jobs j
+            JOIN job_embeddings e ON j.id = e.job_id
+            WHERE {where}
+        """, params).fetchone()
+        has_embedding = row2[0]
 
-            if has_embedding == 0:
-                return no_embedding
+        if has_embedding == 0:
+            return no_embedding
 
-            # Check hash mismatches by loading them
-            sql3 = f"""
-                SELECT j.id, j.company_slug, j.job_id, j.title, j.department,
-                       j.location, j.description, j.description_stripped, e.text_hash
-                FROM jobs j
-                JOIN job_embeddings e ON j.id = e.job_id
-                WHERE {where}
-            """
-            rows = self.conn.execute(sql3, params).fetchall()
-            mismatches = 0
-            for r in rows:
-                job = Job(
-                    id=r["job_id"], title=r["title"],
-                    location=r["location"] or "", url="", apply_url="",
-                    department=r["department"], description=r["description"],
-                )
-                text = job.embed_text(r["company_slug"], description_stripped=r["description_stripped"])
-                if text and _text_hash(text) != r["text_hash"]:
-                    mismatches += 1
+        # Check hash mismatches by loading them
+        rows = self.conn.execute(f"""
+            SELECT j.id, j.company_slug, j.job_id, j.title, j.department,
+                   j.location, j.description, j.description_stripped, e.text_hash
+            FROM jobs j
+            JOIN job_embeddings e ON j.id = e.job_id
+            WHERE {where}
+        """, params).fetchall()
+        mismatches = 0
+        for r in rows:
+            job = Job(
+                id=r["job_id"], title=r["title"],
+                location=r["location"] or "", url="", apply_url="",
+                department=r["department"], description=r["description"],
+            )
+            text = job.embed_text(r["company_slug"], description_stripped=r["description_stripped"])
+            if text and _text_hash(text) != r["text_hash"]:
+                mismatches += 1
 
-            return no_embedding + mismatches
+        return no_embedding + mismatches
 
-        # List mode — return full job info for embedding
+    def list_jobs_needing_embeddings(self, slug: str | None = None, limit: int = 0) -> list[EmbedWorkItem]:
+        """Jobs with description_stripped but no up-to-date embedding."""
+        where, params = self._embedding_conditions(slug)
+
         sql = f"""
             SELECT j.id, j.company_slug, j.job_id, j.title, j.department,
                    j.location, j.description, j.description_stripped,
@@ -569,14 +565,14 @@ class JobStore:
             LEFT JOIN job_embeddings e ON j.id = e.job_id
             WHERE {where}
         """
-        all_params = list(params)
+        all_params: list[str] = list(params)
         if limit > 0:
             sql += " LIMIT ?"
             all_params.append(str(limit))
 
         rows = self.conn.execute(sql, all_params).fetchall()
 
-        result = []
+        result: list[EmbedWorkItem] = []
         for r in rows:
             job = Job(
                 id=r["job_id"], title=r["title"],
@@ -595,6 +591,7 @@ class JobStore:
                 "id": r["id"],
                 "company_slug": r["company_slug"],
                 "job_id": r["job_id"],
+                "title": r["title"],
                 "text": text,
                 "text_hash": h,
                 "has_embedding": r["has_embedding"] is not None,

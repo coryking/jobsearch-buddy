@@ -153,11 +153,11 @@ class TestEmbedTextStripped:
         store.store_embedding(pk, blob, raw_hash)
 
         # Should be up to date
-        assert store.jobs_needing_embeddings(count_only=True) == 0
+        assert store.count_jobs_needing_embeddings() == 0
 
         # Set stripped description — hash changes, needs re-embedding
         store.update_stripped_description(pk, "stripped description")
-        assert store.jobs_needing_embeddings(count_only=True) == 1
+        assert store.count_jobs_needing_embeddings() == 1
 
     def test_embed_text_falls_back_to_raw(self):
         """embed_text uses raw description when no stripped version available."""

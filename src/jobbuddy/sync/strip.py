@@ -14,6 +14,7 @@ from openai import AzureOpenAI
 from jobbuddy.settings import get_settings
 from jobbuddy.sync.base import WorkerPhase
 from jobbuddy.sync.display import PhaseState
+from jobbuddy.types import StripWorkItem
 
 log = logging.getLogger(__name__)
 
@@ -63,7 +64,7 @@ The job description is provided in the user message inside <job_description> tag
 Do not alter any of the rest of the job description -- it must remain verbatim!  Do not change its ordering.  Return the updated job description only -- do not include a preamble or explaination.  Do not include the <job_description> tags in your output."""
 
 
-class StripPhase(WorkerPhase):
+class StripPhase(WorkerPhase["StripWorkItem"]):
     """Strip boilerplate from job descriptions using Azure OpenAI."""
 
     def __init__(self, db_path: str | Path, *, display: PhaseState,
@@ -82,12 +83,12 @@ class StripPhase(WorkerPhase):
         )
 
     def count_remaining(self) -> int:
-        return self._get_reader().get_jobs_needing_stripping(slug=self._slug, count_only=True)
+        return self._get_reader().count_jobs_needing_stripping(slug=self._slug)
 
-    def poll_work(self, batch_size: int) -> list[dict]:
+    def poll_work(self, batch_size: int) -> list[StripWorkItem]:
         return self._get_reader().get_jobs_needing_stripping(limit=batch_size, slug=self._slug)
 
-    def process_item(self, item: dict) -> None:
+    def process_item(self, item: StripWorkItem) -> None:
         description = item["description"]
         settings = get_settings()
 

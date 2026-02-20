@@ -12,14 +12,15 @@ from pathlib import Path
 from jobbuddy.embeddings import compute_batch_size, embed_texts, serialize_f32
 from jobbuddy.sync.base import WorkerPhase
 from jobbuddy.sync.display import PhaseState
+from jobbuddy.types import EmbedBatch, EmbedWorkItem
 
 log = logging.getLogger(__name__)
 
 
-class EmbedPhase(WorkerPhase):
+class EmbedPhase(WorkerPhase["EmbedBatch"]):
     """Generate embeddings for jobs with stripped descriptions.
 
-    Work unit = a batch of jobs (list of dicts from store.jobs_needing_embeddings).
+    Work unit = a batch of jobs (list of EmbedWorkItems from store).
     Each batch is embedded in a single API call, then results are stored individually.
     """
 
@@ -37,16 +38,16 @@ class EmbedPhase(WorkerPhase):
         return self._batch_size
 
     def count_remaining(self) -> int:
-        return self._get_reader().jobs_needing_embeddings(slug=self._slug, count_only=True)
+        return self._get_reader().count_jobs_needing_embeddings(slug=self._slug)
 
-    def poll_work(self, batch_size: int) -> list[list[dict]]:
+    def poll_work(self, batch_size: int) -> list[EmbedBatch]:
         """Return a single batch of jobs as a one-element list (one work unit)."""
-        jobs = self._get_reader().jobs_needing_embeddings(slug=self._slug, limit=batch_size)
+        jobs = self._get_reader().list_jobs_needing_embeddings(slug=self._slug, limit=batch_size)
         if not jobs:
             return []
         return [jobs]  # one work unit = one batch
 
-    def process_item(self, item: list[dict]) -> None:
+    def process_item(self, item: EmbedBatch) -> None:
         """Embed a batch of jobs and store results."""
         jobs = item
         texts = [j["text"] for j in jobs]

@@ -14,14 +14,15 @@ from jobbuddy.fetchers import get_fetcher
 from jobbuddy.models import Company
 from jobbuddy.sync.base import WorkerPhase
 from jobbuddy.sync.display import PhaseState
+from jobbuddy.types import EnrichWorkItem
 
 log = logging.getLogger(__name__)
 
 
-class EnrichPhase(WorkerPhase):
+class EnrichPhase(WorkerPhase["EnrichWorkItem"]):
     """Fetch full descriptions for jobs from stub fetchers.
 
-    Work unit = (company_slug, [job_dicts], {job_id: metadata_dict}).
+    Work unit = EnrichWorkItem (slug, job_ids, jobs_meta).
     Sequential per-company (rate limit mitigation), but the phase itself
     runs companies through the thread pool.
     """
@@ -32,7 +33,7 @@ class EnrichPhase(WorkerPhase):
         super().__init__(db_path, max_workers=max_workers, display=display)
         self.slugs = slugs
         self.slug_to_company = {c.slug: c for c in targets}
-        self._enrich_plan: list[tuple[str, list[str], dict[str, dict]]] = []
+        self._enrich_plan: list[EnrichWorkItem] = []
 
     def count_remaining(self) -> int:
         """Build enrichment plan and return total jobs needing descriptions."""
@@ -52,18 +53,20 @@ class EnrichPhase(WorkerPhase):
                 j["job_id"]: json.loads(j["ats_metadata"] or "{}")
                 for j in needing
             }
-            self._enrich_plan.append((slug, job_ids, jobs_meta))
+            self._enrich_plan.append({"slug": slug, "job_ids": job_ids, "jobs_meta": jobs_meta})
             total += len(job_ids)
         return total
 
-    def poll_work(self, batch_size: int) -> list[tuple[str, list[str], dict[str, dict]]]:
+    def poll_work(self, batch_size: int) -> list[EnrichWorkItem]:
         """Return one company at a time from the pre-built plan."""
         if not self._enrich_plan:
             return []
         return [self._enrich_plan.pop(0)]
 
-    def process_item(self, item: tuple[str, list[str], dict[str, dict]]) -> None:
-        slug, job_ids, jobs_meta = item
+    def process_item(self, item: EnrichWorkItem) -> None:
+        slug = item["slug"]
+        job_ids = item["job_ids"]
+        jobs_meta = item["jobs_meta"]
         company = self.slug_to_company[slug]
         fetcher = get_fetcher(company)
         store = self._get_thread_store()
