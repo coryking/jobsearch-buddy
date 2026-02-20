@@ -188,9 +188,10 @@ def build_display(state: SyncDisplayState, filter_phases: list[str] | None = Non
         box=None,
         title_style="bold",
         header_style="dim",
+        expand=True,
     )
     table.add_column("Phase", style="bold", no_wrap=True, min_width=10)
-    table.add_column("Status", no_wrap=True, min_width=10)
+    table.add_column("Status", no_wrap=True, min_width=10, ratio=1, overflow="ellipsis")
     table.add_column("Progress", justify="right", no_wrap=True, min_width=12)
     table.add_column("Rate", justify="right", no_wrap=True, min_width=7)
     table.add_column("Info", justify="right", no_wrap=True, min_width=8)

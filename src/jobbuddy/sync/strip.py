@@ -82,10 +82,10 @@ class StripPhase(WorkerPhase):
         )
 
     def count_remaining(self) -> int:
-        return self._reader.get_jobs_needing_stripping(slug=self._slug, count_only=True)
+        return self._get_reader().get_jobs_needing_stripping(slug=self._slug, count_only=True)
 
     def poll_work(self, batch_size: int) -> list[dict]:
-        return self._reader.get_jobs_needing_stripping(limit=batch_size, slug=self._slug)
+        return self._get_reader().get_jobs_needing_stripping(limit=batch_size, slug=self._slug)
 
     def process_item(self, item: dict) -> None:
         description = item["description"]

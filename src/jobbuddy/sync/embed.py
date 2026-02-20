@@ -6,6 +6,7 @@ Single model. Batch processing to maximize throughput within API limits.
 from __future__ import annotations
 
 import logging
+import threading
 from pathlib import Path
 
 from jobbuddy.embeddings import compute_batch_size, embed_texts, serialize_f32
@@ -23,8 +24,10 @@ class EmbedPhase(WorkerPhase):
     """
 
     def __init__(self, db_path: str | Path, *, display: PhaseState,
-                 max_workers: int = 4, slug: str | None = None):
-        super().__init__(db_path, max_workers=max_workers, display=display)
+                 max_workers: int = 4, slug: str | None = None,
+                 upstream_done: threading.Event | None = None):
+        super().__init__(db_path, max_workers=max_workers, display=display,
+                         upstream_done=upstream_done)
         self._batch_size = compute_batch_size()
         self._slug = slug
 
@@ -34,11 +37,11 @@ class EmbedPhase(WorkerPhase):
         return self._batch_size
 
     def count_remaining(self) -> int:
-        return self._reader.jobs_needing_embeddings(slug=self._slug, count_only=True)
+        return self._get_reader().jobs_needing_embeddings(slug=self._slug, count_only=True)
 
     def poll_work(self, batch_size: int) -> list[list[dict]]:
         """Return a single batch of jobs as a one-element list (one work unit)."""
-        jobs = self._reader.jobs_needing_embeddings(slug=self._slug, limit=batch_size)
+        jobs = self._get_reader().jobs_needing_embeddings(slug=self._slug, limit=batch_size)
         if not jobs:
             return []
         return [jobs]  # one work unit = one batch

@@ -44,7 +44,7 @@ class EnrichPhase(WorkerPhase):
             fetcher = get_fetcher(company)
             if fetcher.descriptions_in_listing:
                 continue
-            needing = self._reader.get_jobs_needing_descriptions(slug)
+            needing = self._get_reader().get_jobs_needing_descriptions(slug)
             if not needing:
                 continue
             job_ids = [j["job_id"] for j in needing]

@@ -12,6 +12,7 @@ coordination -- phases are independent and idempotent.
 """
 
 import queue
+import threading
 from pathlib import Path
 
 from jobbuddy.registry import list_companies, lookup_by_name
@@ -116,21 +117,42 @@ def sync_jobs(
                 max_workers=max_workers,
             ).run()
 
-        # Phase 3: Strip boilerplate
+        # Phase 3 & 4: Strip and embed run concurrently.
+        # Embed watches strip_done event: keeps polling DB for newly-stripped
+        # items until strip signals completion AND no work remains.
         settings = get_settings()
+        strip_done = threading.Event()
+        strip_phase = None
         if settings.azure_openai_api_key and settings.azure_openai_endpoint:
-            StripPhase(
+            strip_phase = StripPhase(
                 db_path_str,
                 display=display_state.strip,
                 slug=company_slug,
-            ).run()
+            )
+        else:
+            strip_done.set()  # no strip phase → embed can exit freely
 
-        # Phase 4: Embed
-        EmbedPhase(
+        embed_phase = EmbedPhase(
             db_path_str,
             display=display_state.embed,
             slug=company_slug,
-        ).run()
+            upstream_done=strip_done,
+        )
+
+        def run_strip() -> None:
+            try:
+                strip_phase.run()
+            finally:
+                strip_done.set()
+
+        threads: list[threading.Thread] = []
+        if strip_phase:
+            threads.append(threading.Thread(target=run_strip, daemon=True))
+        threads.append(threading.Thread(target=embed_phase.run, daemon=True))
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
 
         events.put(Done())
         return results

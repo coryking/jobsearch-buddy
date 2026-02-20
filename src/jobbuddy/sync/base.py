@@ -23,13 +23,21 @@ class WorkerPhase(ABC):
     """
 
     def __init__(self, db_path: str | Path, *, max_workers: int,
-                 display: PhaseState):
+                 display: PhaseState,
+                 upstream_done: threading.Event | None = None):
         self.db_path = str(db_path)
         self.max_workers = max_workers
         self.display = display
         self._shutdown = threading.Event()
-        self._reader = JobStore(db_path)  # main-thread connection for polling
+        self._upstream_done = upstream_done
+        self._reader: JobStore | None = None  # created lazily in run() thread
         self._local = threading.local()   # per-worker stores
+
+    def _get_reader(self) -> JobStore:
+        """Lazy reader connection — created on the thread that calls run()."""
+        if self._reader is None:
+            self._reader = JobStore(self.db_path)
+        return self._reader
 
     @abstractmethod
     def count_remaining(self) -> int: ...
@@ -49,8 +57,24 @@ class WorkerPhase(ABC):
 
     def run(self) -> None:
         total = self.count_remaining()
-        if total == 0:
+
+        if total == 0 and not self._upstream_done:
             return
+        if total == 0 and self._upstream_done and self._upstream_done.is_set():
+            return
+
+        # If upstream is still running and we have no work yet, wait for it
+        if total == 0 and self._upstream_done:
+            while not self._shutdown.is_set():
+                self._shutdown.wait(timeout=1.0)
+                total = self.count_remaining()
+                if total > 0:
+                    break
+                if self._upstream_done.is_set():
+                    total = self.count_remaining()
+                    if total == 0:
+                        return
+                    break
 
         self.display.start(total)
         self.on_phase_start()
@@ -60,6 +84,10 @@ class WorkerPhase(ABC):
                 while not self._shutdown.is_set():
                     batch = self.poll_work(self.batch_size)
                     if not batch:
+                        # If upstream is still producing, wait and retry
+                        if self._upstream_done and not self._upstream_done.is_set():
+                            self._shutdown.wait(timeout=1.0)
+                            continue
                         break
                     futures = {
                         executor.submit(self._safe_process, item): item
@@ -71,9 +99,16 @@ class WorkerPhase(ABC):
                                 f.cancel()
                             break
                         future.result()  # propagate unexpected errors
+
+                    # Update total as upstream produces more work
+                    if self._upstream_done:
+                        new_total = self.count_remaining() + self.display.done
+                        if new_total > self.display.total:
+                            self.display.total = new_total
         finally:
             self.on_phase_end()
-            self._reader.close()
+            if self._reader is not None:
+                self._reader.close()
             self.display.finish()
 
     def shutdown(self) -> None:
