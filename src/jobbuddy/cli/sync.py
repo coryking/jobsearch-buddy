@@ -115,6 +115,8 @@ def sync(
                 ),
                 state,
             )
+        except KeyboardInterrupt:
+            return
         except ValueError as e:
             console.print(f"[red]{e}[/red]")
             raise SystemExit(1)

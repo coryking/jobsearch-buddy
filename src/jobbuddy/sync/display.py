@@ -211,11 +211,22 @@ def build_display(state: SyncDisplayState, filter_phases: list[str] | None = Non
     return Group(table)
 
 
+class SyncRenderable:
+    """Wrapper so Rich Live calls build_display() on every render cycle."""
+
+    def __init__(self, state: SyncDisplayState, filter_phases: list[str] | None = None):
+        self.state = state
+        self.filter_phases = filter_phases
+
+    def __rich__(self) -> Group:
+        return build_display(self.state, self.filter_phases)
+
+
 def create_live(console: Console, state: SyncDisplayState,
                 filter_phases: list[str] | None = None) -> Live:
     """4hz refresh. For standalone commands, pass filter_phases=["Strip"] etc."""
     return Live(
-        build_display(state, filter_phases),
+        SyncRenderable(state, filter_phases),
         console=console,
         refresh_per_second=4,
     )
