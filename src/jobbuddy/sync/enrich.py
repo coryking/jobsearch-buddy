@@ -57,6 +57,9 @@ class EnrichPhase(WorkerPhase["EnrichWorkItem"]):
             total += len(job_ids)
         return total
 
+    def item_key(self, item: EnrichWorkItem) -> str:
+        return item["slug"]
+
     def poll_work(self, batch_size: int) -> list[EnrichWorkItem]:
         """Return one company at a time from the pre-built plan."""
         if not self._enrich_plan:

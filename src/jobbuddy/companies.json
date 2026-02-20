@@ -131,6 +131,11 @@
     "board": "cloudflare",
     "name": "Cloudflare"
   },
+  "cohere": {
+    "ats": "ashby",
+    "board": "cohere",
+    "name": "Cohere"
+  },
   "coinbase": {
     "ats": "greenhouse",
     "board": "coinbase",
@@ -192,6 +197,11 @@
     "ats": null,
     "board": null,
     "name": "Dice"
+  },
+  "discord": {
+    "ats": "greenhouse",
+    "board": "discord",
+    "name": "Discord"
   },
   "disney": {
     "ats": null,
@@ -283,6 +293,11 @@
     "board": null,
     "name": "Fusionbox"
   },
+  "gitlab": {
+    "ats": "greenhouse",
+    "board": "gitlab",
+    "name": "GitLab"
+  },
   "glean": {
     "ats": "greenhouse",
     "board": "gleanwork",
@@ -372,6 +387,11 @@
     "board": null,
     "name": "LevelTen Energy"
   },
+  "linear": {
+    "ats": "ashby",
+    "board": "Linear",
+    "name": "Linear"
+  },
   "liveramp": {
     "ats": "workday",
     "board": "LiveRampCareers",
@@ -444,6 +464,11 @@
     "board": null,
     "name": "Nimbus"
   },
+  "notion": {
+    "ats": "ashby",
+    "board": "notion",
+    "name": "Notion"
+  },
   "nvidia": {
     "ats": "workday",
     "board": "NVIDIAExternalCareerSite",
@@ -500,6 +525,11 @@
     "board": null,
     "name": "Paypal"
   },
+  "perplexity": {
+    "ats": "ashby",
+    "board": "perplexity",
+    "name": "Perplexity"
+  },
   "peregrine": {
     "ats": "greenhouse",
     "board": "peregrinetechnologies",
@@ -550,6 +580,11 @@
     "board": null,
     "name": "Qumulo"
   },
+  "ramp": {
+    "ats": "ashby",
+    "board": "ramp",
+    "name": "Ramp"
+  },
   "reddit": {
     "ats": "greenhouse",
     "board": "reddit",
@@ -564,6 +599,11 @@
     "ats": null,
     "board": null,
     "name": "Remitly"
+  },
+  "replit": {
+    "ats": "ashby",
+    "board": "replit",
+    "name": "Replit"
   },
   "rentspree": {
     "ats": "rippling",
@@ -596,6 +636,11 @@
     "ats": null,
     "board": null,
     "name": "SHANTUI AMERICA CORP"
+  },
+  "sentry": {
+    "ats": "ashby",
+    "board": "sentry",
+    "name": "Sentry"
   },
   "sentinelone": {
     "ats": "greenhouse",
@@ -718,6 +763,11 @@
     "board": "trucksmarter",
     "name": "TruckSmarter"
   },
+  "twilio": {
+    "ats": "greenhouse",
+    "board": "twilio",
+    "name": "Twilio"
+  },
   "tubitv": {
     "ats": "greenhouse",
     "board": "tubitv",
@@ -757,6 +807,11 @@
     "ats": null,
     "board": null,
     "name": "US Bank"
+  },
+  "vanta": {
+    "ats": "ashby",
+    "board": "vanta",
+    "name": "Vanta"
   },
   "vbeyond-corporation": {
     "ats": null,

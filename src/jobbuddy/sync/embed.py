@@ -38,6 +38,9 @@ class EmbedPhase(WorkerPhase["EmbedBatch"]):
         """Override: use embedding-optimal batch size, not worker * 2."""
         return self._batch_size
 
+    def item_key(self, item: EmbedBatch) -> tuple:
+        return tuple(j["id"] for j in item)
+
     def count_remaining(self) -> int:
         return self._get_reader().count_jobs_needing_embeddings(slug=self._slug)
 

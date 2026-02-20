@@ -70,7 +70,7 @@ class StripPhase(WorkerPhase["StripWorkItem"]):
     """Strip boilerplate from job descriptions using Azure OpenAI."""
 
     def __init__(self, db_path: str | Path, *, display: PhaseState,
-                 max_workers: int = 120, slug: str | None = None,
+                 max_workers: int = 200, slug: str | None = None,
                  upstream_done: threading.Event | None = None):
         super().__init__(db_path, max_workers=max_workers, display=display,
                          upstream_done=upstream_done)
@@ -91,6 +91,9 @@ class StripPhase(WorkerPhase["StripWorkItem"]):
                 ),
             ),
         )
+
+    def item_key(self, item: StripWorkItem) -> int:
+        return item["id"]
 
     def count_remaining(self) -> int:
         return self._get_reader().count_jobs_needing_stripping(slug=self._slug)

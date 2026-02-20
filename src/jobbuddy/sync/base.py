@@ -1,4 +1,19 @@
-"""WorkerPhase -- base class for DB-polling, thread-pooled sync phases."""
+"""WorkerPhase -- base class for DB-polling, thread-pooled sync phases.
+
+Architecture: producer-consumer with a single-threaded DB writer.
+
+    Producer (run thread)          Workers (ThreadPool)         Writer (single thread)
+    ┌─────────────────┐            ┌──────────────┐            ┌──────────────┐
+    │ poll DB          │──items──▶  │ work_queue   │──process──▶│ write_queue   │
+    │ filter dispatched│            │ (bounded)    │  submit_   │ (unbounded)  │
+    │ flush + re-poll  │            │              │  write()   │              │
+    └─────────────────┘            └──────────────┘            └──────────────┘
+
+Workers pull from work_queue continuously — no batch boundaries, no idle time.
+The dispatched set (in-memory) tracks items already queued so re-polls after
+flush don't duplicate in-flight work. Safe on crash: items are still NULL in
+the DB and get picked up on the next run.
+"""
 
 from __future__ import annotations
 
@@ -6,8 +21,8 @@ import logging
 import queue
 import threading
 from abc import ABC, abstractmethod
-from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from collections.abc import Callable, Hashable
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Generic, TypeVar
 
@@ -64,9 +79,9 @@ class WriteQueue:
 
 
 class WorkerPhase(ABC, Generic[T]):
-    """Subclasses implement: count_remaining(), poll_work(), process_item().
+    """Subclasses implement: count_remaining(), poll_work(), process_item(), item_key().
 
-    Base handles: poll loop, ThreadPoolExecutor, display updates, shutdown.
+    Base handles: producer-consumer loop, WriteQueue, display updates, shutdown.
     DB writes go through a single-threaded WriteQueue via submit_write().
     Type parameter T is the work item type (e.g. StripWorkItem, EmbedBatch).
     """
@@ -103,6 +118,11 @@ class WorkerPhase(ABC, Generic[T]):
     @abstractmethod
     def process_item(self, item: T) -> None: ...
 
+    @abstractmethod
+    def item_key(self, item: T) -> Hashable:
+        """Return a key identifying this work item for deduplication."""
+        ...
+
     def on_phase_start(self) -> None: pass
     def on_phase_end(self) -> None: pass
 
@@ -138,35 +158,54 @@ class WorkerPhase(ABC, Generic[T]):
         self._writer = WriteQueue(self.db_path)
         self._writer.start()
 
+        work_queue: queue.Queue[T | None] = queue.Queue(maxsize=self.max_workers * 2)
+        dispatched: set[Hashable] = set()
+
         try:
             with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+                # Start persistent worker threads
+                worker_futures = [
+                    executor.submit(self._worker_loop, work_queue, dispatched)
+                    for _ in range(self.max_workers)
+                ]
+
+                # Producer loop (this thread)
                 while not self._shutdown.is_set():
-                    batch = self.poll_work(self.batch_size)
-                    if not batch:
-                        # If upstream is still producing, wait and retry
+                    # Flush writes so DB reflects completed work, then poll
+                    self._writer.flush()
+                    # Over-fetch past in-flight items that are still NULL
+                    poll_limit = self.batch_size + len(dispatched)
+                    items = self.poll_work(poll_limit)
+                    new_items = [i for i in items if self.item_key(i) not in dispatched]
+
+                    if not new_items:
                         if self._upstream_done and not self._upstream_done.is_set():
                             self._shutdown.wait(timeout=1.0)
                             continue
                         break
-                    futures = {
-                        executor.submit(self._safe_process, item): item
-                        for item in batch
-                    }
-                    for future in as_completed(futures):
-                        if self._shutdown.is_set():
-                            for f in futures:
-                                f.cancel()
-                            break
-                        future.result()  # propagate unexpected errors
 
-                    # Flush writes so poll_work sees committed data
-                    self._writer.flush()
+                    for item in new_items:
+                        dispatched.add(self.item_key(item))
+                        # put() with timeout so we can respond to shutdown
+                        while not self._shutdown.is_set():
+                            try:
+                                work_queue.put(item, timeout=0.5)
+                                break
+                            except queue.Full:
+                                continue
 
                     # Update total as upstream produces more work
                     if self._upstream_done:
                         new_total = self.count_remaining() + self.display.done
-                        if new_total > self.display.total:
+                        if new_total > (self.display.total or 0):
                             self.display.total = new_total
+
+                # Signal workers to stop
+                for _ in range(self.max_workers):
+                    work_queue.put(None)
+
+                for f in worker_futures:
+                    f.result()
         finally:
             if self._writer:
                 self._writer.flush()
@@ -179,12 +218,27 @@ class WorkerPhase(ABC, Generic[T]):
     def shutdown(self) -> None:
         self._shutdown.set()
 
-    def _safe_process(self, item: T) -> None:
+    def _worker_loop(self, work_queue: queue.Queue[T | None],
+                     dispatched: set[Hashable]) -> None:
+        """Persistent worker: pull items from queue until sentinel."""
+        while True:
+            item = work_queue.get()
+            if item is None:
+                work_queue.task_done()
+                break
+            try:
+                self._safe_process(item, dispatched)
+            finally:
+                work_queue.task_done()
+
+    def _safe_process(self, item: T, dispatched: set[Hashable]) -> None:
         self.display.active_workers += 1
         try:
             self.process_item(item)
         except Exception as e:
             log.warning("Error in %s: %s", type(self).__name__, e)
             self.display.record_error()
+            # Un-dispatch so the producer re-polls and retries this item
+            dispatched.discard(self.item_key(item))
         finally:
             self.display.active_workers -= 1
