@@ -10,6 +10,7 @@ import logging
 import threading
 from pathlib import Path
 
+import httpx
 from openai import AzureOpenAI
 
 from jobbuddy.settings import get_settings
@@ -69,7 +70,7 @@ class StripPhase(WorkerPhase["StripWorkItem"]):
     """Strip boilerplate from job descriptions using Azure OpenAI."""
 
     def __init__(self, db_path: str | Path, *, display: PhaseState,
-                 max_workers: int = 60, slug: str | None = None,
+                 max_workers: int = 120, slug: str | None = None,
                  upstream_done: threading.Event | None = None):
         super().__init__(db_path, max_workers=max_workers, display=display,
                          upstream_done=upstream_done)
@@ -83,6 +84,12 @@ class StripPhase(WorkerPhase["StripWorkItem"]):
             api_key=settings.azure_openai_api_key,
             api_version=settings.azure_openai_api_version,
             timeout=60.0,
+            http_client=httpx.Client(
+                limits=httpx.Limits(
+                    max_connections=self.max_workers,
+                    max_keepalive_connections=self.max_workers,
+                ),
+            ),
         )
 
     def count_remaining(self) -> int:
@@ -112,6 +119,7 @@ class StripPhase(WorkerPhase["StripWorkItem"]):
 
         if response.usage:
             self.display.add_to_info_counter(response.usage.total_tokens)
+            self.display.token_rate.record(response.usage.total_tokens)
 
         content = response.choices[0].message.content
         stripped = content.strip() if content else ""
@@ -122,6 +130,6 @@ class StripPhase(WorkerPhase["StripWorkItem"]):
             )
             raise ValueError(f"Empty strip result for {item['company_slug']}/{item['job_id']}")
 
-        store = self._get_thread_store()
-        store.update_stripped_description(item["id"], stripped)
+        job_pk = item["id"]
+        self.submit_write(lambda store, pk=job_pk, s=stripped: store.update_stripped_description(pk, s))
         self.display.advance(detail=f"{item['company_slug']}: {item['title']}")

@@ -75,11 +75,12 @@ class EmbedPhase(WorkerPhase["EmbedBatch"]):
 
         if total_tokens:
             self.display.add_to_info_counter(total_tokens)
+            self.display.token_rate.record(total_tokens)
 
-        store = self._get_thread_store()
         for job_info, vec in zip(valid_jobs, vectors):
             blob = serialize_f32(vec)
-            store.store_embedding(job_info["id"], blob)
+            jid = job_info["id"]
+            self.submit_write(lambda store, j=jid, b=blob: store.store_embedding(j, b))
             self.display.advance(
                 detail=f"{job_info['company_slug']}: {job_info['title']}"
             )

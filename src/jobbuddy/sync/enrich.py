@@ -69,10 +69,9 @@ class EnrichPhase(WorkerPhase["EnrichWorkItem"]):
         jobs_meta = item["jobs_meta"]
         company = self.slug_to_company[slug]
         fetcher = get_fetcher(company)
-        store = self._get_thread_store()
 
         def _on_fetched(job_id: str, desc: str) -> None:
-            store.update_descriptions(slug, {job_id: desc})
+            self.submit_write(lambda store, s=slug, jid=job_id, d=desc: store.update_descriptions(s, {jid: d}))
             self.display.advance(detail=slug)
 
         try:
