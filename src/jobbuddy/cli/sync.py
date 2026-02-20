@@ -43,30 +43,31 @@ def _consume_events(events, display_state):
                 break
 
             case FetchStarted(slug=slug):
-                fetch.detail = slug
+                fetch.set_active_detail(slug, slug)
 
             case FetchProgress(slug=slug, fetched=fetched, total=total):
-                fetch.detail = f"{slug}: {humanize.intcomma(fetched)}/{humanize.intcomma(total)} jobs"
+                fetch.set_active_detail(slug, f"{slug}: {humanize.intcomma(fetched)}/{humanize.intcomma(total)} jobs")
 
             case FetchResult(result=sr):
+                fetch.remove_active_detail(sr.slug)
                 if sr.ok:
-                    fetch.advance(detail=sr.slug)
+                    fetch.advance()
                     if sr.job_count:
                         fetch.add_to_info_counter(sr.job_count, " jobs")
                 else:
                     fetch.record_error()
-                    fetch.advance(detail=sr.slug)
+                    fetch.advance()
                 if fetch.total is not None and fetch.done >= fetch.total:
                     fetch.finish()
 
             case CompanySkipped(slug=slug, reason=reason):
-                fetch.advance(detail=f"{slug} (skipped)")
+                fetch.advance()
                 if fetch.total is not None and fetch.done >= fetch.total:
                     fetch.finish()
 
             case RetryEvent(slug=slug, job_id=job_id, attempt=attempt, max_attempts=max_attempts, wait_seconds=wait, reason=reason):
                 target = slug if slug else job_id
-                fetch.detail = f"{target}: retry {attempt}/{max_attempts}"
+                fetch.set_active_detail(target, f"{target}: retry {attempt}/{max_attempts}")
 
 
 def _run_fetch_with_events(fn, display_state):

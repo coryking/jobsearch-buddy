@@ -73,6 +73,8 @@ class PhaseState:
     rate: RollingRate = field(default_factory=RollingRate)
     _info_counter: int = field(default=0, repr=False)
     _info_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    _active_details: dict[str, str] = field(default_factory=dict, repr=False)
+    _active_details_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def start(self, total: int, detail: str = "") -> None:
         self.status = "active"
@@ -85,6 +87,21 @@ class PhaseState:
         self.rate.record()
         if detail is not None:
             self.detail = detail
+
+    def set_active_detail(self, key: str, text: str) -> None:
+        """Add or update a named active detail line (e.g. per-company progress)."""
+        with self._active_details_lock:
+            self._active_details[key] = text
+
+    def remove_active_detail(self, key: str) -> None:
+        """Remove a named active detail line (e.g. when a company finishes)."""
+        with self._active_details_lock:
+            self._active_details.pop(key, None)
+
+    def get_active_details(self) -> list[str]:
+        """Snapshot of all active detail lines, sorted by key."""
+        with self._active_details_lock:
+            return [self._active_details[k] for k in sorted(self._active_details)]
 
     def add_to_info_counter(self, n: int, label: str = " tok") -> None:
         """Thread-safe accumulator. Updates the info display string."""
@@ -211,13 +228,22 @@ def build_display(state: SyncDisplayState, filter_phases: list[str] | None = Non
             style=style,
         )
 
-        # Sub-heading row for active phases with detail text
-        if phase.status == "active" and phase.detail:
-            table.add_row(
-                "",
-                Text(f" {phase.detail}", style="dim italic"),
-                "", "", "", "",
-            )
+        # Sub-heading rows for active phases
+        if phase.status == "active":
+            active_details = phase.get_active_details()
+            if active_details:
+                for line in active_details:
+                    table.add_row(
+                        "",
+                        Text(f" {line}", style="dim italic"),
+                        "", "", "", "",
+                    )
+            elif phase.detail:
+                table.add_row(
+                    "",
+                    Text(f" {phase.detail}", style="dim italic"),
+                    "", "", "", "",
+                )
 
     return Group(table)
 
