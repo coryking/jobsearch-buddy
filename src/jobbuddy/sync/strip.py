@@ -7,6 +7,7 @@ Prompt is v9-surgical-benefits (eval-validated, do not modify).
 from __future__ import annotations
 
 import logging
+import threading
 from pathlib import Path
 
 from openai import AzureOpenAI
@@ -68,8 +69,10 @@ class StripPhase(WorkerPhase["StripWorkItem"]):
     """Strip boilerplate from job descriptions using Azure OpenAI."""
 
     def __init__(self, db_path: str | Path, *, display: PhaseState,
-                 max_workers: int = 60, slug: str | None = None):
-        super().__init__(db_path, max_workers=max_workers, display=display)
+                 max_workers: int = 60, slug: str | None = None,
+                 upstream_done: threading.Event | None = None):
+        super().__init__(db_path, max_workers=max_workers, display=display,
+                         upstream_done=upstream_done)
         self._client: AzureOpenAI | None = None
         self._slug = slug
 

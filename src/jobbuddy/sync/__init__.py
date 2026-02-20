@@ -18,7 +18,7 @@ from pathlib import Path
 from jobbuddy.registry import list_companies, lookup_by_name
 from jobbuddy.settings import get_settings
 from jobbuddy.store import JobStore
-from jobbuddy.sync.display import PhaseState, SyncDisplayState
+from jobbuddy.sync.display import SyncDisplayState
 from jobbuddy.sync.types import (
     CompanySkipped,
     Done,
@@ -46,9 +46,11 @@ def sync_jobs(
 ) -> list[SyncResult]:
     """Sync job listings from ATS boards into the SQLite cache.
 
-    Four phases: fetch -> enrich -> strip -> embed. Each phase is independent
-    and communicates through the store. Progress is reflected in the
-    SyncDisplayState for live TUI rendering.
+    Fetch runs first, then enrich/strip/embed run concurrently. Each phase
+    polls the DB for work; upstream_done events signal when it's safe to stop
+    polling (enrich_done → strip, strip_done → embed). Strip starts processing
+    full-fetcher jobs immediately while enrich is still fetching descriptions
+    for stub fetchers.
 
     Args:
         company_slug: Sync only this company (None = all).
@@ -107,31 +109,39 @@ def sync_jobs(
         # Phase 1: Fetch
         results, slugs_to_embed = FetchPhase(store, targets, max_workers, events).run()
 
-        # Phase 2: Enrich descriptions for stub fetchers
+        # Phases 2-4: Enrich, strip, embed run concurrently.
+        # Each phase polls the DB for work. upstream_done events chain them
+        # so downstream phases keep polling until upstream finishes producing.
+        #   enrich_done → strip keeps polling for newly-enriched descriptions
+        #   strip_done  → embed keeps polling for newly-stripped descriptions
+        enrich_done = threading.Event()
+        strip_done = threading.Event()
+
+        settings = get_settings()
+        has_azure = settings.azure_openai_api_key and settings.azure_openai_endpoint
+
+        # Build enrich phase (if any stub fetchers succeeded)
+        enrich_phase = None
         if slugs_to_embed:
-            EnrichPhase(
+            enrich_phase = EnrichPhase(
                 db_path_str,
                 slugs=slugs_to_embed,
                 targets=targets,
                 display=display_state.enrich,
                 max_workers=max_workers,
-            ).run()
+            )
 
-        # Phase 3 & 4: Strip and embed run concurrently.
-        # Embed watches strip_done event: keeps polling DB for newly-stripped
-        # items until strip signals completion AND no work remains.
-        settings = get_settings()
-        strip_done = threading.Event()
+        # Build strip phase (if Azure credentials configured)
         strip_phase = None
-        if settings.azure_openai_api_key and settings.azure_openai_endpoint:
+        if has_azure:
             strip_phase = StripPhase(
                 db_path_str,
                 display=display_state.strip,
                 slug=company_slug,
+                upstream_done=enrich_done,
             )
-        else:
-            strip_done.set()  # no strip phase → embed can exit freely
 
+        # Build embed phase (always runs)
         embed_phase = EmbedPhase(
             db_path_str,
             display=display_state.embed,
@@ -139,15 +149,23 @@ def sync_jobs(
             upstream_done=strip_done,
         )
 
+        def run_enrich() -> None:
+            try:
+                if enrich_phase:
+                    enrich_phase.run()
+            finally:
+                enrich_done.set()
+
         def run_strip() -> None:
             try:
-                strip_phase.run()
+                if strip_phase:
+                    strip_phase.run()
             finally:
                 strip_done.set()
 
         threads: list[threading.Thread] = []
-        if strip_phase:
-            threads.append(threading.Thread(target=run_strip, daemon=True))
+        threads.append(threading.Thread(target=run_enrich, daemon=True))
+        threads.append(threading.Thread(target=run_strip, daemon=True))
         threads.append(threading.Thread(target=embed_phase.run, daemon=True))
         for t in threads:
             t.start()
