@@ -36,15 +36,14 @@ jobs             -- INTEGER PK (surrogate), UNIQUE(company_slug, job_id)
                  --   department, description, description_stripped,
                  --   ats_metadata, last_seen, disappeared_at
 sync_status      -- per-company last sync time and error state
-embedding_models -- model_key PK, model_name, dimensions, created_at
-job_embeddings   -- FK to jobs.id, FK to embedding_models.model_key
-                 --   embedding BLOB (raw float32), text_hash
+job_embeddings   -- job_id PK (FK to jobs.id), text_hash, embedding BLOB
 
 -- sqlite-vec virtual table for KNN search
 vec_jobs         -- vec0 virtual table: job_id INTEGER PK,
                  --   embedding float[1536] distance_metric=cosine
 ```
 
+Single embedding model (Azure OpenAI text-embedding-3-small, 1536 dims).
 Embeddings are dual-written: `job_embeddings` stores the BLOB with `text_hash`
 for change tracking, `vec_jobs` indexes the same vector for KNN queries.
 

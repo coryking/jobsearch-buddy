@@ -51,13 +51,6 @@ def vs():
         _make_job("3", "Data Scientist", "NYC", description="ML models for user recommendations."),
     ])
 
-    # Register the embedding model (FK on job_embeddings)
-    store.conn.execute(
-        "INSERT OR IGNORE INTO embedding_models (model_key, model_name, dimensions, created_at) "
-        "VALUES ('text3small', 'text-embedding-3-small', 1536, '2025-01-01')"
-    )
-    store.conn.commit()
-
     for job_id_str in ["1", "2", "3"]:
         row = store.conn.execute(
             "SELECT id, company_slug, description FROM jobs WHERE job_id = ?", (job_id_str,)

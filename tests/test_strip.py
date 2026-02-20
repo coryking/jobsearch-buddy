@@ -145,13 +145,6 @@ class TestEmbedTextStripped:
         store.upsert_jobs("acme", [_make_job("1", description="raw description")])
         pk = store.conn.execute("SELECT id FROM jobs WHERE job_id = '1'").fetchone()["id"]
 
-        # Register the embedding model (FK on job_embeddings)
-        store.conn.execute(
-            "INSERT OR IGNORE INTO embedding_models (model_key, model_name, dimensions, created_at) "
-            "VALUES ('text3small', 'text-embedding-3-small', 1536, '2025-01-01')"
-        )
-        store.conn.commit()
-
         # Embed with raw description
         job = _make_job("1", description="raw description")
         raw_text = job.embed_text("acme")

@@ -19,9 +19,6 @@ from jobbuddy.models import Job
 
 log = logging.getLogger(__name__)
 
-# Hardcoded embedding model key — single model
-_EMBED_MODEL_KEY = "text3small"
-
 
 def _utcnow() -> str:
     """ISO 8601 UTC timestamp."""
@@ -214,21 +211,20 @@ class JobStore:
         conn.commit()
 
     def _init_embedding_tables(self, conn: sqlite3.Connection) -> None:
-        conn.executescript("""
-            CREATE TABLE IF NOT EXISTS embedding_models (
-                model_key   TEXT PRIMARY KEY,
-                model_name  TEXT NOT NULL,
-                dimensions  INTEGER NOT NULL,
-                created_at  TIMESTAMP NOT NULL
-            );
+        # Migration: drop old multi-model schema (all old embeddings are discarded)
+        old_table = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='embedding_models'"
+        ).fetchone()
+        if old_table:
+            log.info("Dropping old embedding_models/job_embeddings tables (single-model migration)")
+            conn.execute("DROP TABLE IF EXISTS job_embeddings")
+            conn.execute("DROP TABLE IF EXISTS embedding_models")
 
+        conn.executescript("""
             CREATE TABLE IF NOT EXISTS job_embeddings (
-                id        INTEGER PRIMARY KEY AUTOINCREMENT,
-                job_id    INTEGER NOT NULL REFERENCES jobs(id),
-                model_key TEXT NOT NULL REFERENCES embedding_models(model_key),
+                job_id    INTEGER PRIMARY KEY REFERENCES jobs(id),
                 text_hash TEXT NOT NULL,
-                embedding BLOB NOT NULL,
-                UNIQUE (job_id, model_key)
+                embedding BLOB NOT NULL
             );
         """)
 
@@ -442,11 +438,11 @@ class JobStore:
     def store_embedding(self, job_id: int, embedding: bytes, text_hash: str) -> None:
         """Dual-write: job_embeddings (audit/hash) + vec_jobs (search index)."""
         self.conn.execute("""
-            INSERT INTO job_embeddings (job_id, model_key, text_hash, embedding)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(job_id, model_key) DO UPDATE SET
+            INSERT INTO job_embeddings (job_id, text_hash, embedding)
+            VALUES (?, ?, ?)
+            ON CONFLICT(job_id) DO UPDATE SET
                 text_hash = excluded.text_hash, embedding = excluded.embedding
-        """, (job_id, _EMBED_MODEL_KEY, text_hash, embedding))
+        """, (job_id, text_hash, embedding))
         self.conn.execute("""
             INSERT OR REPLACE INTO vec_jobs(job_id, embedding) VALUES (?, ?)
         """, (job_id, embedding))
@@ -454,8 +450,7 @@ class JobStore:
 
     def delete_embedding(self, job_id: int) -> None:
         """Delete an embedding for a job."""
-        self.conn.execute("DELETE FROM job_embeddings WHERE job_id = ? AND model_key = ?",
-                          (job_id, _EMBED_MODEL_KEY))
+        self.conn.execute("DELETE FROM job_embeddings WHERE job_id = ?", (job_id,))
         self.conn.execute("DELETE FROM vec_jobs WHERE job_id = ?", (job_id,))
         self.conn.commit()
 
@@ -481,7 +476,6 @@ class JobStore:
         """Jobs with description_stripped but no up-to-date embedding.
 
         Gate on description_stripped IS NOT NULL (not description).
-        Uses hardcoded _EMBED_MODEL_KEY.
         """
         conditions = ["j.description_stripped IS NOT NULL", "j.disappeared_at IS NULL"]
         params: list[str] = []
@@ -496,19 +490,19 @@ class JobStore:
             # Count jobs where no embedding exists
             sql = f"""
                 SELECT COUNT(*) FROM jobs j
-                LEFT JOIN job_embeddings e ON j.id = e.job_id AND e.model_key = ?
-                WHERE {where} AND e.id IS NULL
+                LEFT JOIN job_embeddings e ON j.id = e.job_id
+                WHERE {where} AND e.job_id IS NULL
             """
-            row = self.conn.execute(sql, [_EMBED_MODEL_KEY] + params).fetchone()
+            row = self.conn.execute(sql, params).fetchone()
             no_embedding = row[0]
 
             # Also count hash mismatches (description changed)
             sql2 = f"""
                 SELECT COUNT(*) FROM jobs j
-                JOIN job_embeddings e ON j.id = e.job_id AND e.model_key = ?
+                JOIN job_embeddings e ON j.id = e.job_id
                 WHERE {where}
             """
-            row2 = self.conn.execute(sql2, [_EMBED_MODEL_KEY] + params).fetchone()
+            row2 = self.conn.execute(sql2, params).fetchone()
             has_embedding = row2[0]
 
             if has_embedding == 0:
@@ -519,10 +513,10 @@ class JobStore:
                 SELECT j.id, j.company_slug, j.job_id, j.title, j.department,
                        j.location, j.description, j.description_stripped, e.text_hash
                 FROM jobs j
-                JOIN job_embeddings e ON j.id = e.job_id AND e.model_key = ?
+                JOIN job_embeddings e ON j.id = e.job_id
                 WHERE {where}
             """
-            rows = self.conn.execute(sql3, [_EMBED_MODEL_KEY] + params).fetchall()
+            rows = self.conn.execute(sql3, params).fetchall()
             mismatches = 0
             for r in rows:
                 job = Job(
@@ -540,12 +534,12 @@ class JobStore:
         sql = f"""
             SELECT j.id, j.company_slug, j.job_id, j.title, j.department,
                    j.location, j.description, j.description_stripped,
-                   e.id AS embed_id, e.text_hash
+                   e.job_id AS has_embedding, e.text_hash
             FROM jobs j
-            LEFT JOIN job_embeddings e ON j.id = e.job_id AND e.model_key = ?
+            LEFT JOIN job_embeddings e ON j.id = e.job_id
             WHERE {where}
         """
-        all_params = [_EMBED_MODEL_KEY] + params
+        all_params = list(params)
         if limit > 0:
             sql += " LIMIT ?"
             all_params.append(str(limit))
@@ -564,7 +558,7 @@ class JobStore:
                 continue
 
             h = _text_hash(text)
-            if r["embed_id"] is not None and r["text_hash"] == h:
+            if r["has_embedding"] is not None and r["text_hash"] == h:
                 continue  # up to date
 
             result.append({
@@ -573,7 +567,7 @@ class JobStore:
                 "job_id": r["job_id"],
                 "text": text,
                 "text_hash": h,
-                "old_embed_id": r["embed_id"],
+                "has_embedding": r["has_embedding"] is not None,
             })
 
         return result

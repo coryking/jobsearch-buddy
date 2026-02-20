@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 
 from jobbuddy.models import Job
-from jobbuddy.store import JobStore, _EMBED_MODEL_KEY
+from jobbuddy.store import JobStore
 
 
 def _make_job(id: str = "123", title: str = "PM", location: str = "Seattle", **kw) -> Job:
@@ -47,11 +47,12 @@ class TestSchema:
         unique_indexes = [idx for idx in indexes if idx[2] == 1]  # non_unique=0 means unique
         assert len(unique_indexes) >= 1
 
-    def test_embedding_models_table_exists(self, store):
+    def test_embedding_models_table_removed(self, store):
+        """embedding_models table no longer exists (single-model schema)."""
         tables = {row[0] for row in store.conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table'"
         ).fetchall()}
-        assert "embedding_models" in tables
+        assert "embedding_models" not in tables
 
     def test_job_embeddings_table_exists(self, store):
         tables = {row[0] for row in store.conn.execute(
@@ -311,13 +312,6 @@ class TestEmbeddings:
         blob = self._make_embedding()
         text_hash = self._get_text_hash("1", "Build AI.")
 
-        # Register the model first (store_embedding expects it in embedding_models)
-        store.conn.execute(
-            "INSERT OR IGNORE INTO embedding_models (model_key, model_name, dimensions, created_at) VALUES (?, ?, ?, ?)",
-            (_EMBED_MODEL_KEY, "text-embedding-3-small", 1536, "2025-01-01"),
-        )
-        store.conn.commit()
-
         store.store_embedding(job_id, blob, text_hash)
 
         # Check job_embeddings
@@ -325,7 +319,6 @@ class TestEmbeddings:
             "SELECT * FROM job_embeddings WHERE job_id = ?", (job_id,)
         ).fetchone()
         assert row is not None
-        assert row["model_key"] == _EMBED_MODEL_KEY
         assert row["text_hash"] == text_hash
 
         # Check vec_jobs has the entry
@@ -343,12 +336,6 @@ class TestEmbeddings:
         blob = self._make_embedding()
         text_hash = self._get_text_hash("1", "Build AI.")
 
-        store.conn.execute(
-            "INSERT OR IGNORE INTO embedding_models (model_key, model_name, dimensions, created_at) VALUES (?, ?, ?, ?)",
-            (_EMBED_MODEL_KEY, "text-embedding-3-small", 1536, "2025-01-01"),
-        )
-        store.conn.commit()
-
         store.store_embedding(job_id, blob, text_hash)
         assert store.jobs_needing_embeddings(count_only=True) == 0
 
@@ -357,12 +344,6 @@ class TestEmbeddings:
         ids = self._insert_jobs_with_stripped(store, "version 1")
         job_id = ids[0]
         blob = self._make_embedding()
-
-        store.conn.execute(
-            "INSERT OR IGNORE INTO embedding_models (model_key, model_name, dimensions, created_at) VALUES (?, ?, ?, ?)",
-            (_EMBED_MODEL_KEY, "text-embedding-3-small", 1536, "2025-01-01"),
-        )
-        store.conn.commit()
 
         store.store_embedding(job_id, blob, "old_hash")
         # The text_hash won't match the actual embed_text hash
@@ -375,12 +356,6 @@ class TestEmbeddings:
         job_id = ids[0]
         blob = self._make_embedding()
         text_hash = self._get_text_hash("1", "Build AI.")
-
-        store.conn.execute(
-            "INSERT OR IGNORE INTO embedding_models (model_key, model_name, dimensions, created_at) VALUES (?, ?, ?, ?)",
-            (_EMBED_MODEL_KEY, "text-embedding-3-small", 1536, "2025-01-01"),
-        )
-        store.conn.commit()
 
         store.store_embedding(job_id, blob, text_hash)
         store.delete_embedding(job_id)
@@ -395,12 +370,6 @@ class TestEmbeddings:
     def test_search_similar(self, store):
         """search_similar returns jobs ranked by cosine distance."""
         ids = self._insert_jobs_with_stripped(store, "AI engineer role", "Marketing manager role")
-
-        store.conn.execute(
-            "INSERT OR IGNORE INTO embedding_models (model_key, model_name, dimensions, created_at) VALUES (?, ?, ?, ?)",
-            (_EMBED_MODEL_KEY, "text-embedding-3-small", 1536, "2025-01-01"),
-        )
-        store.conn.commit()
 
         # Create two distinct embeddings
         vec1 = [1.0] + [0.0] * 1535

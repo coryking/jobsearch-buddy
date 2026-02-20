@@ -95,24 +95,6 @@ class PhaseError(SyncEvent):
     error: str
 
 
-# ---------------------------------------------------------------------------
-# Model lifecycle events
-# ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True, slots=True)
-class ModelLoaded(SyncEvent):
-    model_key: str
-    model_name: str
-    device: str
-
-
-@dataclass(frozen=True, slots=True)
-class ModelUnloaded(SyncEvent):
-    model_key: str
-    model_name: str
-    device: str
-
 
 # ---------------------------------------------------------------------------
 # Retry visibility
