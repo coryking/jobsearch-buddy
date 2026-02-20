@@ -120,6 +120,13 @@ class WorkerPhase(ABC):
         except Exception as e:
             log.warning("Error in %s: %s", type(self).__name__, e)
             self.display.record_error()
+            # Rollback any open transaction so a failed write doesn't hold
+            # the SQLite write lock indefinitely (zombie RESERVED lock).
+            if hasattr(self._local, "store"):
+                try:
+                    self._local.store.conn.rollback()
+                except Exception:
+                    pass
 
     def _get_thread_store(self) -> JobStore:
         if not hasattr(self._local, "store"):

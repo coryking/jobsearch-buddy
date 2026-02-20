@@ -228,13 +228,32 @@ class JobStore:
             );
         """)
 
-        # vec0 virtual table for cosine similarity search
-        conn.execute("""
-            CREATE VIRTUAL TABLE IF NOT EXISTS vec_jobs USING vec0(
-                job_id INTEGER PRIMARY KEY,
-                embedding float[1536] distance_metric=cosine
-            )
-        """)
+        # vec0 virtual table for cosine similarity search.
+        # Migration: old schema used 'rowid' instead of 'job_id'. Detect and recreate.
+        vec_exists = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='vec_jobs'"
+        ).fetchone()
+        if vec_exists:
+            cols = {row[1] for row in conn.execute("PRAGMA table_xinfo(vec_jobs)").fetchall()}
+            if "job_id" not in cols:
+                log.info("Recreating vec_jobs (schema migration: rowid → job_id)")
+                conn.execute("DROP TABLE vec_jobs")
+                vec_exists = None
+        if not vec_exists:
+            conn.execute("""
+                CREATE VIRTUAL TABLE vec_jobs USING vec0(
+                    job_id INTEGER PRIMARY KEY,
+                    embedding float[1536] distance_metric=cosine
+                )
+            """)
+            # Backfill vec_jobs from job_embeddings (migration or fresh table)
+            count = conn.execute("SELECT COUNT(*) FROM job_embeddings").fetchone()[0]
+            if count:
+                log.info("Backfilling vec_jobs from job_embeddings (%d rows)", count)
+                conn.execute("""
+                    INSERT INTO vec_jobs(job_id, embedding)
+                    SELECT job_id, embedding FROM job_embeddings
+                """)
 
     # -------------------------------------------------------------------
     # Jobs
