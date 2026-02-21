@@ -27,6 +27,19 @@ Set `JOBBUDDY_OPENAI_API_KEY` in your `.env` file or environment. Works with Ope
 - Vector embeddings + semantic search ("find me ML roles with good parental leave")
 - Web search UI (`jsb serve`)
 
+## Application Log
+
+Track job applications and activities in a local CSV (`data/job-search-log.csv`) designed for WA state unemployment audit compliance.
+
+```bash
+jsb log https://boards.greenhouse.io/acme/jobs/12345          # Log an application
+jsb log <url> -a "Phone Screen" -p "Jane Smith" -n "Went well"  # Log follow-up activity
+```
+
+Each `jsb log` call fetches the listing from the URL, saves it as a markdown file, checks for duplicate entries, and appends a row to the CSV with date, company, role, action, contact person, location, URL, and notes. The CSV is plain text — open it in Excel, import it into Google Sheets, or `cat` it.
+
+The MCP server exposes `log_job_application`, `log_job_activity`, and `review_activity_log` tools, so Claude Desktop can log applications conversationally.
+
 ## CLI Commands
 
 ```
