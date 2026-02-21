@@ -12,7 +12,6 @@ from __future__ import annotations
 import logging
 import struct
 import time
-from datetime import datetime
 
 import numpy as np
 from openai import AzureOpenAI, RateLimitError
@@ -85,11 +84,10 @@ def embed_texts(texts: list[str]) -> tuple[list[list[float]], int]:
     response = raw.parse()
     total_tokens = response.usage.total_tokens if response.usage else 0
 
-    # Dump all rate-limit headers on first call so we can see what Azure sends
     global _cumulative_tokens, _first_call_time
     if _first_call_time is None:
-        log.warning("Rate limit: %s TPM capacity",
-                    raw.headers.get("x-ratelimit-limit-tokens", "?"))
+        log.debug("Rate limit: %s TPM capacity",
+                  raw.headers.get("x-ratelimit-limit-tokens", "?"))
     _cumulative_tokens += total_tokens
     now = time.monotonic()
     if _first_call_time is None:
@@ -97,22 +95,19 @@ def embed_texts(texts: list[str]) -> tuple[list[list[float]], int]:
     elapsed_min = (now - _first_call_time) / 60
     avg_tpm = _cumulative_tokens / elapsed_min if elapsed_min > 0.1 else 0
 
-    # Pace based on remaining budget. Target: keep remaining above 200k
-    # to avoid 429 penalties. Refill rate: ~16.7K tok/s.
+    # Pace based on remaining budget. Refill rate: 1M tokens / 60s = 16,667 tok/s.
     remaining = raw.headers.get("x-ratelimit-remaining-tokens")
     remaining_tokens = int(remaining) if remaining is not None else None
     if remaining_tokens is not None:
-        # Fixed refill rate: 1M tokens / 60s = 16,667 tok/s.
-        # Sleep just enough to replenish what we used, plus extra if budget is low.
         refill_rate = 16_667
         base_wait = total_tokens / refill_rate
         target = 100_000
         extra = max(0, (target - remaining_tokens) / refill_rate) if remaining_tokens < target else 0
         wait = base_wait + extra
-        ts = datetime.now().strftime("%H:%M:%S")
-        log.warning("[%s] Budget: %dk remaining, used %dk, call %.1fs, sleep %.1fs | total: %.1fM tok, avg: %.0fk TPM",
-                    ts, remaining_tokens // 1000, total_tokens // 1000,
-                    call_duration, wait, _cumulative_tokens / 1_000_000, avg_tpm / 1000)
+        log.debug("%d items, %dk tok | budget: %dk remaining, call %.1fs, sleep %.1fs | total: %.1fM tok, avg: %.0fk TPM",
+                  len(texts), total_tokens // 1000,
+                  remaining_tokens // 1000, call_duration, wait,
+                  _cumulative_tokens / 1_000_000, avg_tpm / 1000)
         if wait > 0:
             time.sleep(wait)
 
