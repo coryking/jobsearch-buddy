@@ -10,7 +10,8 @@ import json
 import logging
 from pathlib import Path
 
-from jobbuddy.fetchers import get_fetcher
+from jobbuddy.fetchers import get_fetcher, has_descriptions_in_listing
+from jobbuddy.fetchers.base import ATSFetcher
 from jobbuddy.models import Company
 from jobbuddy.sync.base import WorkerPhase
 from jobbuddy.sync.display import PhaseState
@@ -34,16 +35,23 @@ class EnrichPhase(WorkerPhase["EnrichWorkItem"]):
         self.slugs = slugs
         self.slug_to_company = {c.slug: c for c in targets}
         self._enrich_plan: list[EnrichWorkItem] = []
+        self._fetcher_cache: dict[str, ATSFetcher] = {}
+
+    def _get_fetcher(self, slug: str) -> ATSFetcher:
+        """Get or create a fetcher for a company slug, caching to avoid FD leaks."""
+        if slug not in self._fetcher_cache:
+            company = self.slug_to_company[slug]
+            self._fetcher_cache[slug] = get_fetcher(company)
+        return self._fetcher_cache[slug]
 
     def count_remaining(self) -> int:
         """Build enrichment plan and return total jobs needing descriptions."""
         total = 0
         for slug in self.slugs:
             company = self.slug_to_company.get(slug)
-            if not company:
+            if not company or not company.ats:
                 continue
-            fetcher = get_fetcher(company)
-            if fetcher.descriptions_in_listing:
+            if has_descriptions_in_listing(company.ats):
                 continue
             needing = self._get_reader().get_jobs_needing_descriptions(slug)
             if not needing:
@@ -70,8 +78,7 @@ class EnrichPhase(WorkerPhase["EnrichWorkItem"]):
         slug = item["slug"]
         job_ids = item["job_ids"]
         jobs_meta = item["jobs_meta"]
-        company = self.slug_to_company[slug]
-        fetcher = get_fetcher(company)
+        fetcher = self._get_fetcher(slug)
 
         def _on_fetched(job_id: str, desc: str) -> None:
             self.submit_write(lambda store, s=slug, jid=job_id, d=desc: store.update_descriptions(s, {jid: d}))

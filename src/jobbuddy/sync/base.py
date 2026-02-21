@@ -24,7 +24,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable, Hashable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Generic, TypeVar
+from typing import ClassVar, Generic, TypeVar
 
 T = TypeVar("T")
 
@@ -160,12 +160,13 @@ class WorkerPhase(ABC, Generic[T]):
 
         work_queue: queue.Queue[T | None] = queue.Queue(maxsize=self.max_workers * 2)
         dispatched: set[Hashable] = set()
+        failures: dict[Hashable, int] = {}
 
         try:
             with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
                 # Start persistent worker threads
                 worker_futures = [
-                    executor.submit(self._worker_loop, work_queue, dispatched)
+                    executor.submit(self._worker_loop, work_queue, dispatched, failures)
                     for _ in range(self.max_workers)
                 ]
 
@@ -218,8 +219,11 @@ class WorkerPhase(ABC, Generic[T]):
     def shutdown(self) -> None:
         self._shutdown.set()
 
+    MAX_RETRIES: ClassVar[int] = 3
+
     def _worker_loop(self, work_queue: queue.Queue[T | None],
-                     dispatched: set[Hashable]) -> None:
+                     dispatched: set[Hashable],
+                     failures: dict[Hashable, int]) -> None:
         """Persistent worker: pull items from queue until sentinel."""
         while True:
             item = work_queue.get()
@@ -227,18 +231,27 @@ class WorkerPhase(ABC, Generic[T]):
                 work_queue.task_done()
                 break
             try:
-                self._safe_process(item, dispatched)
+                self._safe_process(item, dispatched, failures)
             finally:
                 work_queue.task_done()
 
-    def _safe_process(self, item: T, dispatched: set[Hashable]) -> None:
+    def _safe_process(self, item: T, dispatched: set[Hashable],
+                      failures: dict[Hashable, int]) -> None:
         self.display.active_workers += 1
         try:
             self.process_item(item)
         except Exception as e:
-            log.warning("Error in %s: %s", type(self).__name__, e)
-            self.display.record_error()
-            # Un-dispatch so the producer re-polls and retries this item
-            dispatched.discard(self.item_key(item))
+            key = self.item_key(item)
+            count = failures.get(key, 0) + 1
+            failures[key] = count
+            if count >= self.MAX_RETRIES:
+                log.error("Giving up on %s after %d failures: %s",
+                          key, count, e)
+            else:
+                log.warning("Error in %s (attempt %d/%d): %s",
+                            type(self).__name__, count, self.MAX_RETRIES, e)
+                self.display.record_error()
+                # Un-dispatch so the producer re-polls and retries this item
+                dispatched.discard(key)
         finally:
             self.display.active_workers -= 1

@@ -3,6 +3,7 @@
 from jobbuddy.fetchers.ashby import AshbyFetcher
 from jobbuddy.fetchers.base import ATSFetcher
 from jobbuddy.fetchers.eightfold import EightfoldFetcher
+from jobbuddy.fetchers.eightfold_v2 import EightfoldV2Fetcher
 from jobbuddy.fetchers.greenhouse import GreenhouseFetcher
 from jobbuddy.fetchers.lever import LeverFetcher
 from jobbuddy.fetchers.oracle_hcm import OracleHCMFetcher
@@ -15,6 +16,7 @@ from jobbuddy.models import Company
 _REGISTRY: dict[str, type[ATSFetcher]] = {
     "ashby": AshbyFetcher,
     "eightfold": EightfoldFetcher,
+    "eightfold_v2": EightfoldV2Fetcher,
     "greenhouse": GreenhouseFetcher,
     "lever": LeverFetcher,
     "oracle_hcm": OracleHCMFetcher,
@@ -25,6 +27,14 @@ _REGISTRY: dict[str, type[ATSFetcher]] = {
 }
 
 SUPPORTED_ATS_TYPES = set(_REGISTRY.keys())
+
+
+def has_descriptions_in_listing(ats_type: str) -> bool:
+    """Check if an ATS type includes descriptions in list_jobs() without instantiating a fetcher."""
+    cls = _REGISTRY.get(ats_type)
+    if not cls:
+        raise ValueError(f"No fetcher for ATS type: {ats_type}")
+    return cls.descriptions_in_listing
 
 
 def create_fetcher(ats_type: str, *, board: str, name: str | None = None, **kw) -> ATSFetcher:
