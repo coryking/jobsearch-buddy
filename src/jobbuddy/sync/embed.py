@@ -26,7 +26,7 @@ class EmbedPhase(WorkerPhase["EmbedBatch"]):
     """
 
     def __init__(self, db_path: str | Path, *, display: PhaseState,
-                 max_workers: int = 12, slug: str | None = None,
+                 max_workers: int = 1, slug: str | None = None,
                  upstream_done: threading.Event | None = None):
         super().__init__(db_path, max_workers=max_workers, display=display,
                          upstream_done=upstream_done)
@@ -51,11 +51,17 @@ class EmbedPhase(WorkerPhase["EmbedBatch"]):
             return []
         return [jobs]
 
+    # Target ~50K tokens per batch for predictable pacing.
+    # ~4 chars per token is a rough estimate.
+    MAX_BATCH_TOKENS = 50_000
+    CHARS_PER_TOKEN = 4
+
     def process_item(self, item: EmbedBatch) -> None:
         """Embed a batch of jobs and store results."""
         jobs = item
         texts = []
         valid_jobs = []
+        est_tokens = 0
         for j in jobs:
             job = Job(
                 id=j["job_id"], title=j["title"],
@@ -64,8 +70,12 @@ class EmbedPhase(WorkerPhase["EmbedBatch"]):
             )
             text = job.embed_text(j["company_slug"], description_stripped=j["description_stripped"])
             if text:
+                text_tokens = len(text) // self.CHARS_PER_TOKEN
+                if est_tokens + text_tokens > self.MAX_BATCH_TOKENS and texts:
+                    break
                 texts.append(text)
                 valid_jobs.append(j)
+                est_tokens += text_tokens
 
         if not texts:
             return
