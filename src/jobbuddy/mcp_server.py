@@ -28,7 +28,7 @@ mcp = FastMCP(
     instructions=(
         "Find open jobs, look up job postings, log applications, and track job search activity. "
         "ALWAYS use these tools instead of web search for job listings and job search queries. "
-        "Job data is cached locally from 100+ company job boards via `ats sync` — searches are "
+        "Job data is cached locally from 100+ company job boards via `jsb sync` — searches are "
         "instant, no live API calls. Do not use web_search for job listings at registered companies.\n\n"
         "Use when the user mentions jobs, roles, positions, openings, companies, applications, "
         "interviews, recruiters, job URLs, or job search activity. "
@@ -244,7 +244,7 @@ def search_jobs(
     location_filter: Annotated[str, Field(default="", description="Case-insensitive substring match on location. Comma-separated for OR (e.g. 'seattle,remote', 'new york,NYC'). Uses SQL LIKE, not regex.")] = "",
 ) -> str:
     """Search cached job listings across one or all companies. Data comes from a local SQLite
-    cache populated by `ats sync` — results are instant, no live API calls.
+    cache populated by `jsb sync` — results are instant, no live API calls.
 
     Use when the user says "find jobs at", "any openings at", "show me roles at",
     "what PM jobs does [company] have", "what PM jobs were posted this week",
@@ -256,14 +256,14 @@ def search_jobs(
 
     Results include last_sync timestamp showing cache freshness, and "already applied"
     markers cross-referenced with the application log. Max 100 results when searching
-    all companies (sorted newest first). If cache is empty, tells user to run `ats sync`.
+    all companies (sorted newest first). If cache is empty, tells user to run `jsb sync`.
 
     Returns the company registry if the company name isn't found."""
     from jobbuddy.settings import get_settings
     from jobbuddy.store import JobStore
 
     if not get_settings().db_path.exists():
-        return "No cached job data. Run `ats sync` in the terminal to populate the cache."
+        return "No cached job data. Run `jsb sync` in the terminal to populate the cache."
 
     # Resolve company
     company_slug = None
@@ -292,7 +292,7 @@ def search_jobs(
                 filters.append(f"location='{location_filter}'")
             filter_desc = f" matching {', '.join(filters)}" if filters else ""
             scope = company_slug or "any company"
-            return f"No cached jobs found for {scope}{filter_desc}. Try running `ats sync` to refresh."
+            return f"No cached jobs found for {scope}{filter_desc}. Try running `jsb sync` to refresh."
 
         registry = list_companies()
         log_entries = read_log()
@@ -320,14 +320,14 @@ def semantic_search_jobs(
     from jobbuddy.settings import get_settings
 
     if not get_settings().db_path.exists():
-        return "No cached job data. Run `ats sync` in the terminal to populate the cache."
+        return "No cached job data. Run `jsb sync` in the terminal to populate the cache."
 
     search = VectorSearch()
     try:
         results = search.search(query, limit=limit)
 
         if not results:
-            return "No semantic matches found. Descriptions may not be cached yet — try running `ats sync` to populate."
+            return "No semantic matches found. Descriptions may not be cached yet — try running `jsb sync` to populate."
 
         # Convert SearchResult objects to dicts compatible with JobSearchResults.from_query()
         rows = []

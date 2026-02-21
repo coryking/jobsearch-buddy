@@ -8,7 +8,7 @@ import pytest
 
 class TestDefaultPaths:
     def test_data_dir_default(self, monkeypatch):
-        """Default data_dir points to ~/projects/resume/data."""
+        """Default data_dir uses platformdirs user_data_dir."""
         monkeypatch.delenv("JOBBUDDY_DATA_DIR", raising=False)
         monkeypatch.delenv("JOBBUDDY_DB_PATH", raising=False)
         monkeypatch.delenv("JOBBUDDY_LISTINGS_DIR", raising=False)
@@ -19,7 +19,8 @@ class TestDefaultPaths:
 
         from jobbuddy.settings import get_settings
         settings = get_settings()
-        assert settings.data_dir == Path.home() / "projects" / "resume" / "data"
+        assert settings.data_dir.name == "data"
+        assert "jobsearch-buddy" in str(settings.data_dir)
 
     def test_db_path_default_uses_platformdirs(self, monkeypatch):
         """Default db_path uses platformdirs user_data_dir."""
@@ -35,7 +36,7 @@ class TestDefaultPaths:
         assert "jobsearch-buddy" in str(settings.db_path)
 
     def test_listings_dir_default(self, monkeypatch):
-        """Default listings_dir points to ~/projects/resume/job-listings."""
+        """Default listings_dir uses platformdirs user_data_dir."""
         monkeypatch.delenv("JOBBUDDY_DATA_DIR", raising=False)
         monkeypatch.delenv("JOBBUDDY_DB_PATH", raising=False)
         monkeypatch.delenv("JOBBUDDY_LISTINGS_DIR", raising=False)
@@ -44,7 +45,8 @@ class TestDefaultPaths:
 
         from jobbuddy.settings import get_settings
         settings = get_settings()
-        assert settings.listings_dir == Path.home() / "projects" / "resume" / "job-listings"
+        assert settings.listings_dir.name == "listings"
+        assert "jobsearch-buddy" in str(settings.listings_dir)
 
 
 class TestEnvVarOverrides:

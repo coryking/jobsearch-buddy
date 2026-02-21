@@ -247,7 +247,7 @@ def build_display(state: SyncDisplayState, filter_phases: list[str] | None = Non
         return Group(Text("  Waiting for phases to start...", style="dim"))
 
     table = Table(
-        title="ats sync",
+        title="jsb sync",
         show_header=True,
         show_lines=False,
         pad_edge=True,

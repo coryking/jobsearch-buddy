@@ -1,5 +1,6 @@
 .env
 CLAUDE.local.md
+.mcp.json
 *.db
 __pycache__/
 *.py[oc]
@@ -8,6 +9,7 @@ __pycache__/
 dist/
 build/
 wheels/
+.claude/worktrees/
 .cursor/
 .pytest_cache/
 eval/data/

@@ -251,7 +251,7 @@ def summary(
 
     if not filenames:
         print(f"No judge scores found for prompt '{prompt}'.")
-        print(f"Run: ats-eval judge --run {runs_dir}/<run-name>/")
+        print(f"Run: jsb-eval judge --run {runs_dir}/<run-name>/")
         raise typer.Exit(1)
 
     result = {

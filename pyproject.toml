@@ -23,9 +23,9 @@ dependencies = [
 ]
 
 [project.scripts]
-ats = "jobbuddy.cli:app"
-ats-mcp = "jobbuddy.mcp_server:main"
-ats-eval = "jobbuddy.eval.cli:app"
+jsb = "jobbuddy.cli:app"
+jsb-mcp = "jobbuddy.mcp_server:main"
+jsb-eval = "jobbuddy.eval.cli:app"
 
 [build-system]
 requires = ["hatchling"]

@@ -1,5 +1,7 @@
 # Azure AI Throughput Estimation Reference
 
+> These are example values from the author's Azure OpenAI deployment. Your throughput will vary based on your provider, tier, and rate limits.
+
 ## Variant 1: LLM Processing (e.g., cleaning/summarizing with a chat model)
 
 ### Inputs

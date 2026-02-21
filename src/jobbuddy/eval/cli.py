@@ -1,6 +1,6 @@
 """Unified CLI for the strip eval harness.
 
-Entry point: ats-eval (registered in pyproject.toml).
+Entry point: jsb-eval (registered in pyproject.toml).
 """
 
 from __future__ import annotations

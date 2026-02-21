@@ -37,7 +37,7 @@ def fetch_from_url(url: str) -> FetchResult:
     if parsed.ats == "paylocity" and parsed.board and not parsed.job_id:
         raise ValueError(
             f"This is a Paylocity job listing page, not a single job posting.\n"
-            f"Use 'ats list-jobs' to browse jobs, or provide a specific job detail URL "
+            f"Use 'jsb list-jobs' to browse jobs, or provide a specific job detail URL "
             f"(e.g. recruiting.paylocity.com/Recruiting/Jobs/Details/{{id}})."
         )
 

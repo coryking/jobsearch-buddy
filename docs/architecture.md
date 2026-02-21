@@ -4,8 +4,8 @@
 
 jobsearch-buddy has two interfaces sharing a single core:
 
-- **CLI** (`ats` command, Typer) — interactive use, rich output
-- **MCP server** (`ats-mcp`, FastMCP) — Claude Desktop integration
+- **CLI** (`jsb` command, Typer) — interactive use, rich output
+- **MCP server** (`jsb-mcp`, FastMCP) — Claude Desktop integration
 
 Both call into `core.py`. Core raises `ValueError`; callers handle presentation.
 
@@ -21,12 +21,12 @@ via `_get_thread_store()`.
 |-----------|--------|-------|
 | `search_jobs` MCP | JobStore | Cross-company keyword search |
 | `semantic_search_jobs` MCP | VectorSearch | sqlite-vec KNN cosine search |
-| `ats list-jobs` CLI | JobStore | Optional company filter |
-| `ats search` CLI | JobStore | Title/location/company filters |
-| `ats sync` CLI | Live API | Populates/refreshes cache |
+| `jsb list-jobs` CLI | JobStore | Optional company filter |
+| `jsb search` CLI | JobStore | Title/location/company filters |
+| `jsb sync` CLI | Live API | Populates/refreshes cache |
 | `get_job_post_details` MCP | Live API | Needs full descriptions |
 | `log_job_application` MCP | Live API | Saves listing as markdown |
-| `ats lookup` CLI | Live API | Single-job detail fetch |
+| `jsb lookup` CLI | Live API | Single-job detail fetch |
 
 ### Schema
 
@@ -43,7 +43,7 @@ vec_jobs         -- vec0 virtual table: job_id INTEGER PK,
                  --   embedding float[1536] distance_metric=cosine
 ```
 
-Single embedding model (Azure OpenAI text-embedding-3-small, 1536 dims).
+Single embedding model (text-embedding-3-small, 1536 dims).
 Embeddings are dual-written: `job_embeddings` stores the BLOB with `text_hash`
 for change tracking, `vec_jobs` indexes the same vector for KNN queries.
 
@@ -59,17 +59,17 @@ disappeared jobs by default.
 to sqlite-vec for KNN search. Search consumers (web.py, mcp_server.py) create one.
 
 Search flow:
-1. `embed_query(query)` → query vector via Azure OpenAI text-embedding-3-small
+1. `embed_query(query)` → query vector via OpenAI-compatible text-embedding-3-small
 2. `serialize_f32(vector)` → little-endian bytes for sqlite-vec
 3. `store.search_similar(query_blob, k)` → KNN via `vec_jobs` virtual table
 4. Return ranked `SearchResult` list (score = 1.0 - cosine distance)
 
-Query latency is ~10-15ms for the sqlite-vec KNN step plus ~200ms for the Azure
+Query latency is ~10-15ms for the sqlite-vec KNN step plus ~200ms for the
 embedding API call.
 
 ### Embedding Model
 
-`embeddings.py` is a thin Azure OpenAI wrapper:
+`embeddings.py` is a thin OpenAI-compatible wrapper:
 
 | Key | Deployment | Dimensions |
 |-----|-----------|------------|
@@ -85,8 +85,8 @@ call), `embed_query()` handles single search queries. `serialize_f32()` /
 
 1. **FetchPhase** (`sync/fetch.py`): Parallel company fetching via ThreadPoolExecutor
 2. **EnrichPhase** (`sync/enrich.py`): Description enrichment for stub fetchers
-3. **StripPhase** (`sync/strip.py`): LLM-based boilerplate removal (Azure OpenAI gpt-5-nano)
-4. **EmbedPhase** (`sync/embed.py`): Batch embedding generation (Azure OpenAI text-embedding-3-small)
+3. **StripPhase** (`sync/strip.py`): LLM-based boilerplate removal (OpenAI-compatible API, default gpt-5-nano)
+4. **EmbedPhase** (`sync/embed.py`): Batch embedding generation (OpenAI-compatible API, default text-embedding-3-small)
 
 ### DB-as-Queue Pattern
 
@@ -112,14 +112,14 @@ completion timestamps, showing rate dropping to zero when nothing completes
 (unlike cumulative averages that hide stalls). The Rich Live renderer polls at
 4hz via `create_live()`.
 
-Standalone commands (`ats strip`, `ats embed`) pass `filter_phases` to show
+Standalone commands (`jsb strip`, `jsb embed`) pass `filter_phases` to show
 only their relevant phase row.
 
 ### Sync Concurrency
 
 Fetch uses `ThreadPoolExecutor(max_workers)`. Companies are shuffled before sync
 to spread same-platform requests (rate-limit mitigation). Each company is
-error-isolated. Strip runs ~60 workers (Azure OpenAI RPM-bound). Embed runs
+error-isolated. Strip runs ~60 workers (RPM-bound). Embed runs
 ~4 workers with batches of ~173 items (targeting ~25% of 1M TPM per batch).
 Enrich runs ~5 workers, sequential per-company for rate-limit mitigation.
 
@@ -145,14 +145,16 @@ descriptions in bulk listings. After sync, the enrich phase calls
 
 | Field | Default |
 |-------|---------|
-| `data_dir` | `~/projects/resume/data` |
-| `db_path` | platformdirs `user_data_dir/jobsearch-buddy/jobs_cache.db` |
-| `listings_dir` | `~/projects/resume/job-listings` |
-| `azure_openai_endpoint` | *(required)* |
-| `azure_openai_api_key` | *(required)* |
-| `azure_openai_api_version` | `2024-10-21` |
+| `data_dir` | platformdirs `user_data_dir/data` |
+| `db_path` | platformdirs `user_data_dir/jobs_cache.db` |
+| `listings_dir` | platformdirs `user_data_dir/listings` |
+| `openai_api_key` | `None` *(enables strip/embed/search)* |
+| `openai_base_url` | `None` *(omit for api.openai.com)* |
+| `openai_azure_api_version` | `None` *(if set, uses AzureOpenAI client)* |
+| `strip_model` | `gpt-5-nano` |
+| `embedding_model` | `text-embedding-3-small` |
 
-Env var prefix: `JOBBUDDY_`. Azure OpenAI credentials are required for strip,
+Env var prefix: `JOBBUDDY_`. OpenAI API credentials are required for strip,
 embed, and semantic search operations.
 
 ## Company Registry

@@ -154,7 +154,7 @@ def strip(
         raise SystemExit(1)
 
     if not settings.db_path.exists():
-        console.print("[yellow]No cached data. Run 'ats sync' to populate.[/yellow]")
+        console.print("[yellow]No cached data. Run 'jsb sync' to populate.[/yellow]")
         raise SystemExit(0)
 
     if force:
@@ -192,7 +192,7 @@ def embed(
         raise SystemExit(1)
 
     if not settings.db_path.exists():
-        console.print("[yellow]No cached data. Run 'ats sync' to populate.[/yellow]")
+        console.print("[yellow]No cached data. Run 'jsb sync' to populate.[/yellow]")
         raise SystemExit(0)
 
     state = SyncDisplayState()

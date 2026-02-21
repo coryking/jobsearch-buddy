@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "job-search": {
-      "command": "uv",
-      "args": ["run", "--directory", "/Users/coryking/projects/jobsearch-buddy", "ats-mcp"]
-    }
-  }
-}

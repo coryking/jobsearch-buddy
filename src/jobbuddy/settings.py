@@ -24,9 +24,9 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    data_dir: Path = Path.home() / "projects" / "resume" / "data"
+    data_dir: Path = Path(user_data_dir(_APP_NAME)) / "data"
     db_path: Path = None  # type: ignore[reportAssignmentType]  — validator always fills this
-    listings_dir: Path = Path.home() / "projects" / "resume" / "job-listings"
+    listings_dir: Path = Path(user_data_dir(_APP_NAME)) / "listings"
 
     # OpenAI API (for strip, embed, and semantic search)
     openai_api_key: Optional[str] = None

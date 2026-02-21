@@ -33,7 +33,7 @@ def list_jobs(
     from jobbuddy.store import JobStore
 
     if not get_settings().db_path.exists():
-        console.print("[yellow]No cached data. Run 'ats sync' to populate.[/yellow]")
+        console.print("[yellow]No cached data. Run 'jsb sync' to populate.[/yellow]")
         raise SystemExit(0)
 
     store = JobStore()
@@ -97,7 +97,7 @@ def search(
     from jobbuddy.store import JobStore
 
     if not get_settings().db_path.exists():
-        console.print("[yellow]No cached data. Run 'ats sync' to populate.[/yellow]")
+        console.print("[yellow]No cached data. Run 'jsb sync' to populate.[/yellow]")
         raise SystemExit(0)
 
     company_slug = None
