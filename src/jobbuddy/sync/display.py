@@ -55,6 +55,37 @@ class RollingRate:
             return len(self._timestamps) / span * 60
 
 
+class RollingTokenRate:
+    """Tokens/min from a 60-second sliding window of (timestamp, count) pairs."""
+
+    def __init__(self, window_seconds: float = 60.0):
+        self._window = window_seconds
+        self._entries: deque[tuple[float, int]] = deque()
+        self._lock = threading.Lock()
+
+    def record(self, n: int) -> None:
+        now = time.monotonic()
+        with self._lock:
+            self._entries.append((now, n))
+            cutoff = now - self._window
+            while self._entries and self._entries[0][0] < cutoff:
+                self._entries.popleft()
+
+    def tokens_per_min(self) -> float | None:
+        now = time.monotonic()
+        with self._lock:
+            cutoff = now - self._window
+            while self._entries and self._entries[0][0] < cutoff:
+                self._entries.popleft()
+            if len(self._entries) < 2:
+                return None
+            span = now - self._entries[0][0]
+            if span < 0.1:
+                return None
+            total = sum(n for _, n in self._entries)
+            return total / span * 60
+
+
 @dataclass
 class PhaseState:
     """Mutable display state for one pipeline phase.
@@ -71,6 +102,9 @@ class PhaseState:
     detail: str = ""  # sub-heading: company names, etc.
     info: str = ""  # phase-controlled column (tokens, jobs, etc.)
     rate: RollingRate = field(default_factory=RollingRate)
+    token_rate: RollingTokenRate = field(default_factory=RollingTokenRate)
+    active_workers: int = 0
+    max_workers: int = 0
     _info_counter: int = field(default=0, repr=False)
     _info_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     _active_details: dict[str, str] = field(default_factory=dict, repr=False)
@@ -168,6 +202,21 @@ def _format_errors(phase: PhaseState) -> str:
     return "\u2014"
 
 
+def _format_token_rate(phase: PhaseState) -> str:
+    """Format token rate column: 'Nk/m' or dash."""
+    tpm = phase.token_rate.tokens_per_min()
+    if tpm is None:
+        return "\u2014"
+    return f"{humanize.metric(tpm)}/m"
+
+
+def _format_workers(phase: PhaseState) -> str:
+    """Format workers column: 'active/max' or dash."""
+    if phase.max_workers <= 0:
+        return "\u2014"
+    return f"{phase.active_workers}/{phase.max_workers}"
+
+
 def _format_status(phase: PhaseState) -> str:
     """Format status with color."""
     if phase.status == "active":
@@ -211,7 +260,9 @@ def build_display(state: SyncDisplayState, filter_phases: list[str] | None = Non
     table.add_column("Status", no_wrap=True, min_width=10, ratio=1, overflow="ellipsis")
     table.add_column("Progress", justify="right", no_wrap=True, min_width=12)
     table.add_column("Rate", justify="right", no_wrap=True, min_width=7)
+    table.add_column("Tok/m", justify="right", no_wrap=True, min_width=7)
     table.add_column("Info", justify="right", no_wrap=True, min_width=8)
+    table.add_column("Workers", justify="right", no_wrap=True, min_width=7)
     table.add_column("Err", justify="right", no_wrap=True, min_width=5)
 
     for phase in phases:
@@ -223,7 +274,9 @@ def build_display(state: SyncDisplayState, filter_phases: list[str] | None = Non
             _format_status(phase),
             progress,
             _format_rate(phase),
+            _format_token_rate(phase),
             phase.info or "\u2014",
+            _format_workers(phase),
             _format_errors(phase),
             style=style,
         )
@@ -236,13 +289,13 @@ def build_display(state: SyncDisplayState, filter_phases: list[str] | None = Non
                     table.add_row(
                         "",
                         Text(f" {line}", style="dim italic"),
-                        "", "", "", "",
+                        "", "", "", "", "", "",
                     )
             elif phase.detail:
                 table.add_row(
                     "",
                     Text(f" {phase.detail}", style="dim italic"),
-                    "", "", "", "",
+                    "", "", "", "", "", "",
                 )
 
     return Group(table)

@@ -48,6 +48,7 @@ estimated_minutes = TOTAL_JOBS ÷ jobs_per_min
 ### Notes
 
 - Azure estimates token consumption at **request time** using `input_tokens + max_tokens`, not actual output. Setting `max_tokens` too high wastes your TPM budget. Set it to expected output size.
+- **Reasoning models** (gpt-5-*): `max_completion_tokens` must cover both visible output *and* reasoning tokens. For gpt-5-nano at `reasoning_effort=low`, p99 reasoning overhead is ~1,200 tokens. The strip phase uses `max(len/4, 256) + 1200` — factor that full value into `AVG_MAX_TOKENS` for throughput estimates.
 - If `workers_needed` exceeds ~500, consider async (asyncio + httpx) instead of thread pools.
 - If TPM is the bottleneck and you need more speed, deploy across multiple regions. Quota is per-region, per-subscription. Total throughput scales linearly with region count.
 

@@ -89,7 +89,7 @@ class ATSFetcher(ABC):
             try:
                 return fn()
             except httpx.HTTPStatusError as e:
-                if e.response.status_code != 429:
+                if e.response.status_code not in (429, 405):
                     raise
                 last_exc = e
                 if attempt == self.max_retries:

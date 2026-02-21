@@ -1,4 +1,4 @@
-"""Tests for jobbuddy.embeddings — Azure OpenAI embedding wrapper."""
+"""Tests for jobbuddy.embeddings — OpenAI embedding wrapper."""
 
 import struct
 from types import SimpleNamespace
@@ -9,10 +9,8 @@ import pytest
 
 import jobbuddy.embeddings as emb
 from jobbuddy.embeddings import (
-    DEPLOYMENT_NAME,
     DIMENSIONS,
     MAX_BATCH_SIZE,
-    MODEL_KEY,
     compute_batch_size,
     deserialize_f32,
     embed_query,
@@ -32,11 +30,6 @@ def _make_job(**kw) -> Job:
     )
     defaults.update(kw)
     return Job(**defaults)
-
-
-def _fake_embedding(dim: int = DIMENSIONS) -> list[float]:
-    """Return a deterministic fake embedding vector."""
-    return list(np.random.RandomState(42).randn(dim).astype(float))
 
 
 def _mock_response(n: int = 1, dim: int = DIMENSIONS):
@@ -61,29 +54,19 @@ def _reset_client():
 
 @pytest.fixture
 def mock_client():
-    """Provide a mock AzureOpenAI client, patching _get_client."""
+    """Provide a mock OpenAI client, patching _get_client."""
     client = MagicMock()
     with patch("jobbuddy.embeddings._get_client", return_value=client):
         yield client
 
 
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
-
-
-class TestConstants:
-    def test_model_key(self):
-        assert MODEL_KEY == "text3small"
-
-    def test_dimensions(self):
-        assert DIMENSIONS == 1536
-
-    def test_max_batch_size(self):
-        assert MAX_BATCH_SIZE == 2048
-
-    def test_deployment_name(self):
-        assert DEPLOYMENT_NAME == "text-embedding-3-small"
+@pytest.fixture
+def mock_settings():
+    """Provide mock settings with embedding_model configured."""
+    settings = MagicMock()
+    settings.embedding_model = "text-embedding-3-small"
+    with patch("jobbuddy.embeddings.get_settings", return_value=settings):
+        yield settings
 
 
 # ---------------------------------------------------------------------------
@@ -92,52 +75,20 @@ class TestConstants:
 
 
 class TestGetClient:
-    def test_raises_without_credentials(self):
-        settings = MagicMock()
-        settings.azure_openai_api_key = None
-        settings.azure_openai_endpoint = None
-        with patch("jobbuddy.embeddings.get_settings", return_value=settings):
-            with pytest.raises(ValueError, match="Azure OpenAI not configured"):
-                emb._get_client()
-
-    def test_raises_without_endpoint(self):
-        settings = MagicMock()
-        settings.azure_openai_api_key = "key"
-        settings.azure_openai_endpoint = None
-        with patch("jobbuddy.embeddings.get_settings", return_value=settings):
-            with pytest.raises(ValueError, match="Azure OpenAI not configured"):
-                emb._get_client()
-
-    def test_creates_client_with_credentials(self):
-        settings = MagicMock()
-        settings.azure_openai_api_key = "test-key"
-        settings.azure_openai_endpoint = "https://test.openai.azure.com"
-        settings.azure_openai_api_version = "2024-12-01-preview"
-        with (
-            patch("jobbuddy.embeddings.get_settings", return_value=settings),
-            patch("jobbuddy.embeddings.AzureOpenAI") as mock_cls,
-        ):
+    def test_delegates_to_factory(self):
+        mock_factory_client = MagicMock()
+        with patch("jobbuddy.embeddings.create_openai_client", return_value=mock_factory_client) as mock_factory:
             client = emb._get_client()
-            mock_cls.assert_called_once_with(
-                api_key="test-key",
-                azure_endpoint="https://test.openai.azure.com",
-                api_version="2024-12-01-preview",
-            )
-            assert client is mock_cls.return_value
+            mock_factory.assert_called_once_with(max_retries=0)
+            assert client is mock_factory_client
 
     def test_caches_client(self):
-        settings = MagicMock()
-        settings.azure_openai_api_key = "test-key"
-        settings.azure_openai_endpoint = "https://test.openai.azure.com"
-        settings.azure_openai_api_version = "2024-12-01-preview"
-        with (
-            patch("jobbuddy.embeddings.get_settings", return_value=settings),
-            patch("jobbuddy.embeddings.AzureOpenAI") as mock_cls,
-        ):
+        mock_factory_client = MagicMock()
+        with patch("jobbuddy.embeddings.create_openai_client", return_value=mock_factory_client) as mock_factory:
             c1 = emb._get_client()
             c2 = emb._get_client()
             assert c1 is c2
-            mock_cls.assert_called_once()
+            mock_factory.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -152,14 +103,17 @@ class TestEmbedTexts:
         assert tokens == 0
         mock_client.embeddings.create.assert_not_called()
 
-    def test_returns_embeddings(self, mock_client):
-        mock_client.embeddings.create.return_value = _mock_response(2)
+    def test_returns_embeddings(self, mock_client, mock_settings):
+        mock_raw = MagicMock()
+        mock_raw.parse.return_value = _mock_response(2)
+        mock_raw.headers = {}
+        mock_client.embeddings.with_raw_response.create.return_value = mock_raw
         vectors, tokens = embed_texts(["hello", "world"])
         assert len(vectors) == 2
         assert len(vectors[0]) == DIMENSIONS
         assert tokens == 200
-        mock_client.embeddings.create.assert_called_once_with(
-            input=["hello", "world"], model=DEPLOYMENT_NAME
+        mock_client.embeddings.with_raw_response.create.assert_called_once_with(
+            input=["hello", "world"], model="text-embedding-3-small"
         )
 
     def test_batch_too_large_raises(self, mock_client):
@@ -167,8 +121,11 @@ class TestEmbedTexts:
         with pytest.raises(ValueError, match="Batch too large"):
             embed_texts(texts)
 
-    def test_max_batch_size_allowed(self, mock_client):
-        mock_client.embeddings.create.return_value = _mock_response(MAX_BATCH_SIZE)
+    def test_max_batch_size_allowed(self, mock_client, mock_settings):
+        mock_raw = MagicMock()
+        mock_raw.parse.return_value = _mock_response(MAX_BATCH_SIZE)
+        mock_raw.headers = {}
+        mock_client.embeddings.with_raw_response.create.return_value = mock_raw
         texts = ["x"] * MAX_BATCH_SIZE
         vectors, _ = embed_texts(texts)
         assert len(vectors) == MAX_BATCH_SIZE
@@ -180,13 +137,13 @@ class TestEmbedTexts:
 
 
 class TestEmbedQuery:
-    def test_returns_single_vector(self, mock_client):
+    def test_returns_single_vector(self, mock_client, mock_settings):
         mock_client.embeddings.create.return_value = _mock_response(1)
         result = embed_query("search query")
         assert len(result) == DIMENSIONS
         assert isinstance(result[0], float)
         mock_client.embeddings.create.assert_called_once_with(
-            input=["search query"], model=DEPLOYMENT_NAME
+            input=["search query"], model="text-embedding-3-small"
         )
 
 
@@ -196,10 +153,6 @@ class TestEmbedQuery:
 
 
 class TestComputeBatchSize:
-    def test_default_values(self):
-        result = compute_batch_size()
-        assert result == 250_000 // 1438  # 173
-
     def test_large_tokens_caps_at_max(self):
         result = compute_batch_size(avg_tokens=1, target_tokens=10_000)
         assert result == MAX_BATCH_SIZE

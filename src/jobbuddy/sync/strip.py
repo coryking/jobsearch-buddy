@@ -1,16 +1,19 @@
 """StripPhase -- LLM-based boilerplate removal from job descriptions.
 
-Uses Azure OpenAI gpt-5-nano to strip boilerplate before embedding.
+Uses an OpenAI-compatible LLM to strip boilerplate before embedding.
 Prompt is v9-surgical-benefits (eval-validated, do not modify).
 """
 
 from __future__ import annotations
 
 import logging
+import threading
 from pathlib import Path
 
-from openai import AzureOpenAI
+import httpx
+from openai import OpenAI
 
+from jobbuddy.openai_client import create_openai_client
 from jobbuddy.settings import get_settings
 from jobbuddy.sync.base import WorkerPhase
 from jobbuddy.sync.display import PhaseState
@@ -65,22 +68,29 @@ Do not alter any of the rest of the job description -- it must remain verbatim! 
 
 
 class StripPhase(WorkerPhase["StripWorkItem"]):
-    """Strip boilerplate from job descriptions using Azure OpenAI."""
+    """Strip boilerplate from job descriptions using an OpenAI-compatible LLM."""
 
     def __init__(self, db_path: str | Path, *, display: PhaseState,
-                 max_workers: int = 60, slug: str | None = None):
-        super().__init__(db_path, max_workers=max_workers, display=display)
-        self._client: AzureOpenAI | None = None
+                 max_workers: int = 225, slug: str | None = None,
+                 upstream_done: threading.Event | None = None):
+        super().__init__(db_path, max_workers=max_workers, display=display,
+                         upstream_done=upstream_done)
+        self._client: OpenAI | None = None
         self._slug = slug
 
     def on_phase_start(self) -> None:
-        settings = get_settings()
-        self._client = AzureOpenAI(
-            azure_endpoint=settings.azure_openai_endpoint,  # type: ignore[arg-type]  # validated at CLI entry
-            api_key=settings.azure_openai_api_key,
-            api_version=settings.azure_openai_api_version,
+        self._client = create_openai_client(
             timeout=60.0,
+            http_client=httpx.Client(
+                limits=httpx.Limits(
+                    max_connections=self.max_workers,
+                    max_keepalive_connections=self.max_workers,
+                ),
+            ),
         )
+
+    def item_key(self, item: StripWorkItem) -> int:
+        return item["id"]
 
     def count_remaining(self) -> int:
         return self._get_reader().count_jobs_needing_stripping(slug=self._slug)
@@ -93,23 +103,34 @@ class StripPhase(WorkerPhase["StripWorkItem"]):
         description = item["description"]
         settings = get_settings()
 
-        # max_tokens: approximate upper bound (description chars / 4)
-        max_tokens = max(len(description) // 4, 256)
+        # max_completion_tokens covers both visible output and reasoning tokens.
+        # visible budget: ~len/4 (chars-to-tokens approximation)
+        # reasoning budget: 1200 (p99 was 1088 at reasoning_effort=low, eval v9)
+        max_tokens = max(len(description) // 4, 256) + 1200
 
         response = self._client.chat.completions.create(
-            model=settings.azure_openai_model,
+            model=settings.strip_model,
+            reasoning_effort="low",
             messages=[
                 {"role": "system", "content": STRIP_SYSTEM_PROMPT},
                 {"role": "user", "content": f"<job_description>\n{description}\n</job_description>"},
             ],
             max_completion_tokens=max_tokens,
         )
-        content = response.choices[0].message.content or ""
-        stripped = content.strip()
 
         if response.usage:
             self.display.add_to_info_counter(response.usage.total_tokens)
+            self.display.token_rate.record(response.usage.total_tokens)
 
-        store = self._get_thread_store()
-        store.update_stripped_description(item["id"], stripped)
+        content = response.choices[0].message.content
+        stripped = content.strip() if content else ""
+        if not stripped:
+            log.error(
+                "LLM returned empty content for %s/%s (%s) — will retry",
+                item["company_slug"], item["job_id"], item["title"],
+            )
+            raise ValueError(f"Empty strip result for {item['company_slug']}/{item['job_id']}")
+
+        job_pk = item["id"]
+        self.submit_write(lambda store, pk=job_pk, s=stripped: store.update_stripped_description(pk, s))
         self.display.advance(detail=f"{item['company_slug']}: {item['title']}")

@@ -28,12 +28,18 @@ class Settings(BaseSettings):
     db_path: Path = None  # type: ignore[reportAssignmentType]  — validator always fills this
     listings_dir: Path = Path.home() / "projects" / "resume" / "job-listings"
 
-    # Azure OpenAI (for description stripping)
-    azure_openai_api_key: Optional[str] = None
-    azure_openai_endpoint: Optional[str] = None
-    azure_openai_api_version: str = "2024-12-01-preview"
-    azure_openai_model: str = "gpt-5-nano"
+    # OpenAI API (for strip, embed, and semantic search)
+    openai_api_key: Optional[str] = None
+    openai_base_url: Optional[str] = None
+    openai_azure_api_version: Optional[str] = None  # If set, uses AzureOpenAI client
+    strip_model: str = "gpt-5-nano"
+    embedding_model: str = "text-embedding-3-small"
     strip_batch_size: int = 50
+
+    @property
+    def has_openai(self) -> bool:
+        """Whether OpenAI credentials are configured (enables strip/embed/search)."""
+        return bool(self.openai_api_key)
 
     @field_validator("db_path", mode="before")
     @classmethod

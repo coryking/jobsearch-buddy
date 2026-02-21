@@ -179,14 +179,6 @@ class TestEmbedTextStripped:
 class TestStripPhase:
     """Tests for StripPhase directly — no sync_jobs() pipeline."""
 
-    def _make_mock_settings(self):
-        settings = MagicMock()
-        settings.azure_openai_api_key = "fake-key"
-        settings.azure_openai_endpoint = "https://test.openai.azure.com/"
-        settings.azure_openai_api_version = "2024-12-01-preview"
-        settings.azure_openai_model = "gpt-5-nano"
-        return settings
-
     def _seed_jobs(self, db_path, jobs):
         store = JobStore(db_path)
         store.upsert_jobs("acme", jobs)
@@ -202,11 +194,9 @@ class TestStripPhase:
 
         assert display.status == "pending"  # never started
 
-    @patch("jobbuddy.sync.strip.AzureOpenAI")
-    @patch("jobbuddy.sync.strip.get_settings")
-    def test_strip_phase_calls_llm(self, mock_settings, mock_client_cls, tmp_path):
-        """StripPhase calls Azure OpenAI for unstripped jobs."""
-        mock_settings.return_value = self._make_mock_settings()
+    @patch("jobbuddy.sync.strip.create_openai_client")
+    def test_strip_phase_calls_llm(self, mock_factory, tmp_path):
+        """StripPhase calls OpenAI API for unstripped jobs."""
         db = str(tmp_path / "test.db")
         self._seed_jobs(db, [
             _make_job("1", description="raw description with boilerplate"),
@@ -218,7 +208,7 @@ class TestStripPhase:
         mock_response.usage.total_tokens = 100
         mock_client = MagicMock()
         mock_client.chat.completions.create.return_value = mock_response
-        mock_client_cls.return_value = mock_client
+        mock_factory.return_value = mock_client
 
         display = PhaseState("Strip")
         StripPhase(db, display=display, max_workers=1).run()
@@ -236,11 +226,9 @@ class TestStripPhase:
         assert row2["description_stripped"] == "cleaned description"
         store.close()
 
-    @patch("jobbuddy.sync.strip.AzureOpenAI")
-    @patch("jobbuddy.sync.strip.get_settings")
-    def test_strip_phase_skips_already_stripped(self, mock_settings, mock_client_cls, tmp_path):
+    @patch("jobbuddy.sync.strip.create_openai_client")
+    def test_strip_phase_skips_already_stripped(self, mock_factory, tmp_path):
         """StripPhase skips jobs that already have stripped descriptions."""
-        mock_settings.return_value = self._make_mock_settings()
         db = str(tmp_path / "test.db")
         self._seed_jobs(db, [
             _make_job("1", description="raw"),
@@ -259,52 +247,43 @@ class TestStripPhase:
         mock_response.usage.total_tokens = 50
         mock_client = MagicMock()
         mock_client.chat.completions.create.return_value = mock_response
-        mock_client_cls.return_value = mock_client
+        mock_factory.return_value = mock_client
 
         display = PhaseState("Strip")
         StripPhase(db, display=display, max_workers=1).run()
 
         assert mock_client.chat.completions.create.call_count == 1
 
-    @patch("jobbuddy.sync.strip.AzureOpenAI")
-    @patch("jobbuddy.sync.strip.get_settings")
-    def test_strip_phase_error_isolation(self, mock_settings, mock_client_cls, tmp_path):
-        """One job failing to strip doesn't block others."""
-        mock_settings.return_value = self._make_mock_settings()
+    @patch("jobbuddy.sync.strip.create_openai_client")
+    def test_strip_phase_rejects_empty_llm_response(self, mock_factory, tmp_path):
+        """Empty LLM response records an error, not a silent empty write.
+
+        Regression: LLM returning empty content wrote description_stripped=''
+        which poisoned the embed phase (infinite silent retry on unfixable jobs).
+        The phase should record an error; the item stays unstripped in the DB
+        so it can be retried.
+        """
         db = str(tmp_path / "test.db")
-        self._seed_jobs(db, [
-            _make_job("1", description="first"),
-            _make_job("2", description="second"),
-        ])
+        self._seed_jobs(db, [_make_job("1", description="real job description")])
 
-        call_count = 0
-
-        def side_effect(**kwargs):
-            nonlocal call_count
-            call_count += 1
-            if call_count == 1:
-                raise Exception("API error")
-            response = MagicMock()
-            response.choices[0].message.content = "cleaned"
-            response.usage.total_tokens = 50
-            return response
-
+        mock_response = MagicMock()
+        mock_response.choices[0].message.content = ""
+        mock_response.usage.total_tokens = 10
         mock_client = MagicMock()
-        mock_client.chat.completions.create.side_effect = side_effect
-        mock_client_cls.return_value = mock_client
+        mock_client.chat.completions.create.return_value = mock_response
+        mock_factory.return_value = mock_client
 
         display = PhaseState("Strip")
         StripPhase(db, display=display, max_workers=1).run()
 
-        assert display.errors == 1
-        # WorkerPhase re-polls: the failed job retries and succeeds on next pass
-        assert display.done == 2
+        # Error recorded, item NOT marked as done
+        assert display.errors >= 1
 
-        # Both end up stripped (transient error retried via DB-as-queue)
+        # description_stripped stays NULL — not written as empty string
         store = JobStore(db)
-        rows = store.conn.execute(
-            "SELECT job_id, description_stripped FROM jobs ORDER BY job_id"
-        ).fetchall()
-        stripped_count = sum(1 for r in rows if r["description_stripped"] is not None)
-        assert stripped_count == 2
+        row = store.conn.execute(
+            "SELECT description_stripped FROM jobs WHERE job_id = '1'"
+        ).fetchone()
+        assert row["description_stripped"] is None
         store.close()
+
