@@ -1510,5 +1510,36 @@
     "ats": "greenhouse",
     "board": "rubrik",
     "name": "Rubrik"
+  },
+  "micron": {
+    "ats": "eightfold",
+    "base_url": "https://micron.eightfold.ai",
+    "board": "micron",
+    "default_filters": {
+      "location": "United States"
+    },
+    "domain": "micron.com",
+    "name": "Micron"
+  },
+  "netflix": {
+    "ats": "eightfold_v2",
+    "base_url": "https://explore.jobs.netflix.net",
+    "board": "netflix",
+    "domain": "netflix.com",
+    "name": "Netflix"
+  },
+  "qualcomm": {
+    "ats": "eightfold_v2",
+    "base_url": "https://careers.qualcomm.com",
+    "board": "qualcomm",
+    "domain": "qualcomm.com",
+    "name": "Qualcomm"
+  },
+  "netapp": {
+    "ats": "eightfold_v2",
+    "base_url": "https://careers.netapp.com",
+    "board": "netapp",
+    "domain": "netapp.com",
+    "name": "NetApp"
   }
 }
