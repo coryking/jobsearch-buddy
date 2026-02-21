@@ -8,6 +8,7 @@ import logging
 import re
 from datetime import date
 from pathlib import Path
+from typing import Any
 
 log = logging.getLogger(__name__)
 
@@ -197,7 +198,7 @@ def save_job_listing(company: Company, job: Job) -> Path:
     return filepath
 
 
-def result_to_dict(result: FetchResult) -> dict:
+def result_to_dict(result: FetchResult) -> dict[str, Any]:
     """Convert a FetchResult to a JSON-serializable dict with company metadata."""
     output = result.job.model_dump()
     output["_company_slug"] = result.company.slug

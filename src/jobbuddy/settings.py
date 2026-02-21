@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     )
 
     data_dir: Path = Path.home() / "projects" / "resume" / "data"
-    db_path: Optional[Path] = None
+    db_path: Path = None  # type: ignore[reportAssignmentType]  — validator always fills this
     listings_dir: Path = Path.home() / "projects" / "resume" / "job-listings"
 
     # Azure OpenAI (for description stripping)

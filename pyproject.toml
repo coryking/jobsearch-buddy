@@ -39,6 +39,7 @@ testpaths = ["tests"]
 
 [dependency-groups]
 dev = [
+    "basedpyright>=1.38.1",
     "icdiff>=2.0.10",
     "pytest>=9.0.2",
 ]

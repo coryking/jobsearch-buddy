@@ -55,7 +55,7 @@ class EightfoldFetcher(ATSFetcher):
         return params
 
     @staticmethod
-    def _extract_metadata(data: dict) -> dict:
+    def _extract_metadata(data: dict) -> dict | None:
         """Pull interesting Eightfold fields into ats_metadata."""
         meta: dict = {}
         for key in ("displayJobId", "workLocationOption"):

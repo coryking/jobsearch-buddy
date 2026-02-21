@@ -140,6 +140,7 @@ def sync_jobs(
         )
 
         def run_strip() -> None:
+            assert strip_phase is not None
             try:
                 strip_phase.run()
             finally:

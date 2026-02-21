@@ -16,7 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 _MCP_METADATA_KEYS = {"displayJobId", "workLocationOption", "efcustomTextWorkSite", "efcustomTextRoletype", "efcustomTextEmploymentType"}
 
 
-def _filter_metadata(raw: dict | str | None) -> dict | None:
+def _filter_metadata(raw: dict | str | None) -> dict[str, Any] | None:
     """Parse and whitelist ats_metadata for MCP output."""
     if not raw:
         return None
@@ -25,6 +25,8 @@ def _filter_metadata(raw: dict | str | None) -> dict | None:
             raw = json.loads(raw)
         except (ValueError, TypeError):
             return None
+    if not isinstance(raw, dict):
+        return None
     filtered = {k: v for k, v in raw.items() if k in _MCP_METADATA_KEYS}
     return filtered or None
 

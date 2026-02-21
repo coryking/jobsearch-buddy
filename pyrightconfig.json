@@ -1,0 +1,5 @@
+{
+    "typeCheckingMode": "standard",
+    "include": ["src/jobbuddy"],
+    "pythonVersion": "3.12"
+}

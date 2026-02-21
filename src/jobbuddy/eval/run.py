@@ -154,8 +154,8 @@ def _process_sample(
     description = sample_file.read_text(encoding="utf-8")
     input_chars = len(description)
 
+    start = time.monotonic()
     try:
-        start = time.monotonic()
         response = client.chat.completions.create(
             model=config.resolve_deployment(model),
             messages=[
@@ -166,8 +166,10 @@ def _process_sample(
         )
         elapsed = time.monotonic() - start
 
-        result_text = response.choices[0].message.content.strip()
+        content = response.choices[0].message.content or ""
+        result_text = content.strip()
         usage = response.usage
+        assert usage is not None  # always present on successful completions
 
         out_file = output_dir / sample_file.name
         out_file.write_text(result_text, encoding="utf-8")
@@ -236,7 +238,7 @@ def _run_all(
 
     settings = get_settings()
     client = AzureOpenAI(
-        azure_endpoint=settings.azure_openai_endpoint,
+        azure_endpoint=settings.azure_openai_endpoint,  # type: ignore[arg-type]  # validated at CLI entry
         api_key=settings.azure_openai_api_key,
         api_version=settings.azure_openai_api_version,
         timeout=60.0,

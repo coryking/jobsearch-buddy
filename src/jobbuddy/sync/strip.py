@@ -76,7 +76,7 @@ class StripPhase(WorkerPhase["StripWorkItem"]):
     def on_phase_start(self) -> None:
         settings = get_settings()
         self._client = AzureOpenAI(
-            azure_endpoint=settings.azure_openai_endpoint,
+            azure_endpoint=settings.azure_openai_endpoint,  # type: ignore[arg-type]  # validated at CLI entry
             api_key=settings.azure_openai_api_key,
             api_version=settings.azure_openai_api_version,
             timeout=60.0,
@@ -89,6 +89,7 @@ class StripPhase(WorkerPhase["StripWorkItem"]):
         return self._get_reader().get_jobs_needing_stripping(limit=batch_size, slug=self._slug)
 
     def process_item(self, item: StripWorkItem) -> None:
+        assert self._client is not None  # set in on_phase_start()
         description = item["description"]
         settings = get_settings()
 
@@ -103,7 +104,8 @@ class StripPhase(WorkerPhase["StripWorkItem"]):
             ],
             max_completion_tokens=max_tokens,
         )
-        stripped = response.choices[0].message.content.strip()
+        content = response.choices[0].message.content or ""
+        stripped = content.strip()
 
         if response.usage:
             self.display.add_to_info_counter(response.usage.total_tokens)

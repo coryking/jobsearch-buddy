@@ -106,7 +106,7 @@ class WorkerPhase(ABC, Generic[T]):
                     # Update total as upstream produces more work
                     if self._upstream_done:
                         new_total = self.count_remaining() + self.display.done
-                        if new_total > self.display.total:
+                        if self.display.total is not None and new_total > self.display.total:
                             self.display.total = new_total
         finally:
             self.on_phase_end()

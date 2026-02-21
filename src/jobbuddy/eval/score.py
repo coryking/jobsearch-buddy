@@ -12,7 +12,7 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Annotated, Optional
+from typing import Annotated, Literal, Optional
 
 import typer
 from rich.console import Console
@@ -103,7 +103,7 @@ def _flag_suspicious_removals(original: str, stripped: str) -> list[str]:
     return suspicious[:10]
 
 
-def _score_sample(console: Console, filename: str, original: str, stripped: str, run_name: str) -> dict | None:
+def _score_sample(console: Console, filename: str, original: str, stripped: str, run_name: str) -> dict | Literal["skip"] | None:
     """Show one sample and collect scores. Returns row dict, 'skip', or None to quit."""
     console.clear()
     console.print("\n" * 5)

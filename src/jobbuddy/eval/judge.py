@@ -87,8 +87,8 @@ def _judge_one(
     original = original_file.read_text(encoding="utf-8")
     stripped = run_file.read_text(encoding="utf-8")
 
+    start = time.monotonic()
     try:
-        start = time.monotonic()
         user_content = f"ORIGINAL:\n{original}\n\n---\n\nSTRIPPED:\n{stripped}"
         config = KNOWN_MODELS.get(model, ModelConfig())
         response = client.chat.completions.create(
@@ -100,10 +100,12 @@ def _judge_one(
         )
         elapsed = time.monotonic() - start
 
-        raw = response.choices[0].message.content.strip()
+        content = response.choices[0].message.content or ""
+        raw = content.strip()
         parsed = _parse_judge_response(raw)
 
         usage = response.usage
+        assert usage is not None  # always present on successful completions
         reasoning_tokens = 0
         if usage.completion_tokens_details:
             reasoning_tokens = getattr(usage.completion_tokens_details, "reasoning_tokens", 0) or 0
@@ -234,7 +236,7 @@ def judge(
 
     settings = get_settings()
     client = AzureOpenAI(
-        azure_endpoint=settings.azure_openai_endpoint,
+        azure_endpoint=settings.azure_openai_endpoint,  # type: ignore[arg-type]  # validated at CLI entry
         api_key=settings.azure_openai_api_key,
         api_version=settings.azure_openai_api_version,
         timeout=60.0,
