@@ -472,6 +472,14 @@
   "nvidia": {
     "ats": "workday",
     "board": "NVIDIAExternalCareerSite",
+    "default_filters": {
+      "appliedFacets": {
+        "jobFamilyGroup": [
+          "0c40f6bd1d8f10ae43ffaefd46dc7e78",
+          "0c40f6bd1d8f10ae43ffc668c6847e8c"
+        ]
+      }
+    },
     "name": "NVIDIA",
     "wd_company": "nvidia",
     "wd_instance": 5
