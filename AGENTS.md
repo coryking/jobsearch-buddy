@@ -123,14 +123,16 @@ ats log <url> [-a ACTION] [-p PERSON] [-n NOTES] [-d DATE]  # Log application
 Settings are managed by `src/jobbuddy/settings.py` (pydantic-settings).
 Override defaults with env vars (prefix `JOBBUDDY_`) or a `.env` file:
 
-| Setting                  | Env Var                          | Default                                   |
-|--------------------------|----------------------------------|-------------------------------------------|
-| `data_dir`               | `JOBBUDDY_DATA_DIR`              | `~/projects/resume/data`                  |
-| `db_path`                | `JOBBUDDY_DB_PATH`               | platformdirs `user_data_dir/jobs_cache.db`|
-| `listings_dir`           | `JOBBUDDY_LISTINGS_DIR`          | `~/projects/resume/job-listings`          |
-| `azure_openai_endpoint`  | `JOBBUDDY_AZURE_OPENAI_ENDPOINT` | *(required for strip/embed/search)*       |
-| `azure_openai_api_key`   | `JOBBUDDY_AZURE_OPENAI_API_KEY`  | *(required for strip/embed/search)*       |
-| `azure_openai_api_version` | `JOBBUDDY_AZURE_OPENAI_API_VERSION` | `2024-10-21`                         |
+| Setting                  | Env Var                              | Default                                   |
+|--------------------------|--------------------------------------|-------------------------------------------|
+| `data_dir`               | `JOBBUDDY_DATA_DIR`                  | `~/projects/resume/data`                  |
+| `db_path`                | `JOBBUDDY_DB_PATH`                   | platformdirs `user_data_dir/jobs_cache.db`|
+| `listings_dir`           | `JOBBUDDY_LISTINGS_DIR`              | `~/projects/resume/job-listings`          |
+| `openai_api_key`         | `JOBBUDDY_OPENAI_API_KEY`            | `None` *(enables strip/embed/search)*     |
+| `openai_base_url`        | `JOBBUDDY_OPENAI_BASE_URL`           | `None` *(omit for api.openai.com)*        |
+| `openai_azure_api_version` | `JOBBUDDY_OPENAI_AZURE_API_VERSION`| `None` *(if set, uses AzureOpenAI client)*|
+| `strip_model`            | `JOBBUDDY_STRIP_MODEL`               | `gpt-5-nano`                              |
+| `embedding_model`        | `JOBBUDDY_EMBEDDING_MODEL`           | `text-embedding-3-small`                  |
 
 ## Sync Pipeline
 
@@ -138,8 +140,11 @@ The sync pipeline uses a **DB-as-queue** pattern with four phases:
 
 1. **Fetch** — parallel company fetching via ThreadPoolExecutor
 2. **Enrich** — description enrichment for stub fetchers (Workday, Eightfold, etc.)
-3. **Strip** — LLM-based boilerplate removal using Azure OpenAI (gpt-5-nano)
-4. **Embed** — batch embedding generation using Azure OpenAI text-embedding-3-small
+3. **Strip** — LLM-based boilerplate removal via OpenAI-compatible API
+4. **Embed** — batch embedding generation via OpenAI-compatible API
+
+Strip and embed are optional — they only run when `JOBBUDDY_OPENAI_API_KEY` is
+set. Without it, `ats sync` runs fetch + enrich only.
 
 Each phase (strip, enrich, embed) extends the `WorkerPhase` ABC (`sync/base.py`),
 which provides: DB polling for work items, `ThreadPoolExecutor` parallelism,
@@ -147,6 +152,11 @@ per-thread DB connections, graceful shutdown via `threading.Event`, and display
 state updates. Phases poll the database for unprocessed items, process them in
 worker threads, and write results back. This decouples phases — each can run
 independently via standalone CLI commands (`ats strip`, `ats embed`).
+
+**Rate limiting:** Embedding pacing uses `x-ratelimit-remaining-tokens` response
+headers (tested on Azure OpenAI). If your provider returns these headers, pacing
+activates automatically. Without them, no pacing occurs — you're responsible for
+staying within your provider's limits.
 
 Display uses Rich Live with `PhaseState` objects (`sync/display.py`). Phase
 workers update `PhaseState` attributes directly (GIL-atomic writes); the Rich

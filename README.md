@@ -51,11 +51,30 @@ Add to Claude Desktop config:
 
 ## Configuration
 
-Copy `.env.example` to `.env` and set paths:
+Copy `.env.example` to `.env` and configure:
 
 ```bash
 cp .env.example .env
-# Edit .env to point to your data directory
+```
+
+**Minimal (fetch + enrich only):** No API key needed. `ats sync` scrapes job
+boards and caches listings locally.
+
+**Full features (strip + embed + semantic search):** Set `JOBBUDDY_OPENAI_API_KEY`.
+Works with any OpenAI-compatible API:
+
+```bash
+# Standard OpenAI
+JOBBUDDY_OPENAI_API_KEY=sk-...
+
+# Azure OpenAI
+JOBBUDDY_OPENAI_API_KEY=your-key
+JOBBUDDY_OPENAI_BASE_URL=https://your-resource.openai.azure.com/
+JOBBUDDY_OPENAI_AZURE_API_VERSION=2024-12-01-preview
+
+# Other providers (Groq, Together, Ollama, etc.)
+JOBBUDDY_OPENAI_API_KEY=your-key
+JOBBUDDY_OPENAI_BASE_URL=http://localhost:11434/v1
 ```
 
 ## Project Structure

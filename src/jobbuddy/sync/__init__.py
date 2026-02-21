@@ -3,8 +3,12 @@
 Orchestrates four phases:
 1. FetchPhase: parallel company fetching via ThreadPoolExecutor
 2. EnrichPhase: description enrichment for stub fetchers
-3. StripPhase: LLM-based boilerplate removal (Azure OpenAI gpt-5-nano)
-4. EmbedPhase: embedding generation (Azure OpenAI text-embedding-3-small)
+3. StripPhase: LLM-based boilerplate removal (requires OpenAI API)
+4. EmbedPhase: embedding generation (requires OpenAI API)
+
+Strip and embed are optional — they only run when OpenAI credentials are
+configured (JOBBUDDY_OPENAI_API_KEY). Without credentials, sync runs
+fetch + enrich only.
 
 Phases use DB-as-queue: each polls SQLite for work items and updates
 PhaseState objects for live display. No event queue for inter-phase
@@ -118,7 +122,7 @@ def sync_jobs(
         strip_done = threading.Event()
 
         settings = get_settings()
-        has_azure = settings.azure_openai_api_key and settings.azure_openai_endpoint
+        has_openai = settings.has_openai
 
         # Build enrich phase (if any stub fetchers succeeded)
         enrich_phase = None
@@ -131,9 +135,9 @@ def sync_jobs(
                 max_workers=max_workers,
             )
 
-        # Build strip phase (if Azure credentials configured)
+        # Build strip phase (if OpenAI credentials configured)
         strip_phase = None
-        if has_azure:
+        if has_openai:
             strip_phase = StripPhase(
                 db_path_str,
                 display=display_state.strip,
@@ -141,13 +145,15 @@ def sync_jobs(
                 upstream_done=enrich_done,
             )
 
-        # Build embed phase (always runs)
-        embed_phase = EmbedPhase(
-            db_path_str,
-            display=display_state.embed,
-            slug=company_slug,
-            upstream_done=strip_done,
-        )
+        # Build embed phase (if OpenAI credentials configured)
+        embed_phase = None
+        if has_openai:
+            embed_phase = EmbedPhase(
+                db_path_str,
+                display=display_state.embed,
+                slug=company_slug,
+                upstream_done=strip_done,
+            )
 
         def run_enrich() -> None:
             try:
@@ -163,10 +169,14 @@ def sync_jobs(
             finally:
                 strip_done.set()
 
+        def run_embed() -> None:
+            if embed_phase:
+                embed_phase.run()
+
         threads: list[threading.Thread] = []
         threads.append(threading.Thread(target=run_enrich, daemon=True))
         threads.append(threading.Thread(target=run_strip, daemon=True))
-        threads.append(threading.Thread(target=embed_phase.run, daemon=True))
+        threads.append(threading.Thread(target=run_embed, daemon=True))
         for t in threads:
             t.start()
         for t in threads:

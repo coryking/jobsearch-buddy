@@ -1,6 +1,6 @@
 """StripPhase -- LLM-based boilerplate removal from job descriptions.
 
-Uses Azure OpenAI gpt-5-nano to strip boilerplate before embedding.
+Uses an OpenAI-compatible LLM to strip boilerplate before embedding.
 Prompt is v9-surgical-benefits (eval-validated, do not modify).
 """
 
@@ -11,8 +11,9 @@ import threading
 from pathlib import Path
 
 import httpx
-from openai import AzureOpenAI
+from openai import OpenAI
 
+from jobbuddy.openai_client import create_openai_client
 from jobbuddy.settings import get_settings
 from jobbuddy.sync.base import WorkerPhase
 from jobbuddy.sync.display import PhaseState
@@ -67,22 +68,18 @@ Do not alter any of the rest of the job description -- it must remain verbatim! 
 
 
 class StripPhase(WorkerPhase["StripWorkItem"]):
-    """Strip boilerplate from job descriptions using Azure OpenAI."""
+    """Strip boilerplate from job descriptions using an OpenAI-compatible LLM."""
 
     def __init__(self, db_path: str | Path, *, display: PhaseState,
                  max_workers: int = 225, slug: str | None = None,
                  upstream_done: threading.Event | None = None):
         super().__init__(db_path, max_workers=max_workers, display=display,
                          upstream_done=upstream_done)
-        self._client: AzureOpenAI | None = None
+        self._client: OpenAI | None = None
         self._slug = slug
 
     def on_phase_start(self) -> None:
-        settings = get_settings()
-        self._client = AzureOpenAI(
-            azure_endpoint=settings.azure_openai_endpoint,
-            api_key=settings.azure_openai_api_key,
-            api_version=settings.azure_openai_api_version,
+        self._client = create_openai_client(
             timeout=60.0,
             http_client=httpx.Client(
                 limits=httpx.Limits(
@@ -111,7 +108,7 @@ class StripPhase(WorkerPhase["StripWorkItem"]):
         max_tokens = max(len(description) // 4, 256) + 1200
 
         response = self._client.chat.completions.create(
-            model=settings.azure_openai_model,
+            model=settings.strip_model,
             reasoning_effort="low",
             messages=[
                 {"role": "system", "content": STRIP_SYSTEM_PROMPT},

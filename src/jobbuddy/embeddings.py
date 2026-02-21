@@ -1,10 +1,11 @@
-"""Azure OpenAI embeddings via text-embedding-3-small.
+"""OpenAI embeddings via text-embedding-3-small (or configurable model).
 
 Single model (1536 dims). No registry, no local inference.
 Batch embedding for sync, single-call embedding for search queries.
 
-Single worker with a post-call delay to stay under Azure's 1M TPM limit.
-To scale beyond one DC's TPM, add workers with one per deployment/region.
+Single worker with a post-call delay for rate limit pacing.
+Pacing uses x-ratelimit-remaining-tokens response headers (tested on Azure OpenAI).
+If your provider doesn't return these headers, no pacing occurs.
 """
 
 from __future__ import annotations
@@ -14,45 +15,34 @@ import struct
 import time
 
 import numpy as np
-from openai import AzureOpenAI, RateLimitError
+from openai import OpenAI, RateLimitError
 
+from jobbuddy.openai_client import create_openai_client
 from jobbuddy.settings import get_settings
 
 log = logging.getLogger(__name__)
 
 # Model constants
 MODEL_KEY = "text3small"
-DEPLOYMENT_NAME = "text-embedding-3-small"
 DIMENSIONS = 1536
-MAX_BATCH_SIZE = 2048  # Azure API limit per request
+MAX_BATCH_SIZE = 2048  # OpenAI API limit per request
 
 # Singleton client — single worker, no per-thread storage needed.
-_client: AzureOpenAI | None = None
+_client: OpenAI | None = None
 
 # Cumulative token counter for throughput calculation
 _cumulative_tokens = 0
 _first_call_time: float | None = None
 
 
-def _get_client() -> AzureOpenAI:
-    """Return a cached AzureOpenAI client. Created once per process.
+def _get_client() -> OpenAI:
+    """Return a cached OpenAI client. Created once per process.
 
-    Raises ValueError if Azure credentials not configured.
+    Raises ValueError if API credentials not configured.
     """
     global _client
     if _client is None:
-        s = get_settings()
-        if not s.azure_openai_api_key or not s.azure_openai_endpoint:
-            raise ValueError(
-                "Azure OpenAI not configured. Set JOBBUDDY_AZURE_OPENAI_API_KEY "
-                "and JOBBUDDY_AZURE_OPENAI_ENDPOINT."
-            )
-        _client = AzureOpenAI(
-            api_key=s.azure_openai_api_key,
-            azure_endpoint=s.azure_openai_endpoint,
-            api_version=s.azure_openai_api_version,
-            max_retries=0,
-        )
+        _client = create_openai_client(max_retries=0)
     return _client
 
 
@@ -71,13 +61,13 @@ def embed_texts(texts: list[str]) -> tuple[list[list[float]], int]:
     client = _get_client()
     t0 = time.monotonic()
     try:
-        raw = client.embeddings.with_raw_response.create(input=texts, model=DEPLOYMENT_NAME)
+        raw = client.embeddings.with_raw_response.create(input=texts, model=get_settings().embedding_model)
     except RateLimitError as e:
         retry_after = int(e.response.headers.get("retry-after", "5"))
         log.warning("Rate limited (%d texts). Retrying in %ds.", len(texts), retry_after)
         time.sleep(retry_after)
         t0 = time.monotonic()
-        raw = client.embeddings.with_raw_response.create(input=texts, model=DEPLOYMENT_NAME)
+        raw = client.embeddings.with_raw_response.create(input=texts, model=get_settings().embedding_model)
         log.info("Retry succeeded (%d texts)", len(texts))
     call_duration = time.monotonic() - t0
 
@@ -117,7 +107,7 @@ def embed_texts(texts: list[str]) -> tuple[list[list[float]], int]:
 def embed_query(text: str) -> list[float]:
     """Embed a single search query. ~200ms API call."""
     client = _get_client()
-    response = client.embeddings.create(input=[text], model=DEPLOYMENT_NAME)
+    response = client.embeddings.create(input=[text], model=get_settings().embedding_model)
     return response.data[0].embedding
 
 

@@ -1,6 +1,6 @@
 """Run a prompt+model combination against all samples.
 
-Self-contained LLM client -- reads Azure credentials from settings,
+Self-contained LLM client -- reads OpenAI credentials from settings,
 calls the API, measures timing, writes stripped output + run_stats.csv.
 """
 
@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Annotated, Optional
 
 import typer
-from openai import AzureOpenAI
+from openai import OpenAI
 
 from jobbuddy.eval import DEFAULT_WORKERS
 from rich.console import Console, Group
@@ -27,7 +27,6 @@ import humanize
 
 from jobbuddy.eval.models import KNOWN_MODELS, ModelConfig
 from jobbuddy.eval.utils import PROMPTS_DIR, pick_models, pick_prompts
-from jobbuddy.settings import get_settings
 
 
 _CSV_COLUMNS = [
@@ -138,7 +137,7 @@ def run(
 
 
 def _process_sample(
-    client: AzureOpenAI,
+    client: OpenAI,
     model: str,
     config: ModelConfig,
     prompt_text: str,
@@ -234,13 +233,8 @@ def _run_all(
         console.print(f"  {m} ({params_str})")
     console.print(f"{len(work_items)} total items ({len(sample_files)} samples x {len(run_name_set)} runs), workers={workers}")
 
-    settings = get_settings()
-    client = AzureOpenAI(
-        azure_endpoint=settings.azure_openai_endpoint,
-        api_key=settings.azure_openai_api_key,
-        api_version=settings.azure_openai_api_version,
-        timeout=60.0,
-    )
+    from jobbuddy.openai_client import create_openai_client
+    client = create_openai_client(timeout=60.0)
 
     total = len(work_items)
     done_count = 0

@@ -142,15 +142,15 @@ def sync(
 def strip(
     force: bool = typer.Option(False, "--force", "-f", help="Re-strip jobs that already have stripped descriptions"),
 ):
-    """Strip boilerplate from cached job descriptions using Azure OpenAI."""
+    """Strip boilerplate from cached job descriptions using an OpenAI-compatible LLM."""
     from jobbuddy.store import JobStore
     from jobbuddy.sync.display import SyncDisplayState, create_live, print_sync_summary
     from jobbuddy.sync.strip import StripPhase
 
     settings = get_settings()
-    if not settings.azure_openai_api_key or not settings.azure_openai_endpoint:
-        console.print("[red]Azure OpenAI not configured.[/red]")
-        console.print("[dim]Set JOBBUDDY_AZURE_OPENAI_API_KEY and JOBBUDDY_AZURE_OPENAI_ENDPOINT[/dim]")
+    if not settings.has_openai:
+        console.print("[red]OpenAI API not configured.[/red]")
+        console.print("[dim]Set JOBBUDDY_OPENAI_API_KEY (and optionally JOBBUDDY_OPENAI_BASE_URL)[/dim]")
         raise SystemExit(1)
 
     if not settings.db_path.exists():
@@ -185,11 +185,16 @@ def embed(
     from jobbuddy.sync.display import SyncDisplayState, create_live, print_sync_summary
     from jobbuddy.sync.embed import EmbedPhase
 
-    if not get_settings().db_path.exists():
+    settings = get_settings()
+    if not settings.has_openai:
+        console.print("[red]OpenAI API not configured.[/red]")
+        console.print("[dim]Set JOBBUDDY_OPENAI_API_KEY (and optionally JOBBUDDY_OPENAI_BASE_URL)[/dim]")
+        raise SystemExit(1)
+
+    if not settings.db_path.exists():
         console.print("[yellow]No cached data. Run 'ats sync' to populate.[/yellow]")
         raise SystemExit(0)
 
-    settings = get_settings()
     state = SyncDisplayState()
 
     with create_live(console, state, filter_phases=["Embed"]):

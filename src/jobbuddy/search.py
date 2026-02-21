@@ -1,4 +1,4 @@
-"""Semantic job search via sqlite-vec + Azure OpenAI embeddings."""
+"""Semantic job search via sqlite-vec + OpenAI-compatible embeddings."""
 
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,7 +18,7 @@ class VectorSearch:
         self.store = JobStore(db_path)
 
     def search(self, query: str, limit: int = 25) -> list[SearchResult]:
-        """Semantic search. Embeds query via Azure, KNN via sqlite-vec."""
+        """Semantic search. Embeds query via OpenAI API, KNN via sqlite-vec."""
         query_vec = embed_query(query)
         query_blob = serialize_f32(query_vec)
         rows = self.store.search_similar(query_blob, k=limit)

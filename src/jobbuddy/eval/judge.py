@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Annotated, Optional
 
 import typer
-from openai import AzureOpenAI
+from openai import OpenAI
 from rich.console import Console, Group
 
 from jobbuddy.eval import DEFAULT_WORKERS
@@ -27,7 +27,6 @@ from rich.text import Text
 
 import humanize
 
-from jobbuddy.settings import get_settings
 
 SCORE_FIELDS = ["recall", "precision", "integrity", "fidelity"]
 
@@ -72,7 +71,7 @@ class _JudgeResult:
 
 
 def _judge_one(
-    client: AzureOpenAI,
+    client: OpenAI,
     model: str,
     prompt_text: str,
     run_name: str,
@@ -232,13 +231,8 @@ def judge(
     run_score_sums: dict[str, dict[str, int]] = {rn: {f: 0 for f in SCORE_FIELDS} for rn in run_totals}
     run_done_counts: dict[str, int] = {rn: 0 for rn in run_totals}
 
-    settings = get_settings()
-    client = AzureOpenAI(
-        azure_endpoint=settings.azure_openai_endpoint,
-        api_key=settings.azure_openai_api_key,
-        api_version=settings.azure_openai_api_version,
-        timeout=60.0,
-    )
+    from jobbuddy.openai_client import create_openai_client
+    client = create_openai_client(timeout=60.0)
 
     total = len(work_items)
     done_count = 0
