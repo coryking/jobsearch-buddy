@@ -72,11 +72,14 @@ def embed_query(text: str) -> list[float]:
     return response.data[0].embedding
 
 
-def compute_batch_size(avg_tokens: int = 1438, target_tokens: int = 250_000) -> int:
-    """Optimal batch size targeting ~25% of 1M TPM per batch.
+def compute_batch_size(avg_tokens: int = 1438, target_tokens: int = 70_000) -> int:
+    """Optimal batch size targeting ~50 items per API call.
+
+    Bench testing showed batch=50 (~70K tokens) has the best items/s throughput.
+    Larger batches (100+) hit diminishing returns on API latency.
 
     Returns min(target_tokens // avg_tokens, MAX_BATCH_SIZE).
-    With defaults: min(173, 2048) = 173.
+    With defaults: min(48, 2048) = 48.
     """
     return min(target_tokens // avg_tokens, MAX_BATCH_SIZE)
 

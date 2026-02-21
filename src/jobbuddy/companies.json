@@ -1856,5 +1856,165 @@
     "ats": "lever",
     "board": "vergegenomics",
     "name": "Verge Genomics"
+  },
+  "smartsheet": {
+    "ats": "greenhouse",
+    "board": "smartsheet",
+    "name": "Smartsheet"
+  },
+  "textio": {
+    "ats": "greenhouse",
+    "board": "textio",
+    "name": "Textio"
+  },
+  "commerceiq": {
+    "ats": "greenhouse",
+    "board": "commerceiq",
+    "name": "CommerceIQ"
+  },
+  "hyperproof": {
+    "ats": "greenhouse",
+    "board": "hyperproof",
+    "name": "Hyperproof"
+  },
+  "temporal": {
+    "ats": "greenhouse",
+    "board": "temporal",
+    "name": "Temporal"
+  },
+  "truveta": {
+    "ats": "greenhouse",
+    "board": "truveta",
+    "name": "Truveta"
+  },
+  "carbon-robotics": {
+    "ats": "greenhouse",
+    "board": "carbonrobotics",
+    "name": "Carbon Robotics"
+  },
+  "agility-robotics": {
+    "ats": "greenhouse",
+    "board": "agilityrobotics",
+    "name": "Agility Robotics"
+  },
+  "offerup": {
+    "ats": "greenhouse",
+    "board": "offerup",
+    "name": "OfferUp"
+  },
+  "bungie": {
+    "ats": "greenhouse",
+    "board": "bungie",
+    "name": "Bungie"
+  },
+  "nintendo": {
+    "ats": "greenhouse",
+    "board": "nintendo",
+    "name": "Nintendo of America"
+  },
+  "flexe": {
+    "ats": "greenhouse",
+    "board": "flexe",
+    "name": "Flexe"
+  },
+  "terrapower": {
+    "ats": "greenhouse",
+    "board": "terrapowerllc",
+    "name": "TerraPower"
+  },
+  "karat": {
+    "ats": "greenhouse",
+    "board": "karat",
+    "name": "Karat"
+  },
+  "rover": {
+    "ats": "lever",
+    "board": "rover",
+    "name": "Rover"
+  },
+  "alphasense": {
+    "ats": "greenhouse",
+    "board": "alphasense",
+    "name": "AlphaSense"
+  },
+  "attentive": {
+    "ats": "greenhouse",
+    "board": "attentive",
+    "name": "Attentive"
+  },
+  "celonis": {
+    "ats": "greenhouse",
+    "board": "celonis",
+    "name": "Celonis"
+  },
+  "druva": {
+    "ats": "greenhouse",
+    "board": "druva",
+    "name": "Druva"
+  },
+  "appsflyer": {
+    "ats": "greenhouse",
+    "board": "appsflyer",
+    "name": "AppsFlyer"
+  },
+  "moveworks": {
+    "ats": "greenhouse",
+    "board": "moveworks",
+    "name": "Moveworks"
+  },
+  "figure-ai": {
+    "ats": "greenhouse",
+    "board": "figureai",
+    "name": "Figure AI"
+  },
+  "fireworks-ai": {
+    "ats": "greenhouse",
+    "board": "fireworksai",
+    "name": "Fireworks AI"
+  },
+  "fal": {
+    "ats": "greenhouse",
+    "board": "fal",
+    "name": "fal"
+  },
+  "heygen": {
+    "ats": "greenhouse",
+    "board": "heygen",
+    "name": "HeyGen"
+  },
+  "chainguard": {
+    "ats": "greenhouse",
+    "board": "chainguard",
+    "name": "Chainguard"
+  },
+  "merge": {
+    "ats": "greenhouse",
+    "board": "merge",
+    "name": "Merge"
+  },
+  "lovable": {
+    "ats": "greenhouse",
+    "board": "lovable",
+    "name": "Lovable"
+  },
+  "world-labs": {
+    "ats": "greenhouse",
+    "board": "worldlabs",
+    "name": "World Labs"
+  },
+  "thinking-machines": {
+    "ats": "greenhouse",
+    "board": "thinkingmachines",
+    "name": "Thinking Machines Lab"
+  },
+  "charlie-health": {
+    "ats": "greenhouse",
+    "board": "charliehealth",
+    "name": "Charlie Health"
+  },
+  "kalshi": {
+    "ats": "greenhouse",
+    "board": "kalshi",
+    "name": "Kalshi"
   }
 }
