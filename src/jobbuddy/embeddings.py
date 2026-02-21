@@ -31,9 +31,8 @@ MAX_BATCH_SIZE = 2048  # Azure API limit per request
 AVG_TOKENS_PER_ITEM = 1438  # measured from production data
 
 # Azure deployment limit: 1M tokens per 60s = ~16.7K tokens/s.
-# Use 90% of capacity to leave headroom for estimation error.
 TOKEN_CAPACITY = 1_000_000
-TOKEN_REFILL_PER_SEC = int(TOKEN_CAPACITY / 60 * 0.9)  # ~15K tok/s
+TOKEN_REFILL_PER_SEC = int(TOKEN_CAPACITY / 60)  # ~16.7K tok/s
 
 # Per-thread client storage — each worker gets its own client with a
 # randomized timeout to avoid thundering herd on 429 retries.
@@ -78,12 +77,11 @@ class TokenBucket:
                     return
                 deficit = target - self.tokens
                 wait = deficit / self.refill_per_sec
-            time.sleep(min(wait, 1.0))
+            time.sleep(min(wait + random.uniform(0, 0.5), 2.0))
 
 
-# Shared rate limiter for all embed calls across all threads.
-# Start with enough for one batch (~70K tokens) so pacing kicks in
-# immediately instead of letting 4 workers burst 14 batches at once.
+# Shared rate limiter. Starts with enough for one batch so pacing kicks
+# in immediately instead of letting all workers burst at once.
 _rate_limiter = TokenBucket(TOKEN_CAPACITY, TOKEN_REFILL_PER_SEC,
                             initial=70_000)
 

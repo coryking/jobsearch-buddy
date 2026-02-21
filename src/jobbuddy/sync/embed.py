@@ -26,7 +26,7 @@ class EmbedPhase(WorkerPhase["EmbedBatch"]):
     """
 
     def __init__(self, db_path: str | Path, *, display: PhaseState,
-                 max_workers: int = 4, slug: str | None = None,
+                 max_workers: int = 12, slug: str | None = None,
                  upstream_done: threading.Event | None = None):
         super().__init__(db_path, max_workers=max_workers, display=display,
                          upstream_done=upstream_done)
