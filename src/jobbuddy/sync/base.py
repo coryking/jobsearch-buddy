@@ -123,6 +123,10 @@ class WorkerPhase(ABC, Generic[T]):
         """Return a key identifying this work item for deduplication."""
         ...
 
+    def item_label(self, item: T) -> str:
+        """Human-readable label for error messages. Override in subclasses."""
+        return str(self.item_key(item))
+
     def on_phase_start(self) -> None: pass
     def on_phase_end(self) -> None: pass
 
@@ -242,14 +246,15 @@ class WorkerPhase(ABC, Generic[T]):
             self.process_item(item)
         except Exception as e:
             key = self.item_key(item)
+            label = self.item_label(item)
             count = failures.get(key, 0) + 1
             failures[key] = count
             if count >= self.MAX_RETRIES:
                 log.error("Giving up on %s after %d failures: %s",
-                          key, count, e)
+                          label, count, e)
             else:
-                log.warning("Error in %s (attempt %d/%d): %s",
-                            type(self).__name__, count, self.MAX_RETRIES, e)
+                log.warning("Error in %s [%s] (attempt %d/%d): %s",
+                            type(self).__name__, label, count, self.MAX_RETRIES, e)
                 self.display.record_error()
                 # Un-dispatch so the producer re-polls and retries this item
                 dispatched.discard(key)

@@ -68,6 +68,9 @@ class EnrichPhase(WorkerPhase["EnrichWorkItem"]):
     def item_key(self, item: EnrichWorkItem) -> str:
         return item["slug"]
 
+    def item_label(self, item: EnrichWorkItem) -> str:
+        return f"{item['slug']} ({len(item['job_ids'])} jobs)"
+
     def poll_work(self, batch_size: int) -> list[EnrichWorkItem]:
         """Return one company at a time from the pre-built plan."""
         if not self._enrich_plan:

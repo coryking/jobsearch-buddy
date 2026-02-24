@@ -41,6 +41,10 @@ class EmbedPhase(WorkerPhase["EmbedBatch"]):
     def item_key(self, item: EmbedBatch) -> tuple:
         return tuple(j["id"] for j in item)
 
+    def item_label(self, item: EmbedBatch) -> str:
+        slugs = {j["company_slug"] for j in item}
+        return f"batch of {len(item)} jobs ({', '.join(sorted(slugs))})"
+
     def count_remaining(self) -> int:
         return self._get_reader().count_jobs_needing_embeddings(slug=self._slug)
 

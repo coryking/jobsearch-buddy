@@ -33,6 +33,16 @@ def create_openai_client(**kwargs) -> OpenAI:
             api_version=s.openai_azure_api_version,
             **kwargs,
         )
+    # Catch misconfiguration: Azure-looking URL without the api_version set
+    if s.openai_base_url and (
+        ".cognitive.microsoft.com" in s.openai_base_url
+        or ".cognitiveservices.azure.com" in s.openai_base_url
+    ):
+        raise ValueError(
+            "JOBBUDDY_OPENAI_BASE_URL looks like an Azure endpoint but "
+            "JOBBUDDY_OPENAI_AZURE_API_VERSION is not set. "
+            "Set it (e.g., '2024-12-01-preview') to use Azure OpenAI."
+        )
     return OpenAI(
         api_key=s.openai_api_key,
         base_url=s.openai_base_url or None,

@@ -92,6 +92,9 @@ class StripPhase(WorkerPhase["StripWorkItem"]):
     def item_key(self, item: StripWorkItem) -> int:
         return item["id"]
 
+    def item_label(self, item: StripWorkItem) -> str:
+        return f"{item['company_slug']}/{item['job_id']} ({item['title']})"
+
     def count_remaining(self) -> int:
         return self._get_reader().count_jobs_needing_stripping(slug=self._slug)
 
