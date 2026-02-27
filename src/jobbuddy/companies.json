@@ -2099,5 +2099,107 @@
     "ats": null,
     "board": null,
     "name": "Zed"
+  },
+  "statsig": {
+    "ats": "ashby",
+    "board": "statsig",
+    "name": "Statsig"
+  },
+  "chronosphere": {
+    "ats": "ashby",
+    "board": "chronospherejobs",
+    "name": "Chronosphere"
+  },
+  "incident-io": {
+    "ats": "ashby",
+    "board": "incident",
+    "name": "incident.io"
+  },
+  "stytch": {
+    "ats": "ashby",
+    "board": "stytch",
+    "name": "Stytch"
+  },
+  "workos": {
+    "ats": "lever",
+    "board": "workos",
+    "name": "WorkOS"
+  },
+  "sardine": {
+    "ats": "ashby",
+    "board": "sardine",
+    "name": "Sardine"
+  },
+  "kong": {
+    "ats": "ashby",
+    "board": "kong",
+    "name": "Kong"
+  },
+  "n8n": {
+    "ats": "ashby",
+    "board": "n8n",
+    "name": "n8n"
+  },
+  "union-ai": {
+    "ats": "ashby",
+    "board": "Union",
+    "name": "Union.ai"
+  },
+  "unit": {
+    "ats": "ashby",
+    "board": "unit",
+    "name": "Unit"
+  },
+  "devrev": {
+    "ats": "greenhouse",
+    "board": "devrev",
+    "name": "DevRev"
+  },
+  "zapier": {
+    "ats": "greenhouse",
+    "board": "zapier",
+    "name": "Zapier"
+  },
+  "lithic": {
+    "ats": "greenhouse",
+    "board": "lithic",
+    "name": "Lithic"
+  },
+  "tray-io": {
+    "ats": "greenhouse",
+    "board": "trayio",
+    "name": "Tray.io"
+  },
+  "mx": {
+    "ats": "workday",
+    "board": "EXT-MX",
+    "name": "MX",
+    "wd_company": "mx",
+    "wd_instance": 1
+  },
+  "descope": {
+    "ats": null,
+    "board": null,
+    "name": "Descope"
+  },
+  "port": {
+    "ats": null,
+    "board": null,
+    "name": "Port"
+  },
+  "moov": {
+    "ats": null,
+    "board": null,
+    "name": "Moov"
+  },
+  "teller": {
+    "ats": null,
+    "board": null,
+    "name": "Teller"
+  },
+  "make": {
+    "ats": null,
+    "board": null,
+    "name": "Make"
   }
 }
