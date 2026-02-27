@@ -2201,5 +2201,1105 @@
     "ats": null,
     "board": null,
     "name": "Make"
+  },
+  "7ai": {
+    "ats": "ashby",
+    "board": "sevenai",
+    "name": "7AI",
+    "careers_url": "https://jobs.ashbyhq.com/sevenai",
+    "ai_focused": true,
+    "stage": "Series A",
+    "headcount": "11-50",
+    "source_vc": "Greylock"
+  },
+  "abacus-ai": {
+    "ats": null,
+    "board": null,
+    "name": "Abacus.AI",
+    "careers_url": "https://abacus.ai/jobs",
+    "ai_focused": true,
+    "stage": "Series D+",
+    "headcount": "100-200",
+    "source_vc": "Coatue"
+  },
+  "abridge": {
+    "ats": "ashby",
+    "board": "abridge",
+    "name": "Abridge",
+    "careers_url": "https://jobs.ashbyhq.com/abridge",
+    "ai_focused": true,
+    "stage": "Series C",
+    "headcount": "200-500",
+    "source_vc": "Bessemer Venture Partners"
+  },
+  "ada": {
+    "ats": "greenhouse",
+    "board": "ada18",
+    "name": "Ada",
+    "careers_url": "https://job-boards.greenhouse.io/ada18",
+    "ai_focused": true,
+    "stage": "Series C",
+    "headcount": "500+",
+    "source_vc": "Bessemer Venture Partners"
+  },
+  "ai21-labs": {
+    "ats": null,
+    "board": null,
+    "name": "AI21 Labs",
+    "careers_url": "https://www.ai21.com/careers",
+    "ai_focused": true,
+    "stage": "Series D",
+    "headcount": "200-300",
+    "source_vc": "Coatue"
+  },
+  "airops": {
+    "ats": null,
+    "board": null,
+    "name": "AirOps",
+    "careers_url": "https://www.airops.com/careers",
+    "ai_focused": false,
+    "stage": "Series B",
+    "headcount": "30-50",
+    "source_vc": "Greylock"
+  },
+  "aisera": {
+    "ats": "greenhouse",
+    "board": "aiserajobs",
+    "name": "Aisera",
+    "careers_url": "https://job-boards.greenhouse.io/aiserajobs",
+    "ai_focused": true,
+    "stage": "Series D",
+    "headcount": "200-500",
+    "source_vc": "Menlo Ventures"
+  },
+  "alloy": {
+    "ats": "greenhouse",
+    "board": "alloy",
+    "name": "Alloy",
+    "careers_url": "https://boards.greenhouse.io/embed/job_board?for=alloy",
+    "ai_focused": false,
+    "stage": "Series C",
+    "headcount": "300-500",
+    "source_vc": "Bessemer Venture Partners"
+  },
+  "amp-robotics": {
+    "ats": "greenhouse",
+    "board": "ampsortation",
+    "name": "AMP Robotics",
+    "careers_url": "https://job-boards.greenhouse.io/ampsortation",
+    "ai_focused": true,
+    "stage": "Series D+",
+    "headcount": "200-500",
+    "source_vc": "Sequoia Capital"
+  },
+  "anrok": {
+    "ats": "ashby",
+    "board": "anrok",
+    "name": "Anrok",
+    "careers_url": "https://jobs.ashbyhq.com/anrok",
+    "ai_focused": false,
+    "stage": "Series C",
+    "headcount": "50-100",
+    "source_vc": "Sequoia Capital"
+  },
+  "anterior": {
+    "ats": "ashby",
+    "board": "anterior",
+    "name": "Anterior",
+    "careers_url": "https://jobs.ashbyhq.com/anterior",
+    "ai_focused": true,
+    "stage": "Series B",
+    "headcount": "50-100",
+    "source_vc": "Sequoia Capital"
+  },
+  "apiiro": {
+    "ats": "greenhouse",
+    "board": "apiiro",
+    "name": "Apiiro",
+    "careers_url": "https://job-boards.greenhouse.io/apiiro",
+    "ai_focused": false,
+    "stage": "Series B",
+    "headcount": "100-200",
+    "source_vc": "Greylock"
+  },
+  "appzen": {
+    "ats": null,
+    "board": null,
+    "name": "AppZen",
+    "careers_url": "https://www.appzen.com/careers",
+    "ai_focused": true,
+    "stage": "Series C+",
+    "headcount": "200-400",
+    "source_vc": "Coatue"
+  },
+  "aqua-security": {
+    "ats": null,
+    "board": null,
+    "name": "Aqua Security",
+    "careers_url": "https://www.aquasec.com/about-us/careers/",
+    "ai_focused": false,
+    "stage": "Series E",
+    "headcount": "200-500",
+    "source_vc": "Lightspeed"
+  },
+  "benchling": {
+    "ats": "greenhouse",
+    "board": "benchling",
+    "name": "Benchling",
+    "careers_url": "https://job-boards.greenhouse.io/benchling",
+    "ai_focused": false,
+    "stage": "Series F",
+    "headcount": "500-1000",
+    "source_vc": "Benchmark"
+  },
+  "betterup": {
+    "ats": "ashby",
+    "board": "betterup",
+    "name": "BetterUp",
+    "careers_url": "https://jobs.ashbyhq.com/betterup",
+    "ai_focused": false,
+    "stage": "Series E",
+    "headcount": "500+",
+    "source_vc": "Lightspeed"
+  },
+  "buildops": {
+    "ats": "greenhouse",
+    "board": "buildops",
+    "name": "BuildOps",
+    "careers_url": "https://boards.greenhouse.io/buildops",
+    "ai_focused": false,
+    "stage": "Series C",
+    "headcount": "200-500",
+    "source_vc": "Founders Fund"
+  },
+  "builder-io": {
+    "ats": "greenhouse",
+    "board": "builder",
+    "name": "Builder.io",
+    "careers_url": "https://job-boards.greenhouse.io/builder",
+    "ai_focused": false,
+    "stage": "Series B",
+    "headcount": "50-100",
+    "source_vc": "Greylock"
+  },
+  "camber-health": {
+    "ats": "lever",
+    "board": "camber",
+    "name": "Camber Health",
+    "careers_url": "https://jobs.lever.co/camber",
+    "ai_focused": true,
+    "stage": "Series B",
+    "headcount": "50-100",
+    "source_vc": "Y Combinator"
+  },
+  "captions": {
+    "ats": "greenhouse",
+    "board": "captions",
+    "name": "Captions",
+    "careers_url": "https://www.captions.ai/careers",
+    "ai_focused": true,
+    "stage": "Series C",
+    "headcount": "50-200",
+    "source_vc": "Sequoia Capital"
+  },
+  "captivateiq": {
+    "ats": "lever",
+    "board": "captivateiq",
+    "name": "CaptivateIQ",
+    "careers_url": "https://jobs.lever.co/captivateiq",
+    "ai_focused": false,
+    "stage": "Series C",
+    "headcount": "200-500",
+    "source_vc": "Sequoia Capital"
+  },
+  "cartesia": {
+    "ats": "ashby",
+    "board": "cartesia",
+    "name": "Cartesia",
+    "careers_url": "https://jobs.ashbyhq.com/cartesia",
+    "ai_focused": true,
+    "stage": "Series B",
+    "headcount": "50-100",
+    "source_vc": "Conviction Partners"
+  },
+  "censys": {
+    "ats": "greenhouse",
+    "board": "censys",
+    "name": "Censys",
+    "careers_url": "https://job-boards.greenhouse.io/censys",
+    "ai_focused": false,
+    "stage": "Series C",
+    "headcount": "100-200",
+    "source_vc": "Greylock"
+  },
+  "chainalysis": {
+    "ats": "ashby",
+    "board": "chainalysis-careers",
+    "name": "Chainalysis",
+    "careers_url": "https://jobs.ashbyhq.com/chainalysis-careers",
+    "ai_focused": false,
+    "stage": "Series F",
+    "headcount": "500-1000",
+    "source_vc": "Benchmark"
+  },
+  "clickhouse": {
+    "ats": "greenhouse",
+    "board": "clickhouse",
+    "name": "ClickHouse",
+    "careers_url": "https://job-boards.greenhouse.io/clickhouse",
+    "ai_focused": false,
+    "stage": "Series D",
+    "headcount": "300-500",
+    "source_vc": "Lightspeed"
+  },
+  "clipboard-health": {
+    "ats": "ashby",
+    "board": "clipboard",
+    "name": "Clipboard Health",
+    "careers_url": "https://jobs.ashbyhq.com/clipboard",
+    "ai_focused": false,
+    "stage": "Series C",
+    "headcount": "500+",
+    "source_vc": "IVP"
+  },
+  "cogent-security": {
+    "ats": "ashby",
+    "board": "cogent-security",
+    "name": "Cogent Security",
+    "careers_url": "https://jobs.ashbyhq.com/cogent-security",
+    "ai_focused": true,
+    "stage": "Seed",
+    "headcount": "10-30",
+    "source_vc": "Greylock"
+  },
+  "common-room": {
+    "ats": "ashby",
+    "board": "commonroom",
+    "name": "Common Room",
+    "careers_url": "https://jobs.ashbyhq.com/commonroom",
+    "ai_focused": false,
+    "stage": "Series B",
+    "headcount": "100-200",
+    "source_vc": "Greylock"
+  },
+  "conductorone": {
+    "ats": "ashby",
+    "board": "conductorone",
+    "name": "ConductorOne",
+    "careers_url": "https://jobs.ashbyhq.com/conductorone",
+    "ai_focused": false,
+    "stage": "Series B",
+    "headcount": "50-100",
+    "source_vc": "Accel"
+  },
+  "coram-ai": {
+    "ats": "ashby",
+    "board": "coram-ai",
+    "name": "Coram AI",
+    "careers_url": "https://jobs.ashbyhq.com/coram-ai",
+    "ai_focused": true,
+    "stage": "Series A",
+    "headcount": "20-50",
+    "source_vc": "Air Street Capital"
+  },
+  "cortex": {
+    "ats": "greenhouse",
+    "board": "cortex",
+    "name": "Cortex",
+    "careers_url": "https://job-boards.greenhouse.io/cortex",
+    "ai_focused": false,
+    "stage": "Series C",
+    "headcount": "100-200",
+    "source_vc": "IVP"
+  },
+  "cresta": {
+    "ats": "greenhouse",
+    "board": "cresta",
+    "name": "Cresta",
+    "careers_url": "https://job-boards.greenhouse.io/cresta",
+    "ai_focused": true,
+    "stage": "Series C",
+    "headcount": "100-200",
+    "source_vc": "Greylock"
+  },
+  "cribl": {
+    "ats": "greenhouse",
+    "board": "cribl",
+    "name": "Cribl",
+    "careers_url": "https://job-boards.greenhouse.io/cribl",
+    "ai_focused": false,
+    "stage": "Series D+",
+    "headcount": "500-700",
+    "source_vc": "Greylock"
+  },
+  "dexterity": {
+    "ats": "lever",
+    "board": "dexterity",
+    "name": "Dexterity",
+    "careers_url": "https://jobs.lever.co/dexterity",
+    "ai_focused": true,
+    "stage": "Series B",
+    "headcount": "100-200",
+    "source_vc": "Lightspeed"
+  },
+  "eightfold": {
+    "ats": "eightfold",
+    "board": "eightfold",
+    "name": "Eightfold",
+    "careers_url": "https://eightfold.ai/company/careers/",
+    "ai_focused": true,
+    "stage": "Series E",
+    "headcount": "500+",
+    "source_vc": "Lightspeed"
+  },
+  "essential-ai": {
+    "ats": "ashby",
+    "board": "essentialai",
+    "name": "Essential AI",
+    "careers_url": "https://jobs.ashbyhq.com/essentialai",
+    "ai_focused": true,
+    "stage": "Series A",
+    "headcount": "14-50",
+    "source_vc": "Conviction Partners"
+  },
+  "everlaw": {
+    "ats": "greenhouse",
+    "board": "everlaw",
+    "name": "Everlaw",
+    "careers_url": "https://job-boards.greenhouse.io/everlaw",
+    "ai_focused": false,
+    "stage": "Series D",
+    "headcount": "500+",
+    "source_vc": "Menlo Ventures"
+  },
+  "fieldguide": {
+    "ats": "ashby",
+    "board": "fieldguide",
+    "name": "Fieldguide",
+    "careers_url": "https://jobs.ashbyhq.com/fieldguide",
+    "ai_focused": true,
+    "stage": "Series B",
+    "headcount": "50-100",
+    "source_vc": "Y Combinator"
+  },
+  "fireblocks": {
+    "ats": "greenhouse",
+    "board": "fireblocks",
+    "name": "Fireblocks",
+    "careers_url": "https://job-boards.greenhouse.io/fireblocks",
+    "ai_focused": false,
+    "stage": "Series E",
+    "headcount": "500+",
+    "source_vc": "Spark Capital"
+  },
+  "flock-safety": {
+    "ats": "ashby",
+    "board": "flocksafety",
+    "name": "Flock Safety",
+    "careers_url": "https://jobs.ashbyhq.com/flocksafety",
+    "ai_focused": false,
+    "stage": "Series E",
+    "headcount": "1000+",
+    "source_vc": "Spark Capital"
+  },
+  "flywire": {
+    "ats": "greenhouse",
+    "board": "flywire2",
+    "name": "Flywire",
+    "careers_url": "https://boards.greenhouse.io/flywire2",
+    "ai_focused": false,
+    "stage": "Public",
+    "headcount": "1000+",
+    "source_vc": "Spark Capital"
+  },
+  "gamma": {
+    "ats": "lever",
+    "board": "gamma",
+    "name": "Gamma",
+    "careers_url": "https://jobs.lever.co/gamma",
+    "ai_focused": true,
+    "stage": "Series B",
+    "headcount": "50-100",
+    "source_vc": "IVP"
+  },
+  "gecko-robotics": {
+    "ats": "ashby",
+    "board": "gecko-robotics",
+    "name": "Gecko Robotics",
+    "careers_url": "https://jobs.ashbyhq.com/gecko-robotics",
+    "ai_focused": false,
+    "stage": "Series D",
+    "headcount": "100-200",
+    "source_vc": "Founders Fund"
+  },
+  "hackerone": {
+    "ats": "ashby",
+    "board": "hackerone",
+    "name": "HackerOne",
+    "careers_url": "https://jobs.ashbyhq.com/hackerone",
+    "ai_focused": false,
+    "stage": "Series E",
+    "headcount": "200-500",
+    "source_vc": "Benchmark"
+  },
+  "hadrian": {
+    "ats": "ashby",
+    "board": "hadrian-automation",
+    "name": "Hadrian",
+    "careers_url": "https://jobs.ashbyhq.com/hadrian-automation",
+    "ai_focused": false,
+    "stage": "Series C",
+    "headcount": "200-500",
+    "source_vc": "a16z"
+  },
+  "harper": {
+    "ats": "ashby",
+    "board": "harperinsure",
+    "name": "Harper",
+    "careers_url": "https://jobs.ashbyhq.com/harperinsure",
+    "ai_focused": true,
+    "stage": "Series A",
+    "headcount": "11-50",
+    "source_vc": "Y Combinator"
+  },
+  "hex": {
+    "ats": "greenhouse",
+    "board": "hextechnologies",
+    "name": "Hex",
+    "careers_url": "https://boards.greenhouse.io/hextechnologies",
+    "ai_focused": false,
+    "stage": "Series B",
+    "headcount": "50-100",
+    "source_vc": "Amplify Partners"
+  },
+  "instawork": {
+    "ats": "greenhouse",
+    "board": "instawork",
+    "name": "Instawork",
+    "careers_url": "https://job-boards.greenhouse.io/instawork",
+    "ai_focused": true,
+    "stage": "Series D",
+    "headcount": "200-500",
+    "source_vc": "Y Combinator"
+  },
+  "inworld-ai": {
+    "ats": "greenhouse",
+    "board": "inworldai",
+    "name": "Inworld AI",
+    "careers_url": "https://boards.greenhouse.io/inworldai",
+    "ai_focused": true,
+    "stage": "Series B",
+    "headcount": "50-100",
+    "source_vc": "Lightspeed"
+  },
+  "kittl": {
+    "ats": "ashby",
+    "board": "kittl",
+    "name": "Kittl",
+    "careers_url": "https://jobs.ashbyhq.com/kittl",
+    "ai_focused": true,
+    "stage": "Series B",
+    "headcount": "200+",
+    "source_vc": "IVP"
+  },
+  "lightmatter": {
+    "ats": "greenhouse",
+    "board": "lightmatter",
+    "name": "Lightmatter",
+    "careers_url": "https://job-boards.greenhouse.io/lightmatter",
+    "ai_focused": true,
+    "stage": "Series D",
+    "headcount": "200-500",
+    "source_vc": "Spark Capital"
+  },
+  "luma-ai": {
+    "ats": null,
+    "board": null,
+    "name": "Luma AI",
+    "careers_url": "https://jobs.gem.com/lumalabs-ai",
+    "ai_focused": true,
+    "stage": "Series B",
+    "headcount": "50-80",
+    "source_vc": "Amplify Partners"
+  },
+  "lumafield": {
+    "ats": "lever",
+    "board": "lumafield",
+    "name": "Lumafield",
+    "careers_url": "https://jobs.lever.co/lumafield",
+    "ai_focused": false,
+    "stage": "Series B",
+    "headcount": "100-200",
+    "source_vc": "IVP"
+  },
+  "mercor": {
+    "ats": "ashby",
+    "board": "mercor",
+    "name": "Mercor",
+    "careers_url": "https://jobs.ashbyhq.com/mercor",
+    "ai_focused": true,
+    "stage": "Series C",
+    "headcount": "50-200",
+    "source_vc": "a16z"
+  },
+  "mercury": {
+    "ats": "greenhouse",
+    "board": "mercury",
+    "name": "Mercury",
+    "careers_url": "https://job-boards.greenhouse.io/mercury",
+    "ai_focused": false,
+    "stage": "Series C",
+    "headcount": "500+",
+    "source_vc": "Spark Capital"
+  },
+  "modern-treasury": {
+    "ats": "ashby",
+    "board": "moderntreasury",
+    "name": "Modern Treasury",
+    "careers_url": "https://jobs.ashbyhq.com/moderntreasury",
+    "ai_focused": false,
+    "stage": "Series D",
+    "headcount": "50-200",
+    "source_vc": "Benchmark"
+  },
+  "motive": {
+    "ats": "greenhouse",
+    "board": "gomotive",
+    "name": "Motive",
+    "careers_url": "https://job-boards.greenhouse.io/gomotive",
+    "ai_focused": false,
+    "stage": "Series D+",
+    "headcount": "3000+",
+    "source_vc": "IVP"
+  },
+  "newfront": {
+    "ats": "ashby",
+    "board": "newfront",
+    "name": "Newfront",
+    "careers_url": "https://jobs.ashbyhq.com/newfront",
+    "ai_focused": false,
+    "stage": "Series D",
+    "headcount": "500-1000",
+    "source_vc": "Y Combinator"
+  },
+  "niantic": {
+    "ats": "greenhouse",
+    "board": "niantic",
+    "name": "Niantic",
+    "careers_url": "https://job-boards.greenhouse.io/niantic",
+    "ai_focused": false,
+    "stage": "Series D+",
+    "headcount": "500+",
+    "source_vc": "Spark Capital"
+  },
+  "numeric": {
+    "ats": "ashby",
+    "board": "numeric",
+    "name": "Numeric",
+    "careers_url": "https://jobs.ashbyhq.com/numeric",
+    "ai_focused": false,
+    "stage": "Series B",
+    "headcount": "50-100",
+    "source_vc": "IVP"
+  },
+  "omnea": {
+    "ats": "ashby",
+    "board": "omnea",
+    "name": "Omnea",
+    "careers_url": "https://jobs.ashbyhq.com/omnea",
+    "ai_focused": true,
+    "stage": "Series B",
+    "headcount": "50-200",
+    "source_vc": "Khosla Ventures"
+  },
+  "osmo": {
+    "ats": "ashby",
+    "board": "osmo",
+    "name": "Osmo",
+    "careers_url": "https://jobs.ashbyhq.com/osmo",
+    "ai_focused": true,
+    "stage": "Series B",
+    "headcount": "50-100",
+    "source_vc": "Lux Capital"
+  },
+  "persona": {
+    "ats": "greenhouse",
+    "board": "persona",
+    "name": "Persona",
+    "careers_url": "https://withpersona.com/careers",
+    "ai_focused": false,
+    "stage": "Series D",
+    "headcount": "300-500",
+    "source_vc": "Founders Fund"
+  },
+  "physical-intelligence": {
+    "ats": "ashby",
+    "board": "physicalintelligence",
+    "name": "Physical Intelligence",
+    "careers_url": "https://jobs.ashbyhq.com/physicalintelligence",
+    "ai_focused": true,
+    "stage": "Series A",
+    "headcount": "11-50",
+    "source_vc": "Khosla Ventures"
+  },
+  "pigment": {
+    "ats": "lever",
+    "board": "pigment",
+    "name": "Pigment",
+    "careers_url": "https://jobs.lever.co/pigment",
+    "ai_focused": false,
+    "stage": "Series D",
+    "headcount": "500+",
+    "source_vc": "IVP"
+  },
+  "podium": {
+    "ats": "greenhouse",
+    "board": "podium81",
+    "name": "Podium",
+    "careers_url": "https://job-boards.greenhouse.io/podium81",
+    "ai_focused": true,
+    "stage": "Series D+",
+    "headcount": "1000-5000",
+    "source_vc": "Y Combinator"
+  },
+  "polyai": {
+    "ats": "greenhouse",
+    "board": "polyai",
+    "name": "PolyAI",
+    "careers_url": "https://job-boards.greenhouse.io/polyai",
+    "ai_focused": true,
+    "stage": "Series C",
+    "headcount": "100-300",
+    "source_vc": "Khosla Ventures"
+  },
+  "pulumi": {
+    "ats": "greenhouse",
+    "board": "pulumicorporation",
+    "name": "Pulumi",
+    "careers_url": "https://job-boards.greenhouse.io/pulumicorporation",
+    "ai_focused": false,
+    "stage": "Series C",
+    "headcount": "150-300",
+    "source_vc": "Madrona Ventures"
+  },
+  "qventus": {
+    "ats": "greenhouse",
+    "board": "qventus",
+    "name": "Qventus",
+    "careers_url": "https://job-boards.greenhouse.io/qventus",
+    "ai_focused": true,
+    "stage": "Series D",
+    "headcount": "100-200",
+    "source_vc": "Y Combinator"
+  },
+  "rad-ai": {
+    "ats": "ashby",
+    "board": "radai",
+    "name": "Rad AI",
+    "careers_url": "https://jobs.ashbyhq.com/radai",
+    "ai_focused": true,
+    "stage": "Series C",
+    "headcount": "100-200",
+    "source_vc": "Khosla Ventures"
+  },
+  "reka": {
+    "ats": "ashby",
+    "board": "reka",
+    "name": "Reka",
+    "careers_url": "https://jobs.ashbyhq.com/reka",
+    "ai_focused": true,
+    "stage": "Series B",
+    "headcount": "50-100",
+    "source_vc": "Radical Ventures"
+  },
+  "retool": {
+    "ats": "greenhouse",
+    "board": "retool",
+    "name": "Retool",
+    "careers_url": "https://job-boards.greenhouse.io/retool",
+    "ai_focused": false,
+    "stage": "Series D+",
+    "headcount": "200-500",
+    "source_vc": "Sequoia Capital"
+  },
+  "sakana-ai": {
+    "ats": null,
+    "board": null,
+    "name": "Sakana AI",
+    "careers_url": "https://sakana.ai/careers",
+    "ai_focused": true,
+    "stage": "Series A",
+    "headcount": "50-80",
+    "source_vc": "Lux Capital"
+  },
+  "samaya-ai": {
+    "ats": null,
+    "board": null,
+    "name": "Samaya AI",
+    "careers_url": "https://samaya.ai/careers",
+    "ai_focused": true,
+    "stage": "Series A",
+    "headcount": "30-60",
+    "source_vc": "Air Street Capital"
+  },
+  "scribe": {
+    "ats": "greenhouse",
+    "board": "scribehow",
+    "name": "Scribe",
+    "careers_url": "https://scribe.com/careers",
+    "ai_focused": true,
+    "stage": "Series C",
+    "headcount": "100-200",
+    "source_vc": "Amplify Partners"
+  },
+  "semgrep": {
+    "ats": "greenhouse",
+    "board": "semgrep",
+    "name": "Semgrep",
+    "careers_url": "https://job-boards.greenhouse.io/semgrep",
+    "ai_focused": false,
+    "stage": "Series C",
+    "headcount": "100-200",
+    "source_vc": "Felicis Ventures"
+  },
+  "stoke-space": {
+    "ats": "greenhouse",
+    "board": "stokespacetechnologies",
+    "name": "Stoke Space",
+    "careers_url": "https://boards.greenhouse.io/embed/job_board?for=stokespacetechnologies",
+    "ai_focused": false,
+    "stage": "Series B",
+    "headcount": "100-300",
+    "source_vc": "Spark Capital"
+  },
+  "stord": {
+    "ats": "greenhouse",
+    "board": "stord21",
+    "name": "Stord",
+    "careers_url": "https://boards.greenhouse.io/stord21",
+    "ai_focused": false,
+    "stage": "Series E",
+    "headcount": "200-500",
+    "source_vc": "Founders Fund"
+  },
+  "synthesia": {
+    "ats": "ashby",
+    "board": "synthesia",
+    "name": "Synthesia",
+    "careers_url": "https://jobs.ashbyhq.com/synthesia",
+    "ai_focused": true,
+    "stage": "Series D",
+    "headcount": "500+",
+    "source_vc": "Air Street Capital"
+  },
+  "tennr": {
+    "ats": "ashby",
+    "board": "tennr",
+    "name": "Tennr",
+    "careers_url": "https://jobs.ashbyhq.com/tennr",
+    "ai_focused": true,
+    "stage": "Series C",
+    "headcount": "100-200",
+    "source_vc": "IVP"
+  },
+  "the-bot-company": {
+    "ats": "ashby",
+    "board": "thebotcompany",
+    "name": "The Bot Company",
+    "careers_url": "https://jobs.ashbyhq.com/thebotcompany",
+    "ai_focused": true,
+    "stage": "Series A",
+    "headcount": "50-100",
+    "source_vc": "Spark Capital"
+  },
+  "traba": {
+    "ats": "ashby",
+    "board": "traba",
+    "name": "Traba",
+    "careers_url": "https://jobs.ashbyhq.com/traba",
+    "ai_focused": true,
+    "stage": "Series A",
+    "headcount": "100-200",
+    "source_vc": "Founders Fund"
+  },
+  "tractable": {
+    "ats": null,
+    "board": null,
+    "name": "Tractable",
+    "careers_url": "https://tractable.ai/careers",
+    "ai_focused": true,
+    "stage": "Series D+",
+    "headcount": "200-500",
+    "source_vc": "Air Street Capital"
+  },
+  "twelve-labs": {
+    "ats": "ashby",
+    "board": "twelve-labs",
+    "name": "Twelve Labs",
+    "careers_url": "https://jobs.ashbyhq.com/twelve-labs",
+    "ai_focused": true,
+    "stage": "Series A",
+    "headcount": "50-100",
+    "source_vc": "Radical Ventures"
+  },
+  "varda-space-industries": {
+    "ats": "greenhouse",
+    "board": "vardaspace",
+    "name": "Varda Space Industries",
+    "careers_url": "https://job-boards.greenhouse.io/vardaspace",
+    "ai_focused": false,
+    "stage": "Series C",
+    "headcount": "50-100",
+    "source_vc": "Khosla Ventures"
+  },
+  "waabi": {
+    "ats": "lever",
+    "board": "waabi",
+    "name": "Waabi",
+    "careers_url": "https://jobs.lever.co/waabi",
+    "ai_focused": true,
+    "stage": "Series C",
+    "headcount": "200-400",
+    "source_vc": "Radical Ventures"
+  },
+  "alkira": {
+    "ats": null,
+    "board": null,
+    "name": "Alkira",
+    "careers_url": "https://www.alkira.com/careers/",
+    "ai_focused": false,
+    "stage": "Series C",
+    "headcount": "100-200",
+    "source_vc": "Sequoia Capital"
+  },
+  "bigpanda": {
+    "ats": null,
+    "board": null,
+    "name": "BigPanda",
+    "careers_url": "https://www.bigpanda.io/company/panda-way/jobs/",
+    "ai_focused": true,
+    "stage": "Series D",
+    "headcount": "100-200",
+    "source_vc": "Sequoia Capital"
+  },
+  "bigeye": {
+    "ats": null,
+    "board": null,
+    "name": "Bigeye",
+    "careers_url": "https://www.bigeye.com/careers",
+    "ai_focused": true,
+    "stage": "Series B",
+    "headcount": "50-100",
+    "source_vc": "Sequoia Capital"
+  },
+  "cato-networks": {
+    "ats": null,
+    "board": null,
+    "name": "Cato Networks",
+    "careers_url": "https://www.catonetworks.com/careers/",
+    "ai_focused": false,
+    "stage": "Series G+",
+    "headcount": "500+",
+    "source_vc": "Greylock"
+  },
+  "forward": {
+    "ats": null,
+    "board": null,
+    "name": "Forward",
+    "careers_url": "https://goforward.com/careers",
+    "ai_focused": false,
+    "stage": "Series E",
+    "headcount": "200-500",
+    "source_vc": "Khosla Ventures"
+  },
+  "freenome": {
+    "ats": null,
+    "board": null,
+    "name": "Freenome",
+    "careers_url": "https://www.freenome.com/careers",
+    "ai_focused": false,
+    "stage": "Series E",
+    "headcount": "200-500",
+    "source_vc": "Founders Fund"
+  },
+  "newlimit": {
+    "ats": null,
+    "board": null,
+    "name": "NewLimit",
+    "careers_url": "https://www.newlimit.com/careers",
+    "ai_focused": false,
+    "stage": "Series B",
+    "headcount": "11-50",
+    "source_vc": "Founders Fund"
+  },
+  "radiant-nuclear": {
+    "ats": null,
+    "board": null,
+    "name": "Radiant Nuclear",
+    "careers_url": "https://www.radiantnuclear.com/careers",
+    "ai_focused": false,
+    "stage": "Series C",
+    "headcount": "100-200",
+    "source_vc": "Founders Fund"
+  },
+  "synchron": {
+    "ats": null,
+    "board": null,
+    "name": "Synchron",
+    "careers_url": "https://synchron.com/careers",
+    "ai_focused": false,
+    "stage": "Series C",
+    "headcount": "100-200",
+    "source_vc": "Khosla Ventures"
+  },
+  "caldera": {
+    "ats": null,
+    "board": null,
+    "name": "Caldera",
+    "careers_url": "https://www.caldera.xyz/careers",
+    "ai_focused": false,
+    "stage": "Series A",
+    "headcount": "11-50",
+    "source_vc": "Founders Fund"
+  },
+  "sereact": {
+    "ats": null,
+    "board": null,
+    "name": "Sereact",
+    "careers_url": "https://sereact.ai/careers",
+    "ai_focused": true,
+    "stage": "Series A",
+    "headcount": "50-100",
+    "source_vc": "Air Street Capital"
+  },
+  "vizcom": {
+    "ats": null,
+    "board": null,
+    "name": "Vizcom",
+    "careers_url": "https://vizcom.com/careers",
+    "ai_focused": true,
+    "stage": "Series A",
+    "headcount": "20-50",
+    "source_vc": "Radical Ventures"
+  },
+  "eye-security": {
+    "ats": null,
+    "board": null,
+    "name": "Eye Security",
+    "careers_url": "https://www.eye.security/careers",
+    "ai_focused": false,
+    "stage": "Series C",
+    "headcount": "200-300",
+    "source_vc": "Bessemer Venture Partners"
+  },
+  "aiwyn": {
+    "ats": null,
+    "board": null,
+    "name": "Aiwyn",
+    "careers_url": "https://www.aiwyn.ai/careers",
+    "ai_focused": true,
+    "stage": "Series B",
+    "headcount": "50-100",
+    "source_vc": "Bessemer Venture Partners"
+  },
+  "sublime-security": {
+    "ats": null,
+    "board": null,
+    "name": "Sublime Security",
+    "careers_url": "https://careers.sublime.security",
+    "ai_focused": false,
+    "stage": "Series B",
+    "headcount": "50-100",
+    "source_vc": "IVP"
+  },
+  "recall-ai": {
+    "ats": null,
+    "board": null,
+    "name": "Recall.ai",
+    "careers_url": "https://www.recall.ai/careers",
+    "ai_focused": true,
+    "stage": "Series A",
+    "headcount": "11-50",
+    "source_vc": "Y Combinator"
+  },
+  "ataraxis": {
+    "ats": null,
+    "board": null,
+    "name": "Ataraxis",
+    "careers_url": "https://www.ataraxis.ai/careers",
+    "ai_focused": true,
+    "stage": "Series A",
+    "headcount": "11-50",
+    "source_vc": "Founders Fund"
+  },
+  "vivodyne": {
+    "ats": null,
+    "board": null,
+    "name": "Vivodyne",
+    "careers_url": "https://www.vivodyne.com/careers",
+    "ai_focused": true,
+    "stage": "Series A",
+    "headcount": "11-50",
+    "source_vc": "Khosla Ventures"
+  },
+  "basis": {
+    "ats": null,
+    "board": null,
+    "name": "Basis",
+    "careers_url": "https://www.getbasis.ai/careers",
+    "ai_focused": true,
+    "stage": "Series A",
+    "headcount": "11-50",
+    "source_vc": "Khosla Ventures"
+  },
+  "eikon-therapeutics": {
+    "ats": null,
+    "board": null,
+    "name": "Eikon Therapeutics",
+    "careers_url": "https://eikontx.com/careers",
+    "ai_focused": false,
+    "stage": "Series C+",
+    "headcount": "200-300",
+    "source_vc": "Lux Capital"
+  },
+  "carbon": {
+    "ats": null,
+    "board": null,
+    "name": "Carbon",
+    "careers_url": "https://www.carbon3d.com/careers",
+    "ai_focused": false,
+    "stage": "Series E",
+    "headcount": "500-1000",
+    "source_vc": "Sequoia Capital"
+  },
+  "axiamatic": {
+    "ats": null,
+    "board": null,
+    "name": "Axiamatic",
+    "careers_url": "https://www.axiamatic.com/",
+    "ai_focused": true,
+    "stage": "Series A",
+    "headcount": "20-50",
+    "source_vc": "Greylock"
+  },
+  "venice": {
+    "ats": null,
+    "board": null,
+    "name": "Venice",
+    "careers_url": null,
+    "ai_focused": true,
+    "stage": "Series A",
+    "headcount": "11-50",
+    "source_vc": "IVP"
+  },
+  "genlogs": {
+    "ats": null,
+    "board": null,
+    "name": "GenLogs",
+    "careers_url": null,
+    "ai_focused": true,
+    "stage": "Series B",
+    "headcount": "50-100",
+    "source_vc": "IVP"
   }
 }
