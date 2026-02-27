@@ -402,9 +402,12 @@ class TestEmbeddings:
         results = store.search_similar(query_blob, k=2)
         assert len(results) == 2
         # First result should be the closer one (job 1)
-        assert results[0]["job_id"] == ids[0]
+        # job_id is the ATS string ("1"), id is the surrogate PK
+        assert results[0]["job_id"] == "1"
+        assert results[0]["id"] == ids[0]
         assert "distance" in results[0]
         assert "title" in results[0]
+        assert "last_sync" in results[0]
 
     def test_search_similar_empty(self, store):
         """search_similar returns empty list when no embeddings exist."""
@@ -412,6 +415,94 @@ class TestEmbeddings:
         query_blob = struct.pack(f"<1536f", *query_vec)
         results = store.search_similar(query_blob, k=5)
         assert results == []
+
+    def test_search_similar_filtered_by_company(self, store):
+        """search_similar_filtered respects company filter."""
+        store.upsert_jobs("acme", [_make_job("1", "PM", "Seattle", description="Lead product.")])
+        store.upsert_jobs("beta", [_make_job("2", "PM", "Seattle", description="Lead product.")])
+        for slug, jid in [("acme", "1"), ("beta", "2")]:
+            store.conn.execute(
+                "UPDATE jobs SET description_stripped = 'stripped' WHERE company_slug = ? AND job_id = ?",
+                (slug, jid),
+            )
+        store.conn.commit()
+
+        vec = [0.1] * 1536
+        blob = struct.pack(f"<1536f", *vec)
+        for jid_str in ["1", "2"]:
+            row = store.conn.execute("SELECT id FROM jobs WHERE job_id = ?", (jid_str,)).fetchone()
+            store.store_embedding(row["id"], blob)
+
+        query_blob = struct.pack(f"<1536f", *vec)
+        results = store.search_similar_filtered(query_blob, company="acme", k=10)
+        assert len(results) == 1
+        assert results[0]["company_slug"] == "acme"
+
+    def test_search_similar_filtered_by_title(self, store):
+        """search_similar_filtered respects title filter."""
+        ids = self._insert_jobs_with_stripped(store, "AI engineer desc", "Marketing mgr desc")
+        # Set distinct titles
+        store.conn.execute("UPDATE jobs SET title = 'AI Engineer' WHERE job_id = '1'")
+        store.conn.execute("UPDATE jobs SET title = 'Marketing Manager' WHERE job_id = '2'")
+        store.conn.commit()
+
+        vec = [0.1] * 1536
+        blob = struct.pack(f"<1536f", *vec)
+        for job_id in ids:
+            store.store_embedding(job_id, blob)
+
+        query_blob = struct.pack(f"<1536f", *vec)
+        results = store.search_similar_filtered(query_blob, title="engineer", k=10)
+        assert len(results) == 1
+        assert results[0]["title"] == "AI Engineer"
+
+    def test_search_similar_filtered_by_location(self, store):
+        """search_similar_filtered respects location filter."""
+        ids = self._insert_jobs_with_stripped(store, "desc A", "desc B")
+        store.conn.execute("UPDATE jobs SET location = 'Seattle, WA' WHERE job_id = '1'")
+        store.conn.execute("UPDATE jobs SET location = 'Remote' WHERE job_id = '2'")
+        store.conn.commit()
+
+        vec = [0.1] * 1536
+        blob = struct.pack(f"<1536f", *vec)
+        for job_id in ids:
+            store.store_embedding(job_id, blob)
+
+        query_blob = struct.pack(f"<1536f", *vec)
+        results = store.search_similar_filtered(query_blob, location="remote", k=10)
+        assert len(results) == 1
+        assert results[0]["location"] == "Remote"
+
+    def test_search_similar_filtered_excludes_disappeared(self, store):
+        """search_similar_filtered excludes disappeared jobs."""
+        ids = self._insert_jobs_with_stripped(store, "desc A")
+        vec = [0.1] * 1536
+        blob = struct.pack(f"<1536f", *vec)
+        store.store_embedding(ids[0], blob)
+
+        # Disappear the job
+        store.upsert_jobs("acme", [])
+
+        query_blob = struct.pack(f"<1536f", *vec)
+        results = store.search_similar_filtered(query_blob, k=10)
+        assert len(results) == 0
+
+    def test_search_similar_filtered_returns_correct_columns(self, store):
+        """search_similar_filtered returns j.* columns (job_id as ATS string, id as surrogate)."""
+        ids = self._insert_jobs_with_stripped(store, "desc A")
+        vec = [0.1] * 1536
+        blob = struct.pack(f"<1536f", *vec)
+        store.store_embedding(ids[0], blob)
+
+        query_blob = struct.pack(f"<1536f", *vec)
+        results = store.search_similar_filtered(query_blob, k=10)
+        assert len(results) == 1
+        row = results[0]
+        assert row["job_id"] == "1"  # ATS string, not surrogate PK
+        assert row["id"] == ids[0]   # surrogate PK
+        assert "distance" in row
+        assert "last_sync" in row
+        assert "company_slug" in row
 
     def test_check_constraint_rejects_empty_stripped_description(self, store):
         """DB CHECK constraint prevents description_stripped='' from being stored.

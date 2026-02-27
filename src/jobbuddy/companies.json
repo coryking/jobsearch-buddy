@@ -2263,8 +2263,8 @@
     }
   },
   "airops": {
-    "ats": null,
-    "board": null,
+    "ats": "ashby",
+    "board": "airops",
     "name": "AirOps",
     "metadata": {
       "stage": "Series B",
@@ -3079,8 +3079,8 @@
     }
   },
   "samaya-ai": {
-    "ats": null,
-    "board": null,
+    "ats": "greenhouse",
+    "board": "samayaai",
     "name": "Samaya AI",
     "metadata": {
       "stage": "Series A",
@@ -3307,8 +3307,8 @@
     }
   },
   "newlimit": {
-    "ats": null,
-    "board": null,
+    "ats": "greenhouse",
+    "board": "newlimit",
     "name": "NewLimit",
     "metadata": {
       "stage": "Series B",
@@ -3331,8 +3331,8 @@
     }
   },
   "synchron": {
-    "ats": null,
-    "board": null,
+    "ats": "greenhouse",
+    "board": "synchron",
     "name": "Synchron",
     "metadata": {
       "stage": "Series C",
@@ -3379,8 +3379,8 @@
     }
   },
   "eye-security": {
-    "ats": null,
-    "board": null,
+    "ats": "ashby",
+    "board": "eye-security",
     "name": "Eye Security",
     "metadata": {
       "stage": "Series C",
@@ -3415,8 +3415,8 @@
     }
   },
   "recall-ai": {
-    "ats": null,
-    "board": null,
+    "ats": "ashby",
+    "board": "Recall",
     "name": "Recall.ai",
     "metadata": {
       "stage": "Series A",
@@ -3475,8 +3475,8 @@
     }
   },
   "carbon": {
-    "ats": null,
-    "board": null,
+    "ats": "greenhouse",
+    "board": "carbon",
     "name": "Carbon",
     "metadata": {
       "stage": "Series E",

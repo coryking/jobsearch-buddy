@@ -22,7 +22,7 @@ def create_app() -> Flask:
 
         if query:
             try:
-                raw = vs.search(query)
+                raw = vs.search(query=query)
                 for r in raw:
                     results.append({
                         "score": round(r.score * 100, 1),

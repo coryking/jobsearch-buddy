@@ -42,7 +42,7 @@ mcp = FastMCP(
         "or user pastes a job listing URL.\n\n"
         "Tool routing:\n"
         "- Search/browse jobs (any or all companies) → search_jobs (reads from local cache)\n"
-        "- Meaning-based / 'find me jobs like...' / vague descriptions → semantic_search_jobs\n"
+        "- Meaning-based / 'find me jobs like...' / vague descriptions → search_jobs with query param\n"
         "- Job URL to read details → get_job_post_details (live fetch)\n"
         "- Record application (URL or company+job_id) → log_job_application (live fetch)\n"
         "- Freeform activity (recruiter call, interview, referral, no job_id) → log_job_activity\n"
@@ -242,13 +242,18 @@ def search_jobs(
     company: Annotated[str, Field(default="", description="Company name or slug. Omit to search across ALL cached companies.")] = "",
     title_filter: Annotated[str, Field(default="", description="Case-insensitive substring match on job title. Comma-separated for OR (e.g. 'product manager,PM', 'senior engineer'). Uses SQL LIKE, not regex.")] = "",
     location_filter: Annotated[str, Field(default="", description="Case-insensitive substring match on location. Comma-separated for OR (e.g. 'seattle,remote', 'new york,NYC'). Uses SQL LIKE, not regex.")] = "",
+    query: Annotated[str, Field(default="", description="Natural language query to search job descriptions by meaning (e.g. 'kubernetes security', 'ML infrastructure'). When provided, results are ranked by semantic similarity. Combinable with company/title/location filters.")] = "",
 ) -> str:
     """Search cached job listings across one or all companies. Data comes from a local SQLite
     cache populated by `jsb sync` — results are instant, no live API calls.
 
     Use when the user says "find jobs at", "any openings at", "show me roles at",
-    "what PM jobs does [company] have", "what PM jobs were posted this week",
-    "search for engineering roles", or any request to browse job listings.
+    "what PM jobs does [company] have", "find me jobs like...", describes a role vaguely,
+    or any request to browse or search job listings.
+
+    Without `query`: filters by company/title/location using keyword matching (SQL LIKE).
+    With `query`: ranks results by semantic similarity to the query text, optionally
+    filtered by company/title/location. Pass the user's words directly as the query.
 
     Company is optional — omit it to search across all ~100 cached companies.
     Filters use case-insensitive substring matching (SQL LIKE), not regex.
@@ -259,8 +264,8 @@ def search_jobs(
     all companies (sorted newest first). If cache is empty, tells user to run `jsb sync`.
 
     Returns the company registry if the company name isn't found."""
+    from jobbuddy.search import VectorSearch
     from jobbuddy.settings import get_settings
-    from jobbuddy.store import JobStore
 
     if not get_settings().db_path.exists():
         return "No cached job data. Run `jsb sync` in the terminal to populate the cache."
@@ -274,32 +279,43 @@ def search_jobs(
             return f"Error: Unknown company '{company}'. Registered companies: {', '.join(c.name for c in companies.values())}"
         company_slug = resolved.slug
 
-    store = JobStore()
+    limit = 100 if not company_slug else 500
+
+    search = VectorSearch()
     try:
-        limit = 100 if not company_slug else 500
-        rows = store.query_jobs(
+        results = search.search(
+            query=query or None,
             company=company_slug,
             title=title_filter or None,
             location=location_filter or None,
             limit=limit,
         )
 
-        if not rows:
+        if not results:
             filters = []
             if title_filter:
                 filters.append(f"title='{title_filter}'")
             if location_filter:
                 filters.append(f"location='{location_filter}'")
+            if query:
+                filters.append(f"query='{query}'")
             filter_desc = f" matching {', '.join(filters)}" if filters else ""
             scope = company_slug or "any company"
             return f"No cached jobs found for {scope}{filter_desc}. Try running `jsb sync` to refresh."
+
+        rows = []
+        for result in results:
+            row = dict(result.job)
+            if result.score is not None:
+                row["distance"] = 1.0 - result.score
+            rows.append(row)
 
         registry = list_companies()
         log_entries = read_log()
 
         return JobSearchResults.from_query(rows, registry, log_entries, company_slug=company_slug).to_mcp_result()
     finally:
-        store.close()
+        search.close()
 
 
 @mcp.tool
@@ -308,40 +324,10 @@ def semantic_search_jobs(
     limit: Annotated[int, Field(default=20, description="Max results (default 20)")] = 20,
     model: Annotated[str, Field(default="text3small", description="Embedding model key (ignored, kept for backwards compat)")] = "text3small",
 ) -> str:
-    """Find jobs by meaning rather than keywords. Uses vector similarity over job descriptions.
+    """Deprecated: use search_jobs with the `query` parameter instead.
 
-    Use when the user says "find me jobs like...", describes a role vaguely, or wants
-    conceptual matching rather than exact title/location filtering. Complements search_jobs
-    (which does keyword matching). Requires descriptions in the cache — only works for
-    companies whose ATS returns descriptions during sync (Greenhouse, Ashby, Lever, Rippling, Paylocity).
-
-    Pass the user's natural language query directly — do not rewrite it."""
-    from jobbuddy.search import VectorSearch
-    from jobbuddy.settings import get_settings
-
-    if not get_settings().db_path.exists():
-        return "No cached job data. Run `jsb sync` in the terminal to populate the cache."
-
-    search = VectorSearch()
-    try:
-        results = search.search(query, limit=limit)
-
-        if not results:
-            return "No semantic matches found. Descriptions may not be cached yet — try running `jsb sync` to populate."
-
-        # Convert SearchResult objects to dicts compatible with JobSearchResults.from_query()
-        rows = []
-        for result in results:
-            row = dict(result.job)
-            row["distance"] = (1 - result.score) * 2
-            rows.append(row)
-
-        registry = list_companies()
-        log_entries = read_log()
-
-        return JobSearchResults.from_query(rows, registry, log_entries).to_mcp_result()
-    finally:
-        search.close()
+    Kept for backwards compatibility with existing MCP clients."""
+    return search_jobs(query=query)
 
 
 @mcp.tool

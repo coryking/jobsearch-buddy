@@ -541,17 +541,71 @@ class JobStore:
     def search_similar(self, query_embedding: bytes, k: int = 25) -> list[dict]:
         """KNN search via sqlite-vec, returns job dicts with distance score."""
         rows = self.conn.execute("""
-            SELECT v.job_id, v.distance,
-                   j.company_slug, j.job_id as ats_job_id, j.title,
-                   j.location, j.url, j.description, j.department,
-                   j.team, j.salary, j.published_at, j.ats_metadata,
-                   j.disappeared_at
+            SELECT v.distance,
+                   j.*, s.last_sync
             FROM vec_jobs v
             JOIN jobs j ON j.id = v.job_id
+            LEFT JOIN sync_status s ON j.company_slug = s.company_slug
             WHERE v.embedding MATCH ?
               AND v.k = ?
+              AND j.disappeared_at IS NULL
             ORDER BY v.distance
         """, (query_embedding, k)).fetchall()
+        return [dict(r) for r in rows]
+
+    def search_similar_filtered(
+        self,
+        query_embedding: bytes,
+        *,
+        company: str | None = None,
+        title: str | None = None,
+        location: str | None = None,
+        k: int = 25,
+    ) -> list[dict]:
+        """KNN search with post-filters on company/title/location.
+
+        Oversamples by 4x to compensate for post-filter attrition, then
+        applies filters and returns up to `k` results.
+        """
+        oversample = k * 4
+        conditions = ["j.disappeared_at IS NULL"]
+        params: list = [query_embedding, oversample]
+
+        if company:
+            conditions.append("j.company_slug = ?")
+            params.append(company)
+
+        if title:
+            terms = [t.strip() for t in title.split(",") if t.strip()]
+            if terms:
+                or_clauses = ["j.title LIKE ? COLLATE NOCASE"] * len(terms)
+                conditions.append(f"({' OR '.join(or_clauses)})")
+                params.extend(f"%{t}%" for t in terms)
+
+        if location:
+            terms = [t.strip() for t in location.split(",") if t.strip()]
+            if terms:
+                or_clauses = ["j.location LIKE ? COLLATE NOCASE"] * len(terms)
+                conditions.append(f"({' OR '.join(or_clauses)})")
+                params.extend(f"%{t}%" for t in terms)
+
+        params.append(k)
+        where = " AND ".join(conditions)
+
+        sql = f"""
+            SELECT v.distance,
+                   j.*, s.last_sync
+            FROM vec_jobs v
+            JOIN jobs j ON j.id = v.job_id
+            LEFT JOIN sync_status s ON j.company_slug = s.company_slug
+            WHERE v.embedding MATCH ?
+              AND v.k = ?
+              AND {where}
+            ORDER BY v.distance
+            LIMIT ?
+        """
+
+        rows = self.conn.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
 
     def _embedding_conditions(self, slugs: list[str] | None = None) -> tuple[str, list[str]]:
