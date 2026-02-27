@@ -26,12 +26,12 @@ class EmbedPhase(WorkerPhase["EmbedBatch"]):
     """
 
     def __init__(self, db_path: str | Path, *, display: PhaseState,
-                 max_workers: int = 1, slug: str | None = None,
+                 max_workers: int = 1, slugs: list[str] | None = None,
                  upstream_done: threading.Event | None = None):
         super().__init__(db_path, max_workers=max_workers, display=display,
                          upstream_done=upstream_done)
         self._batch_size = compute_batch_size()
-        self._slug = slug
+        self._slugs = slugs
 
     @property
     def batch_size(self) -> int:
@@ -46,11 +46,11 @@ class EmbedPhase(WorkerPhase["EmbedBatch"]):
         return f"batch of {len(item)} jobs ({', '.join(sorted(slugs))})"
 
     def count_remaining(self) -> int:
-        return self._get_reader().count_jobs_needing_embeddings(slug=self._slug)
+        return self._get_reader().count_jobs_needing_embeddings(slugs=self._slugs)
 
     def poll_work(self, batch_size: int) -> list[EmbedBatch]:
         """Return a single batch of jobs as a one-element list (one work unit)."""
-        jobs = self._get_reader().list_jobs_needing_embeddings(slug=self._slug, limit=batch_size)
+        jobs = self._get_reader().list_jobs_needing_embeddings(slugs=self._slugs, limit=batch_size)
         if not jobs:
             return []
         return [jobs]

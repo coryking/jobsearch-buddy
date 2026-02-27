@@ -99,7 +99,7 @@ def _run_fetch_with_events(fn, display_state):
 @app.command()
 def sync(
     phases: Optional[list[str]] = typer.Argument(None, help="Phases to run: fetch, enrich, strip, embed (default: all)"),
-    company: Optional[str] = typer.Option(None, "--company", "-c", help="Sync only this company"),
+    company: Optional[list[str]] = typer.Option(None, "--company", "-c", help="Sync specific companies (repeatable)"),
     stale: Optional[float] = typer.Option(None, "--stale", "-s", help="Skip companies synced within N hours"),
     force: bool = typer.Option(False, "--force", "-f", help="Re-strip already-stripped jobs (strip phase only)"),
 ):
@@ -150,14 +150,14 @@ def sync(
     if run_fetch:
         registry = list_companies()
         scrapeable = sum(1 for c in registry.values() if c.ats is not None)
-        target_count = 1 if company else scrapeable
+        target_count = len(company) if company else scrapeable
         state.fetch.start(target_count)
 
     with create_live(console, state, filter_phases=filter_phases):
         try:
             results = _run_fetch_with_events(
                 lambda events: sync_jobs(
-                    company_slug=company,
+                    company_slugs=company or None,
                     stale_hours=stale,
                     events=events,
                     display_state=state,

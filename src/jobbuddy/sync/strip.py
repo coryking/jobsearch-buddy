@@ -71,12 +71,12 @@ class StripPhase(WorkerPhase["StripWorkItem"]):
     """Strip boilerplate from job descriptions using an OpenAI-compatible LLM."""
 
     def __init__(self, db_path: str | Path, *, display: PhaseState,
-                 max_workers: int = 225, slug: str | None = None,
+                 max_workers: int = 225, slugs: list[str] | None = None,
                  upstream_done: threading.Event | None = None):
         super().__init__(db_path, max_workers=max_workers, display=display,
                          upstream_done=upstream_done)
         self._client: OpenAI | None = None
-        self._slug = slug
+        self._slugs = slugs
 
     def on_phase_start(self) -> None:
         self._client = create_openai_client(
@@ -96,10 +96,10 @@ class StripPhase(WorkerPhase["StripWorkItem"]):
         return f"{item['company_slug']}/{item['job_id']} ({item['title']})"
 
     def count_remaining(self) -> int:
-        return self._get_reader().count_jobs_needing_stripping(slug=self._slug)
+        return self._get_reader().count_jobs_needing_stripping(slugs=self._slugs)
 
     def poll_work(self, batch_size: int) -> list[StripWorkItem]:
-        return self._get_reader().get_jobs_needing_stripping(limit=batch_size, slug=self._slug)
+        return self._get_reader().get_jobs_needing_stripping(limit=batch_size, slugs=self._slugs)
 
     def process_item(self, item: StripWorkItem) -> None:
         assert self._client is not None  # set in on_phase_start()

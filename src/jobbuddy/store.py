@@ -420,29 +420,30 @@ class JobStore:
                 [(desc, slug, job_id) for job_id, desc in descs.items()],
             )
 
-    def _stripping_conditions(self, slug: str | None = None) -> tuple[str, list[str]]:
+    def _stripping_conditions(self, slugs: list[str] | None = None) -> tuple[str, list[str]]:
         conditions = [
             "description IS NOT NULL",
             "description_stripped IS NULL",
             "disappeared_at IS NULL",
         ]
         params: list[str] = []
-        if slug:
-            conditions.append("company_slug = ?")
-            params.append(slug)
+        if slugs:
+            placeholders = ", ".join("?" for _ in slugs)
+            conditions.append(f"company_slug IN ({placeholders})")
+            params.extend(slugs)
         return " AND ".join(conditions), params
 
-    def count_jobs_needing_stripping(self, *, slug: str | None = None) -> int:
+    def count_jobs_needing_stripping(self, *, slugs: list[str] | None = None) -> int:
         """Count active jobs with descriptions but no stripped version."""
-        where, params = self._stripping_conditions(slug)
+        where, params = self._stripping_conditions(slugs)
         row = self.conn.execute(
             f"SELECT COUNT(*) FROM jobs WHERE {where}", params
         ).fetchone()
         return row[0]
 
-    def get_jobs_needing_stripping(self, limit: int = 50, *, slug: str | None = None) -> list[StripWorkItem]:
+    def get_jobs_needing_stripping(self, limit: int = 50, *, slugs: list[str] | None = None) -> list[StripWorkItem]:
         """Return active jobs with descriptions but no stripped version."""
-        where, params = self._stripping_conditions(slug)
+        where, params = self._stripping_conditions(slugs)
         all_params: list[str | int] = list(params)
         all_params.append(limit)
         rows = self.conn.execute(
@@ -553,7 +554,7 @@ class JobStore:
         """, (query_embedding, k)).fetchall()
         return [dict(r) for r in rows]
 
-    def _embedding_conditions(self, slug: str | None = None) -> tuple[str, list[str]]:
+    def _embedding_conditions(self, slugs: list[str] | None = None) -> tuple[str, list[str]]:
         """WHERE clause for jobs needing embeddings: has stripped text, no embedding row."""
         conditions = [
             "j.description_stripped IS NOT NULL",
@@ -561,14 +562,15 @@ class JobStore:
             "e.job_id IS NULL",
         ]
         params: list[str] = []
-        if slug:
-            conditions.append("j.company_slug = ?")
-            params.append(slug)
+        if slugs:
+            placeholders = ", ".join("?" for _ in slugs)
+            conditions.append(f"j.company_slug IN ({placeholders})")
+            params.extend(slugs)
         return " AND ".join(conditions), params
 
-    def count_jobs_needing_embeddings(self, slug: str | None = None) -> int:
+    def count_jobs_needing_embeddings(self, slugs: list[str] | None = None) -> int:
         """Count jobs with stripped descriptions but no embedding."""
-        where, params = self._embedding_conditions(slug)
+        where, params = self._embedding_conditions(slugs)
         row = self.conn.execute(f"""
             SELECT COUNT(*) FROM jobs j
             LEFT JOIN job_embeddings e ON j.id = e.job_id
@@ -576,9 +578,9 @@ class JobStore:
         """, params).fetchone()
         return row[0]
 
-    def list_jobs_needing_embeddings(self, slug: str | None = None, limit: int = 0) -> list[EmbedWorkItem]:
+    def list_jobs_needing_embeddings(self, slugs: list[str] | None = None, limit: int = 0) -> list[EmbedWorkItem]:
         """Jobs with stripped descriptions but no embedding."""
-        where, params = self._embedding_conditions(slug)
+        where, params = self._embedding_conditions(slugs)
 
         sql = f"""
             SELECT j.id, j.company_slug, j.job_id, j.title,

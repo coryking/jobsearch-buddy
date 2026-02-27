@@ -54,7 +54,7 @@ class TestSync:
 
         db = tmp_path / "test.db"
         with patch("jobbuddy.sync.lookup_by_name", return_value=company):
-            results = sync_jobs(company_slug="acme", db_path=str(db))
+            results = sync_jobs(company_slugs=["acme"], db_path=str(db))
 
         assert len(results) == 1
         assert results[0].ok
@@ -123,14 +123,14 @@ class TestSync:
         """Syncing a non-existent company raises ValueError."""
         with patch("jobbuddy.sync.lookup_by_name", return_value=None):
             with pytest.raises(ValueError, match="Unknown company"):
-                sync_jobs(company_slug="nonexistent")
+                sync_jobs(company_slugs=["nonexistent"])
 
     def test_sync_no_ats_raises(self):
         """Syncing a company without ATS config raises ValueError."""
         company = Company(slug="noats", name="No ATS", ats=None, board=None)
         with patch("jobbuddy.sync.lookup_by_name", return_value=company):
             with pytest.raises(ValueError, match="No ATS configured"):
-                sync_jobs(company_slug="noats")
+                sync_jobs(company_slugs=["noats"])
 
     @patch("jobbuddy.sync.list_companies")
     @patch("jobbuddy.sync.fetch.get_fetcher")

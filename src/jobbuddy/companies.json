@@ -529,9 +529,11 @@
     "name": "Paylocity"
   },
   "paypal": {
-    "ats": null,
-    "board": null,
-    "name": "Paypal"
+    "ats": "workday",
+    "board": "jobs",
+    "name": "PayPal",
+    "wd_company": "paypal",
+    "wd_instance": 1
   },
   "perplexity": {
     "ats": "ashby",
@@ -1460,13 +1462,6 @@
     "wd_company": "target",
     "wd_instance": 5
   },
-  "paypal": {
-    "ats": "workday",
-    "board": "jobs",
-    "name": "PayPal",
-    "wd_company": "paypal",
-    "wd_instance": 1
-  },
   "dell": {
     "ats": "workday",
     "board": "External",
@@ -2024,5 +2019,85 @@
     "ats": "greenhouse",
     "board": "kalshi",
     "name": "Kalshi"
+  },
+  "decagon": {
+    "ats": "ashby",
+    "board": "decagon",
+    "name": "Decagon"
+  },
+  "reflection-ai": {
+    "ats": "ashby",
+    "board": "reflectionai",
+    "name": "Reflection AI"
+  },
+  "replicate": {
+    "ats": "ashby",
+    "board": "replicate",
+    "name": "Replicate"
+  },
+  "sierra-ai": {
+    "ats": "ashby",
+    "board": "sierra",
+    "name": "Sierra AI"
+  },
+  "ssi": {
+    "ats": null,
+    "board": null,
+    "name": "Safe Superintelligence"
+  },
+  "wandb": {
+    "ats": "lever",
+    "board": "wandb",
+    "name": "Weights & Biases"
+  },
+  "harness": {
+    "ats": "greenhouse",
+    "board": "harnessinc",
+    "name": "Harness"
+  },
+  "langchain": {
+    "ats": "ashby",
+    "board": "langchain",
+    "name": "LangChain"
+  },
+  "openevidence": {
+    "ats": "ashby",
+    "board": "openevidence",
+    "name": "OpenEvidence"
+  },
+  "hippocratic-ai": {
+    "ats": "ashby",
+    "board": "Hippocratic AI",
+    "name": "Hippocratic AI"
+  },
+  "dust": {
+    "ats": "ashby",
+    "board": "dust",
+    "name": "Dust"
+  },
+  "relevance-ai": {
+    "ats": "ashby",
+    "board": "relevanceai",
+    "name": "Relevance AI"
+  },
+  "adept-ai": {
+    "ats": "ashby",
+    "board": "adept.ai",
+    "name": "Adept AI"
+  },
+  "coda": {
+    "ats": "greenhouse",
+    "board": "coda",
+    "name": "Coda"
+  },
+  "encord": {
+    "ats": "lever",
+    "board": "CordTechnologies",
+    "name": "Encord"
+  },
+  "zed": {
+    "ats": null,
+    "board": null,
+    "name": "Zed"
   }
 }

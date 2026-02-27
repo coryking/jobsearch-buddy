@@ -46,7 +46,7 @@ VALID_PHASES = {"fetch", "enrich", "strip", "embed"}
 
 
 def sync_jobs(
-    company_slug: str | None = None,
+    company_slugs: list[str] | None = None,
     stale_hours: float | None = None,
     max_workers: int = 5,
     events: EventQueue | None = None,
@@ -64,7 +64,7 @@ def sync_jobs(
     for stub fetchers.
 
     Args:
-        company_slug: Sync only this company (None = all).
+        company_slugs: Sync only these companies (None = all).
         stale_hours: Skip companies synced within this many hours.
         max_workers: Thread pool size for fetch phase.
         events: Legacy event queue (kept for backward compatibility).
@@ -106,13 +106,15 @@ def sync_jobs(
 
     if "fetch" in run_phases:
         # Build target list (validate before opening DB)
-        if company_slug:
-            company = lookup_by_name(company_slug)
-            if not company:
-                raise ValueError(f"Unknown company: {company_slug}")
-            if not company.ats:
-                raise ValueError(f"No ATS configured for {company.name}")
-            targets = [company]
+        if company_slugs:
+            targets = []
+            for cs in company_slugs:
+                company = lookup_by_name(cs)
+                if not company:
+                    raise ValueError(f"Unknown company: {cs}")
+                if not company.ats:
+                    raise ValueError(f"No ATS configured for {company.name}")
+                targets.append(company)
         else:
             targets = [c for c in registry.values() if c.ats is not None]
 
@@ -142,12 +144,12 @@ def sync_jobs(
     else:
         events.put(Done())
         # When skipping fetch, build targets for enrich from registry
-        if company_slug:
-            company = lookup_by_name(company_slug)
-            if company and company.ats:
-                targets = [company]
-            else:
-                targets = []
+        if company_slugs:
+            targets = []
+            for cs in company_slugs:
+                company = lookup_by_name(cs)
+                if company and company.ats:
+                    targets.append(company)
         else:
             targets = [c for c in registry.values() if c.ats is not None]
 
@@ -193,7 +195,7 @@ def sync_jobs(
         strip_phase = StripPhase(
             db_path_str,
             display=display_state.strip,
-            slug=company_slug,
+            slugs=company_slugs,
             upstream_done=enrich_done,
         )
 
@@ -203,7 +205,7 @@ def sync_jobs(
         embed_phase = EmbedPhase(
             db_path_str,
             display=display_state.embed,
-            slug=company_slug,
+            slugs=company_slugs,
             upstream_done=strip_done,
         )
 
