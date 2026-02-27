@@ -141,7 +141,7 @@ def sync_jobs(
             store.close()
     else:
         events.put(Done())
-        # When skipping fetch, we still need targets for enrich
+        # When skipping fetch, build targets for enrich from registry
         if company_slug:
             company = lookup_by_name(company_slug)
             if company and company.ats:
@@ -150,6 +150,14 @@ def sync_jobs(
                 targets = []
         else:
             targets = [c for c in registry.values() if c.ats is not None]
+
+        # Discover stub-fetcher slugs so enrich can fill missing descriptions
+        if "enrich" in run_phases:
+            from jobbuddy.fetchers import has_descriptions_in_listing
+            slugs_to_embed = [
+                c.slug for c in targets
+                if c.ats and not has_descriptions_in_listing(c.ats)
+            ]
 
     # Phases 2-4: Enrich, strip, embed run concurrently.
     # Each phase polls the DB for work. upstream_done events chain them
