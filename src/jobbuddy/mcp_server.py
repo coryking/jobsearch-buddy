@@ -43,7 +43,7 @@ mcp = FastMCP(
         "Tool routing:\n"
         "- Search/browse jobs (any or all companies) → search_jobs (reads from local cache)\n"
         "- Meaning-based / 'find me jobs like...' / vague descriptions → search_jobs with query param\n"
-        "- Job URL to read details → get_job_post_details (live fetch)\n"
+        "- Job details (one or many, by company+job_id) → get_job_post_details (live fetch, parallel)\n"
         "- Record application (URL or company+job_id) → log_job_application (live fetch)\n"
         "- Freeform activity (recruiter call, interview, referral, no job_id) → log_job_activity\n"
         "- Review application history, contacts, and activity for any company → review_activity_log\n"
@@ -69,29 +69,61 @@ def _compact(d: dict) -> str:
 
 @mcp.tool
 def get_job_post_details(
-    url: Annotated[str, Field(default="", description="Job listing URL from a supported ATS platform")] = "",
-    company: Annotated[str, Field(default="", description="Company slug or name from ats://companies registry")] = "",
-    job_id: Annotated[str, Field(default="", description="ATS-specific job identifier (pair with company)")] = "",
-) -> CompactJob | str:
-    """Fetch full details of a job posting — title, salary, location, description, qualifications.
+    jobs: Annotated[str, Field(description=(
+        'JSON array of companies with job IDs to fetch. '
+        'Format: [{"company": "acme", "job_ids": ["123", "456"]}, {"company": "beta", "job_ids": ["789"]}]. '
+        'Company can be a slug or name from the registry. Fetches all jobs in parallel.'
+    ))],
+) -> str:
+    """Fetch full details of one or more job postings — title, salary, location, description.
 
-    Use when the user shares a job URL or says "what about this one", "what is this job",
-    "tell me about this role". Read-only — does not log. Use log_application to record.
-    Accepts a job board URL or company name + job ID."""
-    if url and (company or job_id):
-        return "Error: Provide url OR company+job_id, not both."
-    if not url and not (company and job_id):
-        return "Error: Provide either url or both company and job_id."
+    Use when the user shares job IDs from search results or says "tell me about these jobs",
+    "what about this one", "pull up details on these". Read-only — does not log.
+    Use log_job_application to record applications.
+
+    Accepts one or many companies, each with one or many job IDs. All fetches run in parallel."""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
 
     try:
-        if url:
-            result = fetch_from_url(url)
-        else:
-            result = fetch_by_id(company, job_id)
-    except ValueError as e:
-        return f"Error: {e}"
+        requests = json.loads(jobs)
+    except json.JSONDecodeError as e:
+        return f"Error: Invalid JSON in jobs parameter: {e}"
 
-    return CompactJob.from_result(result)
+    if not isinstance(requests, list) or not requests:
+        return "Error: jobs must be a non-empty JSON array."
+
+    # Build flat list of (company, job_id) pairs
+    work: list[tuple[str, str]] = []
+    for entry in requests:
+        company = entry.get("company", "")
+        job_ids = entry.get("job_ids", [])
+        if not company or not job_ids:
+            return f"Error: Each entry needs 'company' and 'job_ids'. Got: {entry}"
+        for jid in job_ids:
+            work.append((company, str(jid)))
+
+    def fetch_one(company_input: str, job_id: str) -> CompactJob | str:
+        try:
+            result = fetch_by_id(company_input, job_id)
+            return CompactJob.from_result(result)
+        except ValueError as e:
+            return f"Error fetching {company_input}/{job_id}: {e}"
+
+    results: list[dict | str] = [None] * len(work)  # type: ignore[list-item]
+    with ThreadPoolExecutor(max_workers=10) as pool:
+        futures = {
+            pool.submit(fetch_one, comp, jid): i
+            for i, (comp, jid) in enumerate(work)
+        }
+        for future in as_completed(futures):
+            idx = futures[future]
+            result = future.result()
+            if isinstance(result, CompactJob):
+                results[idx] = result.model_dump()
+            else:
+                results[idx] = {"error": result}
+
+    return json.dumps(results, indent=2, default=str)
 
 
 @mcp.tool
