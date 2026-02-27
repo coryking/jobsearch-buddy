@@ -20,7 +20,7 @@ This is a practical tool, not enterprise software. Bias toward shipping.
 src/jobbuddy/
 ├── cli/                # Typer CLI (jsb command), split into submodules
 │   ├── __init__.py     # Main Typer app, shared console
-│   ├── sync.py         # jsb sync, jsb strip, jsb embed commands
+│   ├── sync.py         # jsb sync command (phase-selective)
 │   ├── search.py       # jsb search, jsb list-jobs, jsb serve commands
 │   ├── jobs.py         # jsb save, jsb lookup, jsb companies commands
 │   └── log.py          # jsb log command
@@ -96,9 +96,7 @@ Skip TDD only for trivial changes (typos, config, display-only code).
 ## CLI Commands
 
 ```
-jsb sync [--company NAME] [--stale HOURS]   # Sync ATS boards into cache
-jsb strip [--force]                         # Strip boilerplate from descriptions
-jsb embed [--company NAME]                  # Generate embeddings for stripped descriptions
+jsb sync [PHASES...] [--company NAME] [--stale HOURS] [--force]  # Sync pipeline (phases: fetch, enrich, strip, embed)
 jsb list-jobs [company] [-f FILTER]         # List cached jobs
 jsb search [--title T] [--location L] [--company C]  # Search cache
 jsb companies                               # List registered companies
@@ -155,7 +153,7 @@ which provides: DB polling for work items, `ThreadPoolExecutor` parallelism,
 per-thread DB connections, graceful shutdown via `threading.Event`, and display
 state updates. Phases poll the database for unprocessed items, process them in
 worker threads, and write results back. This decouples phases — each can run
-independently via standalone CLI commands (`jsb strip`, `jsb embed`).
+independently via phase selection (`jsb sync strip`, `jsb sync embed`).
 
 **Rate limiting:** Embedding pacing uses `x-ratelimit-remaining-tokens` response
 headers. If your provider returns these headers, pacing activates automatically.

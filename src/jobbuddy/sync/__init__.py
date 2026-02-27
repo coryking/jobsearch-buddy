@@ -29,6 +29,8 @@ from jobbuddy.sync.types import (
     EventQueue,
     SyncResult,
 )
+
+__all__ = ["sync_jobs", "SyncResult", "VALID_PHASES"]
 from jobbuddy.sync.embed import EmbedPhase
 from jobbuddy.sync.enrich import EnrichPhase
 from jobbuddy.sync.fetch import FetchPhase
@@ -40,6 +42,9 @@ from jobbuddy.sync.strip import StripPhase
 # ---------------------------------------------------------------------------
 
 
+VALID_PHASES = {"fetch", "enrich", "strip", "embed"}
+
+
 def sync_jobs(
     company_slug: str | None = None,
     stale_hours: float | None = None,
@@ -47,6 +52,8 @@ def sync_jobs(
     events: EventQueue | None = None,
     db_path: Path | str | None = None,
     display_state: SyncDisplayState | None = None,
+    phases: set[str] | None = None,
+    force_strip: bool = False,
 ) -> list[SyncResult]:
     """Sync job listings from ATS boards into the SQLite cache.
 
@@ -63,8 +70,22 @@ def sync_jobs(
         events: Legacy event queue (kept for backward compatibility).
         db_path: Path to SQLite DB (None = default from settings).
         display_state: Shared display state for Rich Live TUI.
+        phases: Which phases to run (None = all). Must be subset of VALID_PHASES.
+        force_strip: Clear existing stripped descriptions before strip phase.
     """
     import random
+
+    # Resolve which phases to run
+    if phases is not None:
+        invalid = phases - VALID_PHASES
+        if invalid:
+            raise ValueError(
+                f"Invalid phase(s): {', '.join(sorted(invalid))}. "
+                f"Valid phases: {', '.join(sorted(VALID_PHASES))}"
+            )
+        run_phases = phases
+    else:
+        run_phases = VALID_PHASES
 
     if events is None:
         events = queue.SimpleQueue()
@@ -74,115 +95,147 @@ def sync_jobs(
 
     registry = list_companies()
 
-    # Build target list (validate before opening DB)
-    if company_slug:
-        company = lookup_by_name(company_slug)
-        if not company:
-            raise ValueError(f"Unknown company: {company_slug}")
-        if not company.ats:
-            raise ValueError(f"No ATS configured for {company.name}")
-        targets = [company]
-    else:
-        targets = [c for c in registry.values() if c.ats is not None]
-
     # Resolve DB path
     if db_path is None:
         db_path = get_settings().db_path
     db_path_str = str(db_path)
 
-    store = JobStore(db_path)
+    # Fetch phase: build targets and run
+    results: list[SyncResult] = []
+    slugs_to_embed: list[str] = []
 
-    try:
-        # Filter by staleness
-        if stale_hours is not None:
-            filtered = []
-            for c in targets:
-                if store.is_stale(c.slug, stale_hours):
-                    filtered.append(c)
-                else:
-                    events.put(CompanySkipped(c.slug, "recently synced"))
-            targets = filtered
+    if "fetch" in run_phases:
+        # Build target list (validate before opening DB)
+        if company_slug:
+            company = lookup_by_name(company_slug)
+            if not company:
+                raise ValueError(f"Unknown company: {company_slug}")
+            if not company.ats:
+                raise ValueError(f"No ATS configured for {company.name}")
+            targets = [company]
+        else:
+            targets = [c for c in registry.values() if c.ats is not None]
 
-        if not targets:
-            events.put(Done())
-            return []
+        store = JobStore(db_path)
+        try:
+            # Filter by staleness
+            if stale_hours is not None:
+                filtered = []
+                for c in targets:
+                    if store.is_stale(c.slug, stale_hours):
+                        filtered.append(c)
+                    else:
+                        events.put(CompanySkipped(c.slug, "recently synced"))
+                targets = filtered
 
-        # Shuffle to spread same-platform companies across time
-        random.shuffle(targets)
+            if not targets:
+                events.put(Done())
+                return []
 
-        # Phase 1: Fetch
-        results, slugs_to_embed = FetchPhase(store, targets, max_workers, events).run()
+            # Shuffle to spread same-platform companies across time
+            random.shuffle(targets)
 
-        # Phases 2-4: Enrich, strip, embed run concurrently.
-        # Each phase polls the DB for work. upstream_done events chain them
-        # so downstream phases keep polling until upstream finishes producing.
-        #   enrich_done → strip keeps polling for newly-enriched descriptions
-        #   strip_done  → embed keeps polling for newly-stripped descriptions
-        enrich_done = threading.Event()
-        strip_done = threading.Event()
-
-        settings = get_settings()
-        has_openai = settings.has_openai
-
-        # Build enrich phase (if any stub fetchers succeeded)
-        enrich_phase = None
-        if slugs_to_embed:
-            enrich_phase = EnrichPhase(
-                db_path_str,
-                slugs=slugs_to_embed,
-                targets=targets,
-                display=display_state.enrich,
-                max_workers=max_workers,
-            )
-
-        # Build strip phase (if OpenAI credentials configured)
-        strip_phase = None
-        if has_openai:
-            strip_phase = StripPhase(
-                db_path_str,
-                display=display_state.strip,
-                slug=company_slug,
-                upstream_done=enrich_done,
-            )
-
-        # Build embed phase (if OpenAI credentials configured)
-        embed_phase = None
-        if has_openai:
-            embed_phase = EmbedPhase(
-                db_path_str,
-                display=display_state.embed,
-                slug=company_slug,
-                upstream_done=strip_done,
-            )
-
-        def run_enrich() -> None:
-            try:
-                if enrich_phase:
-                    enrich_phase.run()
-            finally:
-                enrich_done.set()
-
-        def run_strip() -> None:
-            try:
-                if strip_phase:
-                    strip_phase.run()
-            finally:
-                strip_done.set()
-
-        def run_embed() -> None:
-            if embed_phase:
-                embed_phase.run()
-
-        threads: list[threading.Thread] = []
-        threads.append(threading.Thread(target=run_enrich, daemon=True))
-        threads.append(threading.Thread(target=run_strip, daemon=True))
-        threads.append(threading.Thread(target=run_embed, daemon=True))
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join()
-
+            # Phase 1: Fetch
+            results, slugs_to_embed = FetchPhase(store, targets, max_workers, events).run()
+        finally:
+            store.close()
+    else:
         events.put(Done())
-        return results
-    finally:
+        # When skipping fetch, we still need targets for enrich
+        if company_slug:
+            company = lookup_by_name(company_slug)
+            if company and company.ats:
+                targets = [company]
+            else:
+                targets = []
+        else:
+            targets = [c for c in registry.values() if c.ats is not None]
+
+    # Phases 2-4: Enrich, strip, embed run concurrently.
+    # Each phase polls the DB for work. upstream_done events chain them
+    # so downstream phases keep polling until upstream finishes producing.
+    #   enrich_done → strip keeps polling for newly-enriched descriptions
+    #   strip_done  → embed keeps polling for newly-stripped descriptions
+    enrich_done = threading.Event()
+    strip_done = threading.Event()
+
+    settings = get_settings()
+    has_openai = settings.has_openai
+
+    # Force-strip: clear existing stripped descriptions before strip phase
+    if force_strip and "strip" in run_phases:
+        store = JobStore(db_path)
+        store.clear_stripped_descriptions()
         store.close()
+
+    # Build enrich phase (if selected and any stub fetchers succeeded)
+    enrich_phase = None
+    if "enrich" in run_phases and slugs_to_embed:
+        enrich_phase = EnrichPhase(
+            db_path_str,
+            slugs=slugs_to_embed,
+            targets=targets,
+            display=display_state.enrich,
+            max_workers=max_workers,
+        )
+
+    # Build strip phase (if selected and OpenAI credentials configured)
+    strip_phase = None
+    if "strip" in run_phases and has_openai:
+        strip_phase = StripPhase(
+            db_path_str,
+            display=display_state.strip,
+            slug=company_slug,
+            upstream_done=enrich_done,
+        )
+
+    # Build embed phase (if selected and OpenAI credentials configured)
+    embed_phase = None
+    if "embed" in run_phases and has_openai:
+        embed_phase = EmbedPhase(
+            db_path_str,
+            display=display_state.embed,
+            slug=company_slug,
+            upstream_done=strip_done,
+        )
+
+    def run_enrich() -> None:
+        try:
+            if enrich_phase:
+                enrich_phase.run()
+        finally:
+            enrich_done.set()
+
+    def run_strip() -> None:
+        try:
+            if strip_phase:
+                strip_phase.run()
+        finally:
+            strip_done.set()
+
+    def run_embed() -> None:
+        if embed_phase:
+            embed_phase.run()
+
+    # If enrich is skipped, pre-set its done event so strip doesn't wait
+    if "enrich" not in run_phases:
+        enrich_done.set()
+
+    # If strip is skipped, pre-set its done event so embed doesn't wait
+    if "strip" not in run_phases:
+        strip_done.set()
+
+    threads: list[threading.Thread] = []
+    threads.append(threading.Thread(target=run_enrich, daemon=True))
+    threads.append(threading.Thread(target=run_strip, daemon=True))
+    threads.append(threading.Thread(target=run_embed, daemon=True))
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    # Signal fetch consumer that all phases are complete.
+    # (When fetch is skipped, Done was already sent above.)
+    if "fetch" in run_phases:
+        events.put(Done())
+    return results
