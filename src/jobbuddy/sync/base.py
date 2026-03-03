@@ -249,12 +249,15 @@ class WorkerPhase(ABC, Generic[T]):
             label = self.item_label(item)
             count = failures.get(key, 0) + 1
             failures[key] = count
+            detail = f"{type(e).__name__}: {e}"
+            if e.__cause__:
+                detail += f" (caused by {type(e.__cause__).__name__}: {e.__cause__})"
             if count >= self.MAX_RETRIES:
                 log.error("Giving up on %s after %d failures: %s",
-                          label, count, e)
+                          label, count, detail)
             else:
                 log.warning("Error in %s [%s] (attempt %d/%d): %s",
-                            type(self).__name__, label, count, self.MAX_RETRIES, e)
+                            type(self).__name__, label, count, self.MAX_RETRIES, detail)
                 self.display.record_error()
                 # Un-dispatch so the producer re-polls and retries this item
                 dispatched.discard(key)

@@ -10,6 +10,7 @@ dist/
 build/
 wheels/
 .claude/worktrees/
+.claude/tmp/
 .cursor/
 .pytest_cache/
 eval/data/

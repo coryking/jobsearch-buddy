@@ -3521,5 +3521,15 @@
       "careers_url": null,
       "headcount": "50-100"
     }
+  },
+  "inception-labs": {
+    "ats": null,
+    "board": null,
+    "name": "Inception Labs"
+  },
+  "parafin": {
+    "ats": "ashby",
+    "board": "parafin",
+    "name": "Parafin"
   }
 }
