@@ -11,6 +11,20 @@ from jobbuddy.registry import list_companies, lookup_by_name
 from jobbuddy.settings import get_settings
 
 
+def parse_since(value: str) -> str:
+    """Parse a human-friendly duration into an ISO date string.
+
+    Accepts: 24h, 3d, 1w, 2w, etc. Returns YYYY-MM-DD.
+    Raises typer.BadParameter on invalid input.
+    """
+    from jobbuddy.core import parse_duration_to_date
+
+    try:
+        return parse_duration_to_date(value)
+    except ValueError as e:
+        raise typer.BadParameter(str(e))
+
+
 @app.command()
 def companies():
     """List supported companies and their ATS configurations."""
@@ -28,9 +42,12 @@ def companies():
 def list_jobs(
     company: Optional[str] = typer.Argument(None, help="Company name or slug (omit for all cached jobs)"),
     filter: Optional[str] = typer.Option(None, "--filter", "-f", help="Case-insensitive substring filter on job title"),
+    since: Optional[str] = typer.Option(None, "--since", "-s", help="Only show jobs posted within this period (e.g. 24h, 3d, 1w, 2w)"),
 ):
     """List open jobs from cache. Omit company for all cached jobs."""
     from jobbuddy.store import JobStore
+
+    posted_after = parse_since(since) if since else None
 
     if not get_settings().db_path.exists():
         console.print("[yellow]No cached data. Run 'jsb sync' to populate.[/yellow]")
@@ -57,6 +74,7 @@ def list_jobs(
         rows = store.query_jobs(
             company=company_slug,
             title=filter,
+            posted_after=posted_after,
             limit=10000,
         )
     finally:
@@ -92,9 +110,12 @@ def search(
     title: Optional[str] = typer.Option(None, "--title", "-t", help="Title substring filter (comma-separated for OR)"),
     location: Optional[str] = typer.Option(None, "--location", "-l", help="Location substring filter (comma-separated for OR)"),
     company: Optional[str] = typer.Option(None, "--company", "-c", help="Company name or slug"),
+    since: Optional[str] = typer.Option(None, "--since", "-s", help="Only show jobs posted within this period (e.g. 24h, 3d, 1w, 2w)"),
 ):
     """Search cached jobs across all companies."""
     from jobbuddy.store import JobStore
+
+    posted_after = parse_since(since) if since else None
 
     if not get_settings().db_path.exists():
         console.print("[yellow]No cached data. Run 'jsb sync' to populate.[/yellow]")
@@ -114,6 +135,7 @@ def search(
             company=company_slug,
             title=title,
             location=location,
+            posted_after=posted_after,
             limit=500,
         )
     finally:

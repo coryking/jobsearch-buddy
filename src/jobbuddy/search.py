@@ -24,12 +24,13 @@ class VectorSearch:
         company: str | None = None,
         title: str | None = None,
         location: str | None = None,
+        posted_after: str | None = None,
         limit: int = 25,
     ) -> list[SearchResult]:
         """Unified search: semantic when query is provided, keyword filters otherwise.
 
         With query: embeds the query and does KNN search, optionally filtered
-        by company/title/location.
+        by company/title/location/posted_after.
         Without query: falls back to SQL LIKE filters via query_jobs().
         """
         if query:
@@ -40,6 +41,7 @@ class VectorSearch:
                 company=company,
                 title=title,
                 location=location,
+                posted_after=posted_after,
                 k=limit,
             )
             return [
@@ -51,6 +53,7 @@ class VectorSearch:
                 company=company,
                 title=title,
                 location=location,
+                posted_after=posted_after,
                 limit=limit,
             )
             return [SearchResult(score=None, job=row) for row in rows]

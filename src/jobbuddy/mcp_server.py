@@ -274,10 +274,14 @@ def search_jobs(
     company: Annotated[str, Field(default="", description="Company name or slug. Omit to search across ALL cached companies.")] = "",
     title_filter: Annotated[str, Field(default="", description="Case-insensitive substring match on job title. Comma-separated for OR (e.g. 'product manager,PM', 'senior engineer'). Uses SQL LIKE, not regex.")] = "",
     location_filter: Annotated[str, Field(default="", description="Case-insensitive substring match on location. Comma-separated for OR (e.g. 'seattle,remote', 'new york,NYC'). Uses SQL LIKE, not regex.")] = "",
+    since: Annotated[str, Field(default="", description="Only return jobs posted within this period. Examples: '24h' (last 24 hours), '3d' (3 days), '1w' (1 week), '2w' (2 weeks).")] = "",
     query: Annotated[str, Field(default="", description="Natural language query to search job descriptions by meaning (e.g. 'kubernetes security', 'ML infrastructure'). When provided, results are ranked by semantic similarity. Combinable with company/title/location filters.")] = "",
 ) -> str:
     """Search cached job listings across one or all companies. Data comes from a local SQLite
     cache populated by `jsb sync` — results are instant, no live API calls.
+
+    REQUIRED: You must provide either `title_filter` or `query` (or both). Browsing
+    without any search criteria is not supported — the cache has thousands of jobs.
 
     Use when the user says "find jobs at", "any openings at", "show me roles at",
     "what PM jobs does [company] have", "find me jobs like...", describes a role vaguely,
@@ -287,13 +291,17 @@ def search_jobs(
     With `query`: ranks results by semantic similarity to the query text, optionally
     filtered by company/title/location. Pass the user's words directly as the query.
 
+    If results exceed the max limit, the tool returns an error instead of truncating.
+    When this happens, narrow your search by adding filters: location_filter, since,
+    title_filter, or company. Do NOT just accept truncated results — refine the query.
+
     Company is optional — omit it to search across all ~100 cached companies.
     Filters use case-insensitive substring matching (SQL LIKE), not regex.
     Use commas for OR: title_filter="product manager,PM" matches either.
 
     Results include last_sync timestamp showing cache freshness, and "already applied"
-    markers cross-referenced with the application log. Max 100 results when searching
-    all companies (sorted newest first). If cache is empty, tells user to run `jsb sync`.
+    markers cross-referenced with the application log. If cache is empty, tells user
+    to run `jsb sync`.
 
     Returns the company registry if the company name isn't found."""
     from jobbuddy.search import VectorSearch
@@ -301,6 +309,14 @@ def search_jobs(
 
     if not get_settings().db_path.exists():
         return "No cached job data. Run `jsb sync` in the terminal to populate the cache."
+
+    # Require at least a title or semantic query
+    if not title_filter and not query:
+        return (
+            "Error: You must provide either `title_filter` or `query` (or both). "
+            "The cache has thousands of jobs — browsing without search criteria is not supported. "
+            "Examples: title_filter='product manager,PM' or query='ML infrastructure roles'."
+        )
 
     # Resolve company
     company_slug = None
@@ -311,16 +327,28 @@ def search_jobs(
             return f"Error: Unknown company '{company}'. Registered companies: {', '.join(c.name for c in companies.values())}"
         company_slug = resolved.slug
 
-    limit = 100 if not company_slug else 500
+    max_results = 100
 
     search = VectorSearch()
     try:
+        # Parse since duration
+        posted_after = None
+        if since:
+            from jobbuddy.core import parse_duration_to_date
+
+            try:
+                posted_after = parse_duration_to_date(since)
+            except ValueError:
+                return f"Error: Invalid 'since' value '{since}'. Use e.g. '24h', '3d', '1w', '2w'."
+
+        # Fetch one extra to detect overflow
         results = search.search(
             query=query or None,
             company=company_slug,
             title=title_filter or None,
             location=location_filter or None,
-            limit=limit,
+            posted_after=posted_after,
+            limit=max_results + 1,
         )
 
         if not results:
@@ -329,11 +357,42 @@ def search_jobs(
                 filters.append(f"title='{title_filter}'")
             if location_filter:
                 filters.append(f"location='{location_filter}'")
+            if since:
+                filters.append(f"since='{since}'")
             if query:
                 filters.append(f"query='{query}'")
             filter_desc = f" matching {', '.join(filters)}" if filters else ""
             scope = company_slug or "any company"
             return f"No cached jobs found for {scope}{filter_desc}. Try running `jsb sync` to refresh."
+
+        # Refuse to return silently truncated results
+        if len(results) > max_results:
+            current_filters = []
+            if company_slug:
+                current_filters.append(f"company='{company_slug}'")
+            if title_filter:
+                current_filters.append(f"title_filter='{title_filter}'")
+            if location_filter:
+                current_filters.append(f"location_filter='{location_filter}'")
+            if since:
+                current_filters.append(f"since='{since}'")
+            if query:
+                current_filters.append(f"query='{query}'")
+            suggestions = []
+            if not location_filter:
+                suggestions.append("location_filter (e.g. 'seattle,remote')")
+            if not since:
+                suggestions.append("since (e.g. '1w', '3d')")
+            if not company_slug:
+                suggestions.append("company")
+            if not title_filter and query:
+                suggestions.append("title_filter")
+            return (
+                f"Too many results (>{max_results}). Your query is too broad — "
+                f"narrow it down instead of accepting truncated results.\n"
+                f"Current filters: {', '.join(current_filters)}\n"
+                f"Try adding: {', '.join(suggestions)}"
+            )
 
         rows = []
         for result in results:

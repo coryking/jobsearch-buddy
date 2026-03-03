@@ -357,10 +357,16 @@ class JobStore:
         company: str | None = None,
         title: str | None = None,
         location: str | None = None,
+        posted_after: str | None = None,
         include_disappeared: bool = False,
         limit: int = 100,
     ) -> list[dict]:
-        """Query cached jobs with optional LIKE filters."""
+        """Query cached jobs with optional LIKE filters.
+
+        Args:
+            posted_after: ISO date string (YYYY-MM-DD). Only return jobs
+                published on or after this date.
+        """
         conditions = []
         params: list[str] = []
 
@@ -370,6 +376,10 @@ class JobStore:
         if company:
             conditions.append("j.company_slug = ?")
             params.append(company)
+
+        if posted_after:
+            conditions.append("j.published_at >= ?")
+            params.append(posted_after)
 
         if title:
             terms = [t.strip() for t in title.split(",") if t.strip()]
@@ -560,6 +570,7 @@ class JobStore:
         company: str | None = None,
         title: str | None = None,
         location: str | None = None,
+        posted_after: str | None = None,
         k: int = 25,
     ) -> list[dict]:
         """KNN search with post-filters on company/title/location.
@@ -574,6 +585,10 @@ class JobStore:
         if company:
             conditions.append("j.company_slug = ?")
             params.append(company)
+
+        if posted_after:
+            conditions.append("j.published_at >= ?")
+            params.append(posted_after)
 
         if title:
             terms = [t.strip() for t in title.split(",") if t.strip()]

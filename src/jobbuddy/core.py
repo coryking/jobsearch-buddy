@@ -6,7 +6,7 @@ No Rich/Typer dependencies.
 
 import logging
 import re
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +16,25 @@ from jobbuddy.fetchers import SUPPORTED_ATS_TYPES, create_fetcher, get_fetcher
 from jobbuddy.models import Company, FetchResult, Job, slugify
 from jobbuddy.registry import list_companies, lookup_by_board, lookup_by_name, lookup_by_slug, register_company
 from jobbuddy.url import parse_url
+
+
+def parse_duration_to_date(value: str) -> str:
+    """Parse a human-friendly duration into an ISO date string (YYYY-MM-DD).
+
+    Accepts: 24h, 3d, 1w, 2w, etc.
+    Raises ValueError on invalid input.
+    """
+    m = re.fullmatch(r"(\d+)\s*(h|d|w)", value.strip().lower())
+    if not m:
+        raise ValueError(f"Invalid duration '{value}'. Use e.g. 24h, 3d, 1w, 2w.")
+    n, unit = int(m.group(1)), m.group(2)
+    if unit == "h":
+        delta = timedelta(hours=n)
+    elif unit == "d":
+        delta = timedelta(days=n)
+    else:
+        delta = timedelta(weeks=n)
+    return (date.today() - delta).isoformat()
 
 
 def fetch_from_url(url: str) -> FetchResult:
