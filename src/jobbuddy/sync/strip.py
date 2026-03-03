@@ -84,7 +84,7 @@ class StripPhase(WorkerPhase["StripWorkItem"]):
             http_client=httpx.Client(
                 limits=httpx.Limits(
                     max_connections=self.max_workers,
-                    max_keepalive_connections=self.max_workers,
+                    max_keepalive_connections=20,
                 ),
             ),
         )
