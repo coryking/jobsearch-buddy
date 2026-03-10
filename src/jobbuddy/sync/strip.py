@@ -71,7 +71,7 @@ class StripPhase(WorkerPhase["StripWorkItem"]):
     """Strip boilerplate from job descriptions using an OpenAI-compatible LLM."""
 
     def __init__(self, db_path: str | Path, *, display: PhaseState,
-                 max_workers: int = 225, slugs: list[str] | None = None,
+                 max_workers: int = 30, slugs: list[str] | None = None,
                  upstream_done: threading.Event | None = None):
         super().__init__(db_path, max_workers=max_workers, display=display,
                          upstream_done=upstream_done)

@@ -172,6 +172,11 @@ def sync_jobs(
     settings = get_settings()
     has_openai = settings.has_openai
 
+    # Ensure schema/migrations run in the main thread before spawning
+    # phase threads — avoids race where multiple threads try to migrate
+    # simultaneously and hit "database is locked".
+    JobStore(db_path).close()
+
     # Force-strip: clear existing stripped descriptions before strip phase
     if force_strip and "strip" in run_phases:
         store = JobStore(db_path)
