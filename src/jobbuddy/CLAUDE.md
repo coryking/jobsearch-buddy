@@ -41,7 +41,8 @@ in `cli/`; FastMCP deps stay in `mcp_server.py`.
 
 Test the store and sync layers — they handle data that's expensive to re-scrape
 and easy to silently corrupt. Skip tests for CLI formatting, MCP descriptions,
-and other presentation-layer stuff.
+and other presentation-layer stuff. Tests use a dedicated PostgreSQL database
+(configured via `JOBBUDDY_PG_SERVICE` or defaulting to `job-search-buddy-remote`).
 
 ```bash
 uv run python -m pytest tests/ -v

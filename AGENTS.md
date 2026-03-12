@@ -7,9 +7,9 @@ CLAUDE.md points here. Read this before working on code.
 
 A command-line tool and MCP server for job searching: scrapes ATS job boards
 (Greenhouse, Ashby, Lever, Workday, Rippling, Paylocity, Workable, Eightfold,
-Oracle HCM), caches listings in SQLite, and exposes them via a FastMCP server
+Oracle HCM), caches listings in PostgreSQL, and exposes them via a FastMCP server
 for use with Claude Desktop or any MCP-compatible client. Semantic search uses
-OpenAI-compatible embeddings with sqlite-vec for KNN vector search.
+OpenAI-compatible embeddings with pgvector HNSW indexes.
 
 This is a practical tool, not enterprise software. Bias toward shipping.
 80% today beats 99% tomorrow.
@@ -26,8 +26,8 @@ src/jobbuddy/
 │   └── log.py          # jsb log command
 ├── mcp_server.py       # FastMCP server (jsb-mcp command)
 ├── core.py             # Shared logic: fetch, save, URL parsing (no sync)
-├── store.py            # JobStore class — SQLite + sqlite-vec (WAL mode, surrogate keys)
-├── search.py           # VectorSearch class — sqlite-vec KNN search
+├── store.py            # JobStore class — PostgreSQL + pgvector (surrogate keys)
+├── search.py           # VectorSearch class — pgvector HNSW search
 ├── embeddings.py       # OpenAI-compatible text-embedding-3-small (1536 dims)
 ├── settings.py         # pydantic-settings config (env vars, platformdirs paths)
 ├── registry.py         # Company registry + fuzzy name matching
@@ -61,7 +61,7 @@ src/jobbuddy/
 
 tests/
 ├── test_store.py       # JobStore: schema, upsert, embeddings, migrations
-├── test_search.py      # VectorSearch: ranking, limits, sqlite-vec KNN
+├── test_search.py      # VectorSearch: ranking, limits, pgvector HNSW
 ├── test_embeddings.py  # Serialize/deserialize, embed functions
 ├── test_sync.py        # Sync orchestration: phases, error isolation
 └── test_settings.py    # Settings: defaults, env var overrides, singleton
@@ -127,7 +127,7 @@ Override defaults with env vars (prefix `JOBBUDDY_`) or a `.env` file:
 | Setting                    | Env Var                              | Default                                    |
 |----------------------------|--------------------------------------|--------------------------------------------|
 | `data_dir`                 | `JOBBUDDY_DATA_DIR`                  | platformdirs `user_data_dir/data`          |
-| `db_path`                  | `JOBBUDDY_DB_PATH`                   | platformdirs `user_data_dir/jobs_cache.db` |
+| `pg_service`               | `JOBBUDDY_PG_SERVICE`                | `job-search-buddy-remote`                  |
 | `listings_dir`             | `JOBBUDDY_LISTINGS_DIR`              | platformdirs `user_data_dir/listings`      |
 | `openai_api_key`           | `JOBBUDDY_OPENAI_API_KEY`            | `None` *(enables strip/embed/search)*      |
 | `openai_base_url`          | `JOBBUDDY_OPENAI_BASE_URL`           | `None` *(omit for api.openai.com)*         |
@@ -169,8 +169,8 @@ sliding window of timestamps.
 
 - `core.py` raises `ValueError`; callers (CLI, MCP) handle presentation
 - CLI and MCP both call into `core.py` — shared logic, dual interface
-- All search reads from SQLite cache; only `jsb sync` touches the network
-- Tests use `:memory:` SQLite or `tmp_path` — fast, no real DB or network
+- All search reads from PostgreSQL cache; only `jsb sync` touches the network
+- Tests use a dedicated test PostgreSQL database — fast, no network
 
 See `docs/architecture.md` for detailed architecture documentation.
 See `src/jobbuddy/CLAUDE.md` for package-specific coding guidance.

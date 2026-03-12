@@ -11,9 +11,9 @@ Both call into `core.py`. Core raises `ValueError`; callers handle presentation.
 
 ## Data Access — JobStore
 
-`store.py` provides the `JobStore` class — a SQLite data access layer with WAL
-mode, surrogate keys, and sqlite-vec for vector search. All DB access goes through
-JobStore; no raw `conn` passing. Each `JobStore` instance owns a single `sqlite3`
+`store.py` provides the `JobStore` class — a PostgreSQL data access layer with
+surrogate keys and pgvector for vector search. All DB access goes through
+JobStore; no raw `conn` passing. Each `JobStore` instance owns a single `psycopg`
 connection; worker threads in the sync pipeline each create their own instance
 via `_get_thread_store()`.
 
@@ -31,21 +31,20 @@ via `_get_thread_store()`.
 ### Schema
 
 ```sql
-jobs             -- INTEGER PK (surrogate), UNIQUE(company_slug, job_id)
+jobs             -- SERIAL PK (surrogate), UNIQUE(company_slug, job_id)
                  --   title, location, url, published_at, salary, team,
                  --   department, description, description_stripped,
-                 --   ats_metadata, last_seen, disappeared_at
+                 --   ats_metadata (JSONB), embedding vector(1536),
+                 --   last_seen, disappeared_at
 sync_status      -- per-company last sync time and error state
-job_embeddings   -- job_id PK (FK to jobs.id), text_hash, embedding BLOB
 
--- sqlite-vec virtual table for KNN search
-vec_jobs         -- vec0 virtual table: job_id INTEGER PK,
-                 --   embedding float[1536] distance_metric=cosine
+-- HNSW index for vector similarity search
+idx_jobs_embedding  -- USING hnsw (embedding vector_cosine_ops)
 ```
 
 Single embedding model (text-embedding-3-small, 1536 dims).
-Embeddings are dual-written: `job_embeddings` stores the BLOB with `text_hash`
-for change tracking, `vec_jobs` indexes the same vector for KNN queries.
+Embeddings stored inline on the jobs table as `vector(1536)`.
+HNSW index enables filtered vector search without oversampling.
 
 ### Soft-Delete
 
@@ -56,16 +55,15 @@ disappeared jobs by default.
 ## Vector Search
 
 `search.py` provides the `VectorSearch` class — owns a `JobStore` and delegates
-to sqlite-vec for KNN search. Search consumers (web.py, mcp_server.py) create one.
+to pgvector for HNSW search. Search consumers (web.py, mcp_server.py) create one.
 
 Search flow:
 1. `embed_query(query)` → query vector via OpenAI-compatible text-embedding-3-small
-2. `serialize_f32(vector)` → little-endian bytes for sqlite-vec
-3. `store.search_similar(query_blob, k)` → KNN via `vec_jobs` virtual table
-4. Return ranked `SearchResult` list (score = 1.0 - cosine distance)
+2. `store.search_similar(vector, k)` → HNSW search via pgvector `<=>` operator
+3. Return ranked `SearchResult` list (score = 1.0 - cosine distance)
 
-Query latency is ~10-15ms for the sqlite-vec KNN step plus ~200ms for the
-embedding API call.
+HNSW indexes support native filtered search (e.g. by company or active status)
+without the oversampling workaround that sqlite-vec required.
 
 ### Embedding Model
 
@@ -76,8 +74,8 @@ embedding API call.
 | `text3small` | text-embedding-3-small | 1536 |
 
 Single model, no registry. `embed_texts()` handles batches (up to 2048 per API
-call), `embed_query()` handles single search queries. `serialize_f32()` /
-`deserialize_f32()` convert between float lists and BLOB bytes.
+call), `embed_query()` handles single search queries. pgvector handles
+serialization natively via psycopg.
 
 ## Sync Pipeline
 
@@ -146,7 +144,7 @@ descriptions in bulk listings. After sync, the enrich phase calls
 | Field | Default |
 |-------|---------|
 | `data_dir` | platformdirs `user_data_dir/data` |
-| `db_path` | platformdirs `user_data_dir/jobs_cache.db` |
+| `pg_service` | `job-search-buddy-remote` |
 | `listings_dir` | platformdirs `user_data_dir/listings` |
 | `openai_api_key` | `None` *(enables strip/embed/search)* |
 | `openai_base_url` | `None` *(omit for api.openai.com)* |
