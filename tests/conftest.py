@@ -28,6 +28,7 @@ def store():
     conn = psycopg.connect(TEST_CONNINFO, autocommit=True)
     conn.execute("DELETE FROM jobs")
     conn.execute("DELETE FROM sync_status")
+    conn.execute("DELETE FROM activity_log")
     conn.close()
 
     s = JobStore(TEST_CONNINFO)
@@ -38,6 +39,7 @@ def store():
     conn = psycopg.connect(TEST_CONNINFO, autocommit=True)
     conn.execute("DELETE FROM jobs")
     conn.execute("DELETE FROM sync_status")
+    conn.execute("DELETE FROM activity_log")
     conn.close()
 
 
@@ -51,6 +53,7 @@ def pg_conninfo():
     conn = psycopg.connect(TEST_CONNINFO, autocommit=True)
     conn.execute("DELETE FROM jobs")
     conn.execute("DELETE FROM sync_status")
+    conn.execute("DELETE FROM activity_log")
     conn.close()
 
     yield TEST_CONNINFO
@@ -59,4 +62,5 @@ def pg_conninfo():
     conn = psycopg.connect(TEST_CONNINFO, autocommit=True)
     conn.execute("DELETE FROM jobs")
     conn.execute("DELETE FROM sync_status")
+    conn.execute("DELETE FROM activity_log")
     conn.close()

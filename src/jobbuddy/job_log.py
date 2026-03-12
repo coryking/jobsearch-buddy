@@ -1,32 +1,22 @@
-"""CSV operations for data/job-search-log.csv."""
+"""Activity log operations — thin wrappers around JobStore.
 
-import csv
-from datetime import date
-from pathlib import Path
+All consumers (CLI, MCP) import from here and expect list[dict] back
+with keys: date, company, role, job_id, action, person, location, status, url, notes.
+"""
 
-def _log_path() -> Path:
-    from jobbuddy.settings import get_settings
-    return get_settings().data_dir / "job-search-log.csv"
+from jobbuddy.store import JobStore
 
 FIELDNAMES = ["date", "company", "role", "job_id", "action", "person", "location", "status", "url", "notes"]
 
 
-def ensure_log_exists() -> None:
-    """Create the CSV with headers if it doesn't exist."""
-    log_path = _log_path()
-    if not log_path.exists():
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(log_path, "w", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=FIELDNAMES)
-            writer.writeheader()
+def _store() -> JobStore:
+    return JobStore()
 
 
 def read_log() -> list[dict]:
-    """Read all rows from the job search log."""
-    ensure_log_exists()
-    with open(_log_path(), newline="") as f:
-        reader = csv.DictReader(f)
-        return list(reader)
+    """Read all rows from the activity log."""
+    with _store() as s:
+        return s.read_activity_log()
 
 
 def append_row(
@@ -42,45 +32,28 @@ def append_row(
     notes: str = "",
     row_date: str | None = None,
 ) -> dict:
-    """Append a row to the job search log. Returns the row dict."""
-    ensure_log_exists()
-    row = {
-        "date": row_date or date.today().isoformat(),
-        "company": company,
-        "role": role,
-        "job_id": job_id,
-        "action": action,
-        "person": person,
-        "location": location,
-        "status": status,
-        "url": url,
-        "notes": notes,
-    }
-    with open(_log_path(), "a", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=FIELDNAMES)
-        writer.writerow(row)
-    return row
+    """Append a row to the activity log. Returns the row dict."""
+    with _store() as s:
+        return s.append_activity(
+            company, role, action,
+            job_id=job_id, person=person, location=location,
+            status=status, url=url, notes=notes, row_date=row_date,
+        )
 
 
 def find_duplicates(url: str = "", company: str = "", role: str = "") -> list[dict]:
     """Find rows matching a URL, or company+role combo."""
-    rows = read_log()
-    matches = []
-    for row in rows:
-        if url and row.get("url", "").strip() == url.strip():
-            matches.append(row)
-        elif company and role and row.get("company", "").lower() == company.lower() and row.get("role", "").lower() == role.lower():
-            matches.append(row)
-    return matches
+    with _store() as s:
+        return s.find_activity_duplicates(url=url, company=company, role=role)
 
 
 def find_by_company(company: str) -> list[dict]:
     """Find all rows for a given company (case-insensitive)."""
-    rows = read_log()
-    return [r for r in rows if r.get("company", "").lower() == company.lower()]
+    with _store() as s:
+        return s.find_activity_by_company(company)
 
 
 def unique_companies() -> set[str]:
-    """Return deduplicated company names from the CSV log."""
-    rows = read_log()
-    return {r["company"] for r in rows if r.get("company")}
+    """Return deduplicated company names from the activity log."""
+    with _store() as s:
+        return s.unique_activity_companies()

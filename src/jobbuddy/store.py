@@ -126,6 +126,37 @@ class JobStore:
                 USING hnsw (embedding vector_cosine_ops)
         """)
 
+        # Activity log table
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS activity_log (
+                id          SERIAL PRIMARY KEY,
+                log_date    DATE NOT NULL DEFAULT CURRENT_DATE,
+                company     TEXT NOT NULL,
+                role        TEXT NOT NULL,
+                job_id      TEXT,
+                action      TEXT,
+                person      TEXT,
+                location    TEXT,
+                status      TEXT,
+                url         TEXT,
+                notes       TEXT
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_activity_log_url
+                ON activity_log (url) WHERE url IS NOT NULL
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_activity_log_company
+                ON activity_log (lower(company))
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_activity_log_date
+                ON activity_log (log_date DESC)
+        """)
+
+        self._migrate_csv_activity_log(conn)
+
     # -------------------------------------------------------------------
     # Jobs
     # -------------------------------------------------------------------
@@ -564,3 +595,147 @@ class JobStore:
         """Check if there are any jobs in the cache."""
         row = self.conn.execute("SELECT COUNT(*) as cnt FROM jobs").fetchone()
         return row["cnt"] > 0 if row else False
+
+    # -------------------------------------------------------------------
+    # Activity Log
+    # -------------------------------------------------------------------
+
+    _ACTIVITY_FIELDS = ["date", "company", "role", "job_id", "action", "person", "location", "status", "url", "notes"]
+
+    def _activity_row_to_dict(self, row: dict) -> dict:
+        """Convert a DB row to the consumer dict contract.
+
+        Keys match FIELDNAMES from the old CSV: date (not log_date),
+        and NULL → empty string for optional fields.
+        """
+        return {
+            "date": row["log_date"].isoformat() if row["log_date"] else "",
+            "company": row["company"] or "",
+            "role": row["role"] or "",
+            "job_id": row["job_id"] or "",
+            "action": row["action"] or "",
+            "person": row["person"] or "",
+            "location": row["location"] or "",
+            "status": row["status"] or "",
+            "url": row["url"] or "",
+            "notes": row["notes"] or "",
+        }
+
+    def append_activity(
+        self,
+        company: str,
+        role: str,
+        action: str,
+        *,
+        job_id: str = "",
+        person: str = "",
+        location: str = "",
+        status: str = "",
+        url: str = "",
+        notes: str = "",
+        row_date: str | None = None,
+    ) -> dict:
+        """Append an activity to the log. Returns the row dict."""
+        row = self.conn.execute(
+            """INSERT INTO activity_log
+               (log_date, company, role, job_id, action, person, location, status, url, notes)
+               VALUES (COALESCE(%s::date, CURRENT_DATE), %s, %s, NULLIF(%s,''), NULLIF(%s,''),
+                       NULLIF(%s,''), NULLIF(%s,''), NULLIF(%s,''), NULLIF(%s,''), NULLIF(%s,''))
+               RETURNING *""",
+            (row_date, company, role, job_id, action, person, location, status, url, notes),
+        ).fetchone()
+        return self._activity_row_to_dict(row)
+
+    def read_activity_log(self) -> list[dict]:
+        """Read all activity log rows, most recent first."""
+        rows = self.conn.execute(
+            "SELECT * FROM activity_log ORDER BY log_date DESC, id DESC"
+        ).fetchall()
+        return [self._activity_row_to_dict(r) for r in rows]
+
+    def find_activity_duplicates(
+        self, url: str = "", company: str = "", role: str = ""
+    ) -> list[dict]:
+        """Find rows matching a URL, or company+role combo."""
+        if url:
+            rows = self.conn.execute(
+                "SELECT * FROM activity_log WHERE url = %s ORDER BY log_date DESC, id DESC",
+                (url.strip(),),
+            ).fetchall()
+        elif company and role:
+            rows = self.conn.execute(
+                """SELECT * FROM activity_log
+                   WHERE lower(company) = lower(%s) AND lower(role) = lower(%s)
+                   ORDER BY log_date DESC, id DESC""",
+                (company, role),
+            ).fetchall()
+        else:
+            return []
+        return [self._activity_row_to_dict(r) for r in rows]
+
+    def find_activity_by_company(self, company: str) -> list[dict]:
+        """Find all activity rows for a company (case-insensitive)."""
+        rows = self.conn.execute(
+            """SELECT * FROM activity_log
+               WHERE lower(company) = lower(%s)
+               ORDER BY log_date DESC, id DESC""",
+            (company,),
+        ).fetchall()
+        return [self._activity_row_to_dict(r) for r in rows]
+
+    def unique_activity_companies(self) -> set[str]:
+        """Return deduplicated company names from the activity log."""
+        rows = self.conn.execute(
+            "SELECT DISTINCT company FROM activity_log WHERE company != ''"
+        ).fetchall()
+        return {r["company"] for r in rows}
+
+    # -------------------------------------------------------------------
+    # CSV Migration
+    # -------------------------------------------------------------------
+
+    def _migrate_csv_activity_log(self, conn: psycopg.Connection) -> None:
+        """Auto-migrate old CSV activity log into PostgreSQL if table is empty."""
+        row = conn.execute("SELECT COUNT(*) AS cnt FROM activity_log").fetchone()
+        if row["cnt"] > 0:
+            return
+
+        try:
+            from jobbuddy.settings import get_settings
+            csv_path = get_settings().data_dir / "job-search-log.csv"
+        except Exception:
+            return
+
+        if not csv_path.exists():
+            return
+
+        import csv
+        try:
+            with open(csv_path, newline="") as f:
+                reader = csv.DictReader(f)
+                count = 0
+                for r in reader:
+                    conn.execute(
+                        """INSERT INTO activity_log
+                           (log_date, company, role, job_id, action, person, location, status, url, notes)
+                           VALUES (COALESCE(NULLIF(%s,'')::date, CURRENT_DATE), %s, %s,
+                                   NULLIF(%s,''), NULLIF(%s,''), NULLIF(%s,''),
+                                   NULLIF(%s,''), NULLIF(%s,''), NULLIF(%s,''), NULLIF(%s,''))""",
+                        (
+                            r.get("date", ""),
+                            r.get("company", ""),
+                            r.get("role", ""),
+                            r.get("job_id", ""),
+                            r.get("action", ""),
+                            r.get("person", ""),
+                            r.get("location", ""),
+                            r.get("status", ""),
+                            r.get("url", ""),
+                            r.get("notes", ""),
+                        ),
+                    )
+                    count += 1
+                if count:
+                    log.info("Migrated %d rows from CSV activity log to PostgreSQL", count)
+        except Exception as e:
+            log.warning("CSV activity log migration failed: %s", e)
