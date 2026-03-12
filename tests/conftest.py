@@ -7,7 +7,7 @@ from psycopg.rows import dict_row
 
 from jobbuddy.store import JobStore
 
-TEST_CONNINFO = "service=job-search-buddy-remote"
+TEST_CONNINFO = "service=job-search-buddy-test"
 
 
 @pytest.fixture(scope="session", autouse=True)
