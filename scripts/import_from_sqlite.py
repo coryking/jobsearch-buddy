@@ -34,10 +34,7 @@ def run(sqlite_path: str, pg_conninfo: str) -> None:
     dst = psycopg.connect(pg_conninfo, autocommit=True)
     register_vector(dst)
 
-    # Ensure schema exists
-    from jobbuddy.store import JobStore
-    store = JobStore(pg_conninfo)
-    store.close()
+    # NOTE: run `jsb migrate` before this script to ensure schema is up to date
 
     # Wipe jobs + sync_status only (CASCADE handles FK ordering)
     print("Truncating jobs + sync_status...", flush=True)
@@ -53,7 +50,8 @@ def run(sqlite_path: str, pg_conninfo: str) -> None:
             """INSERT INTO sync_status (company_slug, last_sync, job_count, error)
                VALUES (%s, %s, %s, %s)
                ON CONFLICT (company_slug) DO NOTHING""",
-            [(r["company_slug"], r["last_sync"], r["job_count"], r.get("error"))
+            [(r["company_slug"], r["last_sync"], r["job_count"],
+              r["error"] if "error" in r.keys() else None)
              for r in sync_rows],
         )
 

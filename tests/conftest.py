@@ -12,9 +12,12 @@ TEST_CONNINFO = "service=job-search-buddy-test"
 
 @pytest.fixture(scope="session", autouse=True)
 def ensure_pg_schema():
-    """Create schema once per test session."""
-    store = JobStore(TEST_CONNINFO)
-    store.close()
+    """Apply migrations once per test session."""
+    from jobbuddy.migrations import apply_migrations
+
+    conn = psycopg.connect(TEST_CONNINFO, autocommit=True)
+    apply_migrations(conn)
+    conn.close()
 
 
 @pytest.fixture

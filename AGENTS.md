@@ -76,6 +76,7 @@ docs/
 ```bash
 uv sync                          # Install dependencies
 uv run python -m pytest tests/ -v  # Run tests
+jsb migrate                      # Apply pending database migrations
 jsb --help                       # CLI help
 jsb-mcp                          # Run MCP server
 ```
@@ -96,6 +97,7 @@ Skip TDD only for trivial changes (typos, config, display-only code).
 ## CLI Commands
 
 ```
+jsb migrate                                  # Apply pending database migrations
 jsb sync [PHASES...] [--company NAME] [--stale HOURS] [--force]  # Sync pipeline (phases: fetch, enrich, strip, embed)
 jsb list-jobs [company] [-f FILTER]         # List cached jobs
 jsb search [--title T] [--location L] [--company C]  # Search cache
@@ -165,11 +167,25 @@ workers update `PhaseState` attributes directly (GIL-atomic writes); the Rich
 Live renderer polls at 4hz. `RollingRate` tracks items/min from a 60-second
 sliding window of timestamps.
 
+## Schema Migrations
+
+Migrations are **explicit and manual** — run `jsb migrate` to apply them.
+`JobStore` does not auto-migrate on connection. This prevents accidental schema
+changes from scripts, MCP servers, or other code that instantiates a `JobStore`.
+
+Migration files live in `src/jobbuddy/migrations/` as numbered SQL files
+(e.g. `001_initial.sql`). The `schema_migrations` table tracks which have been
+applied. After adding a new migration file, run `jsb migrate` to apply it.
+
+Tests apply migrations once per session via the `ensure_pg_schema` fixture in
+`tests/conftest.py`.
+
 ## Architecture Conventions
 
 - `core.py` raises `ValueError`; callers (CLI, MCP) handle presentation
 - CLI and MCP both call into `core.py` — shared logic, dual interface
 - All search reads from PostgreSQL cache; only `jsb sync` touches the network
+- Migrations are explicit — `JobStore` never auto-migrates (see above)
 - Tests use a dedicated test PostgreSQL database — fast, no network
 
 See `docs/architecture.md` for detailed architecture documentation.

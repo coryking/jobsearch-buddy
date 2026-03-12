@@ -7,7 +7,6 @@ on (company_slug, job_id). Embeddings stored as pgvector vector(1536) column.
 import json
 import logging
 from datetime import datetime, timezone
-from typing import ClassVar
 
 import psycopg
 from pgvector.psycopg import register_vector
@@ -42,8 +41,6 @@ class JobStore:
         conninfo: psycopg connection string, or None for default from settings.
     """
 
-    _schema_initialized: ClassVar[set[str]] = set()
-
     def __init__(self, conninfo: str | None = None):
         self.conn = self._connect(conninfo)
 
@@ -68,17 +65,7 @@ class JobStore:
         conn = psycopg.connect(conninfo, autocommit=True)
         register_vector(conn)
         conn.row_factory = dict_row
-
-        if conninfo not in JobStore._schema_initialized:
-            self._ensure_schema(conn)
-            JobStore._schema_initialized.add(conninfo)
-
         return conn
-
-    def _ensure_schema(self, conn: psycopg.Connection) -> None:
-        from jobbuddy.migrations import apply_migrations
-        apply_migrations(conn)
-        self._migrate_csv_activity_log(conn)
 
     # -------------------------------------------------------------------
     # Jobs
@@ -618,7 +605,11 @@ class JobStore:
     # -------------------------------------------------------------------
 
     def _migrate_csv_activity_log(self, conn: psycopg.Connection) -> None:
-        """Auto-migrate old CSV activity log into PostgreSQL if table is empty."""
+        """One-time CSV activity log import. Called by `jsb migrate` only.
+
+        Dead code path from normal JobStore usage — only invoked explicitly
+        by the migrate CLI command.
+        """
         row = conn.execute("SELECT COUNT(*) AS cnt FROM activity_log").fetchone()
         if row["cnt"] > 0:
             return

@@ -9,6 +9,7 @@ import logging
 from pathlib import Path
 
 import psycopg
+import psycopg.rows
 
 log = logging.getLogger(__name__)
 
@@ -24,10 +25,9 @@ def apply_migrations(conn: psycopg.Connection) -> list[str]:
         )
     """)
 
-    applied = {
-        row[0]
-        for row in conn.execute("SELECT filename FROM schema_migrations").fetchall()
-    }
+    with conn.cursor(row_factory=psycopg.rows.tuple_row) as cur:
+        cur.execute("SELECT filename FROM schema_migrations")
+        applied = {row[0] for row in cur.fetchall()}
 
     migration_files = sorted(
         f for f in MIGRATIONS_DIR.glob("*.sql") if f.name not in applied
