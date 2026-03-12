@@ -25,8 +25,10 @@ class Settings(BaseSettings):
     )
 
     data_dir: Path = Path(user_data_dir(_APP_NAME)) / "data"
-    db_path: Path = None  # type: ignore[reportAssignmentType]  — validator always fills this
     listings_dir: Path = Path(user_data_dir(_APP_NAME)) / "listings"
+
+    # PostgreSQL connection via pg_service.conf
+    pg_service: str = "job-search-buddy-remote"
 
     # OpenAI API (for strip, embed, and semantic search)
     openai_api_key: Optional[str] = None
@@ -41,14 +43,12 @@ class Settings(BaseSettings):
         """Whether OpenAI credentials are configured (enables strip/embed/search)."""
         return bool(self.openai_api_key)
 
-    @field_validator("db_path", mode="before")
-    @classmethod
-    def _default_db_path(cls, v):
-        if v is None:
-            return Path(user_data_dir(_APP_NAME)) / "jobs_cache.db"
-        return v
+    @property
+    def pg_conninfo(self) -> str:
+        """Connection info string for psycopg."""
+        return f"service={self.pg_service}"
 
-    @field_validator("data_dir", "listings_dir", "db_path", mode="after")
+    @field_validator("data_dir", "listings_dir", mode="after")
     @classmethod
     def _expand_path(cls, v):
         if v is None:

@@ -1,9 +1,8 @@
-"""Semantic job search via sqlite-vec + OpenAI-compatible embeddings."""
+"""Semantic job search via pgvector + OpenAI-compatible embeddings."""
 
 from dataclasses import dataclass
-from pathlib import Path
 
-from jobbuddy.embeddings import embed_query, serialize_f32
+from jobbuddy.embeddings import embed_query
 from jobbuddy.store import JobStore
 
 
@@ -14,8 +13,8 @@ class SearchResult:
 
 
 class VectorSearch:
-    def __init__(self, db_path: Path | str | None = None):
-        self.store = JobStore(db_path)
+    def __init__(self, conninfo: str | None = None):
+        self.store = JobStore(conninfo)
 
     def search(
         self,
@@ -27,17 +26,10 @@ class VectorSearch:
         posted_after: str | None = None,
         limit: int = 25,
     ) -> list[SearchResult]:
-        """Unified search: semantic when query is provided, keyword filters otherwise.
-
-        With query: embeds the query and does KNN search, optionally filtered
-        by company/title/location/posted_after.
-        Without query: falls back to SQL LIKE filters via query_jobs().
-        """
         if query:
             query_vec = embed_query(query)
-            query_blob = serialize_f32(query_vec)
             rows = self.store.search_similar_filtered(
-                query_blob,
+                query_vec,
                 company=company,
                 title=title,
                 location=location,

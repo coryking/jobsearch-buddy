@@ -168,27 +168,27 @@ class TestComputeBatchSize:
 
 
 class TestSerializeF32:
-    def test_round_trip(self):
+    def test_passthrough(self):
+        """serialize_f32 returns the list unchanged (pgvector takes lists)."""
         vec = [1.0, 2.0, 3.0]
-        blob = serialize_f32(vec)
-        assert len(blob) == 12  # 3 floats * 4 bytes
-        unpacked = list(struct.unpack("<3f", blob))
-        assert unpacked == vec
+        result = serialize_f32(vec)
+        assert result is vec
 
     def test_correct_dimensions(self):
         vec = [0.0] * DIMENSIONS
-        blob = serialize_f32(vec)
-        assert len(blob) == DIMENSIONS * 4
+        result = serialize_f32(vec)
+        assert len(result) == DIMENSIONS
 
     def test_deserialize_round_trip(self):
+        """deserialize_f32 still works for migration from SQLite blobs."""
         vec = [1.0, 2.5, -3.0, 0.0]
-        blob = serialize_f32(vec)
+        blob = struct.pack(f"<{len(vec)}f", *vec)
         arr = deserialize_f32(blob)
         np.testing.assert_array_almost_equal(arr, vec)
 
     def test_deserialize_returns_writable_copy(self):
         """Deserialized array should be writable (not a read-only view)."""
-        blob = serialize_f32([1.0, 2.0])
+        blob = struct.pack("<2f", 1.0, 2.0)
         arr = deserialize_f32(blob)
         arr[0] = 99.0  # should not raise
 

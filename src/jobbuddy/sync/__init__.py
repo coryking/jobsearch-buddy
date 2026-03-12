@@ -6,18 +6,17 @@ Orchestrates four phases:
 3. StripPhase: LLM-based boilerplate removal (requires OpenAI API)
 4. EmbedPhase: embedding generation (requires OpenAI API)
 
-Strip and embed are optional — they only run when OpenAI credentials are
+Strip and embed are optional -- they only run when OpenAI credentials are
 configured (JOBBUDDY_OPENAI_API_KEY). Without credentials, sync runs
 fetch + enrich only.
 
-Phases use DB-as-queue: each polls SQLite for work items and updates
+Phases use DB-as-queue: each polls PostgreSQL for work items and updates
 PhaseState objects for live display. No event queue for inter-phase
 coordination -- phases are independent and idempotent.
 """
 
 import queue
 import threading
-from pathlib import Path
 
 from jobbuddy.registry import list_companies, lookup_by_name
 from jobbuddy.settings import get_settings
@@ -50,16 +49,16 @@ def sync_jobs(
     stale_hours: float | None = None,
     max_workers: int = 5,
     events: EventQueue | None = None,
-    db_path: Path | str | None = None,
+    conninfo: str | None = None,
     display_state: SyncDisplayState | None = None,
     phases: set[str] | None = None,
     force_strip: bool = False,
 ) -> list[SyncResult]:
-    """Sync job listings from ATS boards into the SQLite cache.
+    """Sync job listings from ATS boards into the PostgreSQL cache.
 
     Fetch runs first, then enrich/strip/embed run concurrently. Each phase
     polls the DB for work; upstream_done events signal when it's safe to stop
-    polling (enrich_done → strip, strip_done → embed). Strip starts processing
+    polling (enrich_done -> strip, strip_done -> embed). Strip starts processing
     full-fetcher jobs immediately while enrich is still fetching descriptions
     for stub fetchers.
 
@@ -68,7 +67,7 @@ def sync_jobs(
         stale_hours: Skip companies synced within this many hours.
         max_workers: Thread pool size for fetch phase.
         events: Legacy event queue (kept for backward compatibility).
-        db_path: Path to SQLite DB (None = default from settings).
+        conninfo: PostgreSQL connection string (None = default from settings).
         display_state: Shared display state for Rich Live TUI.
         phases: Which phases to run (None = all). Must be subset of VALID_PHASES.
         force_strip: Clear existing stripped descriptions before strip phase.
@@ -95,10 +94,9 @@ def sync_jobs(
 
     registry = list_companies()
 
-    # Resolve DB path
-    if db_path is None:
-        db_path = get_settings().db_path
-    db_path_str = str(db_path)
+    # Resolve conninfo
+    if conninfo is None:
+        conninfo = get_settings().pg_conninfo
 
     # Fetch phase: build targets and run
     results: list[SyncResult] = []
@@ -118,7 +116,7 @@ def sync_jobs(
         else:
             targets = [c for c in registry.values() if c.ats is not None]
 
-        store = JobStore(db_path)
+        store = JobStore(conninfo)
         try:
             # Filter by staleness
             if stale_hours is not None:
@@ -164,8 +162,8 @@ def sync_jobs(
     # Phases 2-4: Enrich, strip, embed run concurrently.
     # Each phase polls the DB for work. upstream_done events chain them
     # so downstream phases keep polling until upstream finishes producing.
-    #   enrich_done → strip keeps polling for newly-enriched descriptions
-    #   strip_done  → embed keeps polling for newly-stripped descriptions
+    #   enrich_done -> strip keeps polling for newly-enriched descriptions
+    #   strip_done  -> embed keeps polling for newly-stripped descriptions
     enrich_done = threading.Event()
     strip_done = threading.Event()
 
@@ -173,13 +171,13 @@ def sync_jobs(
     has_openai = settings.has_openai
 
     # Ensure schema/migrations run in the main thread before spawning
-    # phase threads — avoids race where multiple threads try to migrate
-    # simultaneously and hit "database is locked".
-    JobStore(db_path).close()
+    # phase threads -- avoids race where multiple threads try to migrate
+    # simultaneously.
+    JobStore(conninfo).close()
 
     # Force-strip: clear existing stripped descriptions before strip phase
     if force_strip and "strip" in run_phases:
-        store = JobStore(db_path)
+        store = JobStore(conninfo)
         store.clear_stripped_descriptions()
         store.close()
 
@@ -187,7 +185,7 @@ def sync_jobs(
     enrich_phase = None
     if "enrich" in run_phases and slugs_to_embed:
         enrich_phase = EnrichPhase(
-            db_path_str,
+            conninfo,
             slugs=slugs_to_embed,
             targets=targets,
             display=display_state.enrich,
@@ -198,7 +196,7 @@ def sync_jobs(
     strip_phase = None
     if "strip" in run_phases and has_openai:
         strip_phase = StripPhase(
-            db_path_str,
+            conninfo,
             display=display_state.strip,
             slugs=company_slugs,
             upstream_done=enrich_done,
@@ -208,7 +206,7 @@ def sync_jobs(
     embed_phase = None
     if "embed" in run_phases and has_openai:
         embed_phase = EmbedPhase(
-            db_path_str,
+            conninfo,
             display=display_state.embed,
             slugs=company_slugs,
             upstream_done=strip_done,

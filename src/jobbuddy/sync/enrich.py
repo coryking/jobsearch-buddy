@@ -6,9 +6,7 @@ This phase fetches full descriptions from ATS URLs, one company at a time.
 
 from __future__ import annotations
 
-import json
 import logging
-from pathlib import Path
 
 from jobbuddy.fetchers import get_fetcher, has_descriptions_in_listing
 from jobbuddy.fetchers.base import ATSFetcher
@@ -28,10 +26,10 @@ class EnrichPhase(WorkerPhase["EnrichWorkItem"]):
     runs companies through the thread pool.
     """
 
-    def __init__(self, db_path: str | Path, *, slugs: list[str],
+    def __init__(self, conninfo: str, *, slugs: list[str],
                  targets: list[Company], display: PhaseState,
                  max_workers: int = 5):
-        super().__init__(db_path, max_workers=max_workers, display=display)
+        super().__init__(conninfo, max_workers=max_workers, display=display)
         self.slugs = slugs
         self.slug_to_company = {c.slug: c for c in targets}
         self._enrich_plan: list[EnrichWorkItem] = []
@@ -58,7 +56,7 @@ class EnrichPhase(WorkerPhase["EnrichWorkItem"]):
                 continue
             job_ids = [j["job_id"] for j in needing]
             jobs_meta = {
-                j["job_id"]: json.loads(j["ats_metadata"] or "{}")
+                j["job_id"]: j["ats_metadata"] or {}
                 for j in needing
             }
             self._enrich_plan.append({"slug": slug, "job_ids": job_ids, "jobs_meta": jobs_meta})

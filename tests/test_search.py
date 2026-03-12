@@ -1,13 +1,16 @@
-"""Tests for jobbuddy.search — VectorSearch class."""
+"""Tests for jobbuddy.search -- VectorSearch class (PostgreSQL)."""
 
-import struct
 from unittest.mock import patch
 
 import numpy as np
+import psycopg
 import pytest
 
 from jobbuddy.models import Job
 from jobbuddy.search import SearchResult, VectorSearch
+from jobbuddy.store import JobStore
+
+TEST_CONNINFO = "service=job-search-buddy-remote"
 
 
 def _make_job(id: str = "123", title: str = "PM", location: str = "Seattle", **kw) -> Job:
@@ -29,13 +32,22 @@ def _fake_vec(dimensions: int, seed: int = 0) -> np.ndarray:
     return v
 
 
-DIMS = 1536  # matches vec_jobs table definition
+DIMS = 1536
+
+
+def _cleanup():
+    conn = psycopg.connect(TEST_CONNINFO, autocommit=True)
+    conn.execute("DELETE FROM jobs")
+    conn.execute("DELETE FROM sync_status")
+    conn.close()
 
 
 @pytest.fixture
 def vs():
-    """VectorSearch with in-memory store, pre-populated with jobs and embeddings."""
-    search = VectorSearch(":memory:")
+    """VectorSearch pre-populated with jobs and embeddings, with cleanup."""
+    _cleanup()
+
+    search = VectorSearch(TEST_CONNINFO)
     store = search.store
 
     # Insert jobs with descriptions
@@ -45,29 +57,27 @@ def vs():
         _make_job("3", "Data Scientist", "NYC", description="ML models for user recommendations."),
     ])
 
-    # Set description_stripped (required for embeddings to be useful in search)
     for jid in ["1", "2", "3"]:
         store.conn.execute(
-            "UPDATE jobs SET description_stripped = description WHERE job_id = ?", (jid,)
+            "UPDATE jobs SET description_stripped = description WHERE job_id = %s", (jid,)
         )
-    store.conn.commit()
 
     for job_id_str in ["1", "2", "3"]:
         row = store.conn.execute(
-            "SELECT id FROM jobs WHERE job_id = ?", (job_id_str,)
+            "SELECT id FROM jobs WHERE job_id = %s", (job_id_str,)
         ).fetchone()
-        vec = _fake_vec(DIMS, seed=int(job_id_str))
-        blob = struct.pack(f"<{len(vec)}f", *vec)
-        store.store_embedding(row["id"], blob)
+        vec = _fake_vec(DIMS, seed=int(job_id_str)).tolist()
+        store.store_embedding(row["id"], vec)
 
     yield search
     search.close()
+    _cleanup()
 
 
 class TestVectorSearch:
     def test_search_returns_results(self, vs):
         """Search returns ranked SearchResult objects."""
-        query_vec = _fake_vec(DIMS, seed=1).tolist()  # same seed as job "1"
+        query_vec = _fake_vec(DIMS, seed=1).tolist()
         with patch("jobbuddy.search.embed_query", return_value=query_vec):
             results = vs.search(query="AI product strategy")
         assert len(results) > 0
@@ -99,12 +109,14 @@ class TestVectorSearch:
 
     def test_search_empty_embeddings(self):
         """Search with no embeddings returns empty."""
-        vs = VectorSearch(":memory:")
+        _cleanup()
+        search = VectorSearch(TEST_CONNINFO)
         query_vec = _fake_vec(DIMS, seed=0).tolist()
         with patch("jobbuddy.search.embed_query", return_value=query_vec):
-            results = vs.search(query="anything")
+            results = search.search(query="anything")
         assert results == []
-        vs.close()
+        search.close()
+        _cleanup()
 
 
 class TestVectorSearchFiltered:
@@ -112,18 +124,15 @@ class TestVectorSearchFiltered:
 
     def test_search_with_query_and_company_filter(self, vs):
         """Semantic search filtered by company."""
-        # Add a job under a different company
         vs.store.upsert_jobs("beta", [
             _make_job("10", "AI Engineer", "Seattle", description="AI systems."),
         ])
         vs.store.conn.execute(
             "UPDATE jobs SET description_stripped = description WHERE job_id = '10'"
         )
-        vs.store.conn.commit()
         row = vs.store.conn.execute("SELECT id FROM jobs WHERE job_id = '10'").fetchone()
-        vec = _fake_vec(DIMS, seed=1)
-        blob = struct.pack(f"<{len(vec)}f", *vec)
-        vs.store.store_embedding(row["id"], blob)
+        vec = _fake_vec(DIMS, seed=1).tolist()
+        vs.store.store_embedding(row["id"], vec)
 
         query_vec = _fake_vec(DIMS, seed=1).tolist()
         with patch("jobbuddy.search.embed_query", return_value=query_vec):
@@ -136,7 +145,7 @@ class TestVectorSearchFiltered:
         results = vs.search(title="Software Engineer")
         assert len(results) == 1
         assert results[0].job["title"] == "Software Engineer"
-        assert results[0].score is None  # no semantic score
+        assert results[0].score is None
 
     def test_search_without_query_filters_location(self, vs):
         """Without query, location filter works."""

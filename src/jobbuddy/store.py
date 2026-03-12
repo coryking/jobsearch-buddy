@@ -1,18 +1,17 @@
-"""JobStore — SQLite persistence layer for job listings and embeddings.
+"""JobStore — PostgreSQL persistence layer for job listings and embeddings.
 
-Schema uses a surrogate INTEGER PRIMARY KEY on jobs with a UNIQUE constraint
-on (company_slug, job_id). Embeddings stored as BLOBs in job_embeddings,
-with a vec0 virtual table (sqlite-vec) for cosine similarity search.
+Schema uses a surrogate SERIAL PRIMARY KEY on jobs with a UNIQUE constraint
+on (company_slug, job_id). Embeddings stored as pgvector vector(1536) column.
 """
 
 import json
 import logging
-import sqlite3
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import ClassVar
 
-import sqlite_vec
+import psycopg
+from pgvector.psycopg import register_vector
+from psycopg.rows import dict_row
 
 from jobbuddy.models import Job
 from jobbuddy.types import EmbedWorkItem, StripWorkItem
@@ -37,16 +36,16 @@ def _validate_date(value: str | None) -> str | None:
 
 
 class JobStore:
-    """SQLite persistence for jobs and embeddings.
+    """PostgreSQL persistence for jobs and embeddings.
 
     Args:
-        db_path: Path to SQLite DB, ":memory:" for in-memory, or None for default.
+        conninfo: psycopg connection string, or None for default from settings.
     """
 
-    _schema_initialized: ClassVar[set[str]] = set()  # tracks db_path strings
+    _schema_initialized: ClassVar[set[str]] = set()
 
-    def __init__(self, db_path: Path | str | None = None):
-        self.conn = self._connect(db_path)
+    def __init__(self, conninfo: str | None = None):
+        self.conn = self._connect(conninfo)
 
     def close(self) -> None:
         self.conn.close()
@@ -61,221 +60,71 @@ class JobStore:
     # Connection + Schema
     # -------------------------------------------------------------------
 
-    def _connect(self, db_path: Path | str | None) -> sqlite3.Connection:
-        if db_path is None:
+    def _connect(self, conninfo: str | None) -> psycopg.Connection:
+        if conninfo is None:
             from jobbuddy.settings import get_settings
-            db_path = get_settings().db_path
+            conninfo = get_settings().pg_conninfo
 
-        resolved = Path(db_path) if str(db_path) != ":memory:" else db_path
-        if isinstance(resolved, Path):
-            resolved.parent.mkdir(parents=True, exist_ok=True)
+        conn = psycopg.connect(conninfo, autocommit=True)
+        register_vector(conn)
+        conn.row_factory = dict_row
 
-        conn = sqlite3.connect(str(db_path))
-        conn.enable_load_extension(True)
-        sqlite_vec.load(conn)
-        conn.enable_load_extension(False)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA foreign_keys=ON")
-        conn.execute("PRAGMA busy_timeout=5000")
-
-        db_key = str(db_path)
-        if db_key == ":memory:" or db_key not in JobStore._schema_initialized:
+        if conninfo not in JobStore._schema_initialized:
             self._ensure_schema(conn)
-            if db_key != ":memory:":
-                JobStore._schema_initialized.add(db_key)
+            JobStore._schema_initialized.add(conninfo)
 
         return conn
 
-    def _ensure_schema(self, conn: sqlite3.Connection) -> None:
-        """Create tables or migrate from old schema."""
-        # Check if jobs table exists
-        table_exists = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='jobs'"
-        ).fetchone()
-
-        if not table_exists:
-            self._create_tables(conn)
-        else:
-            # Check if it needs migration (old schema has composite PK, no 'id' column)
-            cols = {row[1] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()}
-            if "id" not in cols:
-                self._migrate_jobs_table(conn)
-            else:
-                # Run column migrations for any missing columns
-                self._run_column_migrations(conn)
-
-        self._init_embedding_tables(conn)
-        conn.commit()
-
-    def _create_tables(self, conn: sqlite3.Connection) -> None:
-        conn.executescript("""
-            CREATE TABLE IF NOT EXISTS jobs (
-                id             INTEGER PRIMARY KEY AUTOINCREMENT,
-                company_slug   TEXT NOT NULL,
-                job_id         TEXT NOT NULL,
-                title          TEXT NOT NULL,
-                location       TEXT,
-                url            TEXT,
-                published_at   DATE,
-                department     TEXT,
-                team           TEXT,
-                salary         TEXT,
-                description    TEXT,
-                description_stripped TEXT CHECK(description_stripped IS NULL OR LENGTH(description_stripped) > 0),
-                ats_metadata   TEXT,
-                last_seen      TIMESTAMP NOT NULL,
-                disappeared_at TIMESTAMP,
-                UNIQUE (company_slug, job_id)
-            );
-
-            CREATE TABLE IF NOT EXISTS sync_status (
-                company_slug TEXT PRIMARY KEY,
-                last_sync    TIMESTAMP NOT NULL,
-                job_count    INTEGER NOT NULL DEFAULT 0,
-                error        TEXT
-            );
-        """)
-
-    def _migrate_jobs_table(self, conn: sqlite3.Connection) -> None:
-        """Migrate old composite-PK jobs table to surrogate key schema."""
-        log.info("Migrating jobs table to surrogate key schema")
-
-        # First ensure all columns exist on the old table
-        cols = {row[1] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()}
-        migrations = [
-            ("disappeared_at", "TIMESTAMP"),
-            ("description", "TEXT"),
-            ("ats_metadata", "TEXT"),
-        ]
-        for col_name, col_type in migrations:
-            if col_name not in cols:
-                conn.execute(f"ALTER TABLE jobs ADD COLUMN {col_name} {col_type}")
+    def _ensure_schema(self, conn: psycopg.Connection) -> None:
+        conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
 
         conn.execute("""
-            CREATE TABLE jobs_new (
-                id             INTEGER PRIMARY KEY AUTOINCREMENT,
-                company_slug   TEXT NOT NULL,
-                job_id         TEXT NOT NULL,
-                title          TEXT NOT NULL,
-                location       TEXT,
-                url            TEXT,
-                published_at   DATE,
-                department     TEXT,
-                team           TEXT,
-                salary         TEXT,
-                description    TEXT,
-                ats_metadata   TEXT,
-                last_seen      TIMESTAMP NOT NULL,
-                disappeared_at TIMESTAMP,
+            CREATE TABLE IF NOT EXISTS jobs (
+                id              SERIAL PRIMARY KEY,
+                company_slug    TEXT NOT NULL,
+                job_id          TEXT NOT NULL,
+                title           TEXT NOT NULL,
+                location        TEXT,
+                url             TEXT,
+                published_at    DATE,
+                department      TEXT,
+                team            TEXT,
+                salary          TEXT,
+                description     TEXT,
+                description_stripped TEXT CHECK(description_stripped IS NULL OR LENGTH(description_stripped) > 0),
+                ats_metadata    JSONB,
+                embedding       vector(1536),
+                last_seen       TIMESTAMPTZ NOT NULL,
+                disappeared_at  TIMESTAMPTZ,
                 UNIQUE (company_slug, job_id)
             )
         """)
 
         conn.execute("""
-            INSERT INTO jobs_new (company_slug, job_id, title, location, url,
-                published_at, department, team, salary, description, ats_metadata,
-                last_seen, disappeared_at)
-            SELECT company_slug, job_id, title, location, url,
-                published_at, department, team, salary, description, ats_metadata,
-                last_seen, disappeared_at
-            FROM jobs
+            CREATE TABLE IF NOT EXISTS sync_status (
+                company_slug    TEXT PRIMARY KEY,
+                last_sync       TIMESTAMPTZ NOT NULL,
+                job_count       INTEGER NOT NULL DEFAULT 0,
+                error           TEXT
+            )
         """)
 
-        conn.execute("DROP TABLE jobs")
-        conn.execute("ALTER TABLE jobs_new RENAME TO jobs")
-
-        # Drop old job_embeddings table (will be recreated with new schema)
-        conn.execute("DROP TABLE IF EXISTS job_embeddings")
-
-        conn.commit()
-        log.info("Migration complete")
-
-    def _run_column_migrations(self, conn: sqlite3.Connection) -> None:
-        """Add any missing columns to the jobs table."""
-        cols = {row[1] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()}
-        migrations = [
-            ("disappeared_at", "TIMESTAMP"),
-            ("description", "TEXT"),
-            ("ats_metadata", "TEXT"),
-            ("description_stripped", "TEXT"),
-        ]
-        for col_name, col_type in migrations:
-            if col_name not in cols:
-                conn.execute(f"ALTER TABLE jobs ADD COLUMN {col_name} {col_type}")
-
-        # Clean up empty description_stripped strings (from LLM returning empty
-        # content). These poison the embed phase — set back to NULL so strip
-        # retries them.
-        cleaned = conn.execute(
-            "UPDATE jobs SET description_stripped = NULL WHERE description_stripped = ''"
-        ).rowcount
-        if cleaned:
-            log.info("Cleaned %d empty description_stripped values → NULL", cleaned)
-
-        conn.commit()
-
-    def _init_embedding_tables(self, conn: sqlite3.Connection) -> None:
-        # Migration: drop old multi-model schema (all old embeddings are discarded)
-        old_table = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='embedding_models'"
-        ).fetchone()
-        if old_table:
-            log.info("Dropping old embedding_models/job_embeddings tables (single-model migration)")
-            conn.execute("DROP TABLE IF EXISTS job_embeddings")
-            conn.execute("DROP TABLE IF EXISTS embedding_models")
-
-        # Migration: drop text_hash column if present (old schema)
-        existing_emb = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='job_embeddings'"
-        ).fetchone()
-        if existing_emb:
-            emb_cols = {row[1] for row in conn.execute("PRAGMA table_info(job_embeddings)").fetchall()}
-            if "text_hash" in emb_cols:
-                log.info("Migrating job_embeddings: dropping text_hash column")
-                conn.execute("""
-                    CREATE TABLE job_embeddings_new (
-                        job_id    INTEGER PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE,
-                        embedding BLOB NOT NULL
-                    )
-                """)
-                conn.execute("INSERT INTO job_embeddings_new SELECT job_id, embedding FROM job_embeddings")
-                conn.execute("DROP TABLE job_embeddings")
-                conn.execute("ALTER TABLE job_embeddings_new RENAME TO job_embeddings")
-
-        conn.executescript("""
-            CREATE TABLE IF NOT EXISTS job_embeddings (
-                job_id    INTEGER PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE,
-                embedding BLOB NOT NULL
-            );
+        # Create indexes (IF NOT EXISTS)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_jobs_company ON jobs (company_slug)
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_jobs_published ON jobs (published_at)
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_jobs_disappeared ON jobs (disappeared_at) WHERE disappeared_at IS NULL
         """)
 
-        # vec0 virtual table for cosine similarity search.
-        # Migration: old schema used 'rowid' instead of 'job_id'. Detect and recreate.
-        vec_exists = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='vec_jobs'"
-        ).fetchone()
-        if vec_exists:
-            cols = {row[1] for row in conn.execute("PRAGMA table_xinfo(vec_jobs)").fetchall()}
-            if "job_id" not in cols:
-                log.info("Recreating vec_jobs (schema migration: rowid → job_id)")
-                conn.execute("DROP TABLE vec_jobs")
-                vec_exists = None
-        if not vec_exists:
-            conn.execute("""
-                CREATE VIRTUAL TABLE vec_jobs USING vec0(
-                    job_id INTEGER PRIMARY KEY,
-                    embedding float[1536] distance_metric=cosine
-                )
-            """)
-            # Backfill vec_jobs from job_embeddings (migration or fresh table)
-            count = conn.execute("SELECT COUNT(*) FROM job_embeddings").fetchone()[0]
-            if count:
-                log.info("Backfilling vec_jobs from job_embeddings (%d rows)", count)
-                conn.execute("""
-                    INSERT INTO vec_jobs(job_id, embedding)
-                    SELECT job_id, embedding FROM job_embeddings
-                """)
+        # HNSW index for vector similarity search
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_jobs_embedding ON jobs
+                USING hnsw (embedding vector_cosine_ops)
+        """)
 
     # -------------------------------------------------------------------
     # Jobs
@@ -291,41 +140,42 @@ class JobStore:
             by_id[j.id] = j
         jobs = list(by_id.values())
 
-        with self.conn:
+        with self.conn.transaction():
             current_ids = {
                 row["job_id"]
                 for row in self.conn.execute(
-                    "SELECT job_id FROM jobs WHERE company_slug = ?", (slug,)
+                    "SELECT job_id FROM jobs WHERE company_slug = %s", (slug,)
                 ).fetchall()
             }
             new_ids = {j.id for j in jobs}
 
             gone = current_ids - new_ids
             if gone:
-                self.conn.executemany(
-                    """UPDATE jobs SET disappeared_at = ?
-                       WHERE company_slug = ? AND job_id = ? AND disappeared_at IS NULL""",
-                    [(now, slug, jid) for jid in gone],
-                )
+                for jid in gone:
+                    self.conn.execute(
+                        """UPDATE jobs SET disappeared_at = %s
+                           WHERE company_slug = %s AND job_id = %s AND disappeared_at IS NULL""",
+                        (now, slug, jid),
+                    )
 
-            self.conn.executemany(
-                """INSERT INTO jobs
-                   (company_slug, job_id, title, location, url, published_at,
-                    department, team, salary, description, ats_metadata, last_seen, disappeared_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
-                   ON CONFLICT(company_slug, job_id) DO UPDATE SET
-                    title = excluded.title,
-                    location = excluded.location,
-                    url = excluded.url,
-                    published_at = excluded.published_at,
-                    department = excluded.department,
-                    team = excluded.team,
-                    salary = excluded.salary,
-                    description = COALESCE(excluded.description, jobs.description),
-                    ats_metadata = COALESCE(excluded.ats_metadata, jobs.ats_metadata),
-                    last_seen = excluded.last_seen,
-                    disappeared_at = NULL""",
-                [
+            for j in jobs:
+                self.conn.execute(
+                    """INSERT INTO jobs
+                       (company_slug, job_id, title, location, url, published_at,
+                        department, team, salary, description, ats_metadata, last_seen, disappeared_at)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NULL)
+                       ON CONFLICT(company_slug, job_id) DO UPDATE SET
+                        title = excluded.title,
+                        location = excluded.location,
+                        url = excluded.url,
+                        published_at = excluded.published_at,
+                        department = excluded.department,
+                        team = excluded.team,
+                        salary = excluded.salary,
+                        description = COALESCE(excluded.description, jobs.description),
+                        ats_metadata = COALESCE(excluded.ats_metadata, jobs.ats_metadata),
+                        last_seen = excluded.last_seen,
+                        disappeared_at = NULL""",
                     (
                         slug,
                         j.id,
@@ -339,15 +189,17 @@ class JobStore:
                         j.description or None,
                         json.dumps(j.ats_metadata) if j.ats_metadata else None,
                         now,
-                    )
-                    for j in jobs
-                ],
-            )
+                    ),
+                )
 
             self.conn.execute(
-                """INSERT OR REPLACE INTO sync_status
+                """INSERT INTO sync_status
                    (company_slug, last_sync, job_count, error)
-                   VALUES (?, ?, ?, NULL)""",
+                   VALUES (%s, %s, %s, NULL)
+                   ON CONFLICT(company_slug) DO UPDATE SET
+                    last_sync = excluded.last_sync,
+                    job_count = excluded.job_count,
+                    error = NULL""",
                 (slug, now, len(jobs)),
             )
 
@@ -361,37 +213,31 @@ class JobStore:
         include_disappeared: bool = False,
         limit: int = 100,
     ) -> list[dict]:
-        """Query cached jobs with optional LIKE filters.
-
-        Args:
-            posted_after: ISO date string (YYYY-MM-DD). Only return jobs
-                published on or after this date.
-        """
         conditions = []
-        params: list[str] = []
+        params: list = []
 
         if not include_disappeared:
             conditions.append("j.disappeared_at IS NULL")
 
         if company:
-            conditions.append("j.company_slug = ?")
+            conditions.append("j.company_slug = %s")
             params.append(company)
 
         if posted_after:
-            conditions.append("j.published_at >= ?")
+            conditions.append("j.published_at >= %s")
             params.append(posted_after)
 
         if title:
             terms = [t.strip() for t in title.split(",") if t.strip()]
             if terms:
-                or_clauses = ["j.title LIKE ? COLLATE NOCASE"] * len(terms)
+                or_clauses = ["j.title ILIKE %s"] * len(terms)
                 conditions.append(f"({' OR '.join(or_clauses)})")
                 params.extend(f"%{t}%" for t in terms)
 
         if location:
             terms = [t.strip() for t in location.split(",") if t.strip()]
             if terms:
-                or_clauses = ["j.location LIKE ? COLLATE NOCASE"] * len(terms)
+                or_clauses = ["j.location ILIKE %s"] * len(terms)
                 conditions.append(f"({' OR '.join(or_clauses)})")
                 params.extend(f"%{t}%" for t in terms)
 
@@ -403,9 +249,9 @@ class JobStore:
             LEFT JOIN sync_status s ON j.company_slug = s.company_slug
             {where}
             ORDER BY j.published_at DESC NULLS LAST
-            LIMIT ?
+            LIMIT %s
         """
-        params.append(str(limit))
+        params.append(limit)
 
         rows = self.conn.execute(sql, params).fetchall()
         return [dict(row) for row in rows]
@@ -414,7 +260,7 @@ class JobStore:
         """Return active jobs with NULL description for a company."""
         rows = self.conn.execute(
             """SELECT job_id, title, ats_metadata FROM jobs
-               WHERE company_slug = ? AND description IS NULL AND disappeared_at IS NULL""",
+               WHERE company_slug = %s AND description IS NULL AND disappeared_at IS NULL""",
             (slug,),
         ).fetchall()
         return [dict(row) for row in rows]
@@ -424,43 +270,42 @@ class JobStore:
         if not descs:
             return
 
-        with self.conn:
-            self.conn.executemany(
-                "UPDATE jobs SET description = ? WHERE company_slug = ? AND job_id = ?",
-                [(desc, slug, job_id) for job_id, desc in descs.items()],
-            )
+        with self.conn.transaction():
+            for job_id, desc in descs.items():
+                self.conn.execute(
+                    "UPDATE jobs SET description = %s WHERE company_slug = %s AND job_id = %s",
+                    (desc, slug, job_id),
+                )
 
-    def _stripping_conditions(self, slugs: list[str] | None = None) -> tuple[str, list[str]]:
+    def _stripping_conditions(self, slugs: list[str] | None = None) -> tuple[str, list]:
         conditions = [
             "description IS NOT NULL",
             "description_stripped IS NULL",
             "disappeared_at IS NULL",
         ]
-        params: list[str] = []
+        params: list = []
         if slugs:
-            placeholders = ", ".join("?" for _ in slugs)
-            conditions.append(f"company_slug IN ({placeholders})")
-            params.extend(slugs)
+            conditions.append("company_slug = ANY(%s)")
+            params.append(slugs)
         return " AND ".join(conditions), params
 
     def count_jobs_needing_stripping(self, *, slugs: list[str] | None = None) -> int:
         """Count active jobs with descriptions but no stripped version."""
         where, params = self._stripping_conditions(slugs)
         row = self.conn.execute(
-            f"SELECT COUNT(*) FROM jobs WHERE {where}", params
+            f"SELECT COUNT(*) AS cnt FROM jobs WHERE {where}", params
         ).fetchone()
-        return row[0]
+        return row["cnt"]
 
     def get_jobs_needing_stripping(self, limit: int = 50, *, slugs: list[str] | None = None) -> list[StripWorkItem]:
         """Return active jobs with descriptions but no stripped version."""
         where, params = self._stripping_conditions(slugs)
-        all_params: list[str | int] = list(params)
-        all_params.append(limit)
+        params.append(limit)
         rows = self.conn.execute(
             f"""SELECT id, company_slug, job_id, title, description FROM jobs
                WHERE {where}
-               LIMIT ?""",
-            all_params,
+               LIMIT %s""",
+            params,
         ).fetchall()
         return [dict(row) for row in rows]  # type: ignore[return-value]
 
@@ -468,43 +313,30 @@ class JobStore:
         """Set the stripped description for a job.
 
         Empty/whitespace-only strings are stored as NULL so the job gets
-        re-stripped on the next pass. Deletes any existing embedding so the
-        job gets re-embedded with the new stripped text.
+        re-stripped on the next pass. Also nullifies any existing embedding
+        so the job gets re-embedded with the new stripped text.
         """
         value = stripped.strip() if stripped else None
         if not value:
             value = None
-        with self.conn:
+        with self.conn.transaction():
             self.conn.execute(
-                "UPDATE jobs SET description_stripped = ? WHERE id = ?",
+                "UPDATE jobs SET description_stripped = %s WHERE id = %s",
                 (value, job_pk),
             )
-            # Cascade: invalidate stale embedding.  vec_jobs is cleaned up
-            # by ON DELETE CASCADE on job_embeddings.
             self.conn.execute(
-                "DELETE FROM job_embeddings WHERE job_id = ?", (job_pk,)
-            )
-            self.conn.execute(
-                "DELETE FROM vec_jobs WHERE job_id = ?", (job_pk,)
+                "UPDATE jobs SET embedding = NULL WHERE id = %s", (job_pk,)
             )
 
     def clear_stripped_descriptions(self) -> int:
         """Set description_stripped to NULL for all jobs. Returns count affected.
 
-        Embeddings for affected jobs are deleted (no stripped text = nothing to embed).
+        Embeddings for affected jobs are also cleared.
         """
-        with self.conn:
-            # Delete embeddings for jobs that have stripped descriptions
-            # (those are the ones about to be cleared)
+        with self.conn.transaction():
             self.conn.execute("""
-                DELETE FROM job_embeddings WHERE job_id IN (
-                    SELECT id FROM jobs WHERE description_stripped IS NOT NULL
-                )
-            """)
-            self.conn.execute("""
-                DELETE FROM vec_jobs WHERE job_id IN (
-                    SELECT id FROM jobs WHERE description_stripped IS NOT NULL
-                )
+                UPDATE jobs SET embedding = NULL
+                WHERE description_stripped IS NOT NULL
             """)
             cur = self.conn.execute(
                 "UPDATE jobs SET description_stripped = NULL WHERE description_stripped IS NOT NULL"
@@ -515,13 +347,12 @@ class JobStore:
         """Fetch jobs by surrogate key IDs."""
         if not job_ids:
             return []
-        placeholders = ",".join("?" * len(job_ids))
         rows = self.conn.execute(
-            f"""SELECT j.*, s.last_sync
+            """SELECT j.*, s.last_sync
                 FROM jobs j
                 LEFT JOIN sync_status s ON j.company_slug = s.company_slug
-                WHERE j.id IN ({placeholders})""",
-            job_ids,
+                WHERE j.id = ANY(%s)""",
+            (job_ids,),
         ).fetchall()
         return [dict(row) for row in rows]
 
@@ -529,43 +360,36 @@ class JobStore:
     # Embeddings
     # -------------------------------------------------------------------
 
-    def store_embedding(self, job_id: int, embedding: bytes) -> None:
-        """Dual-write: job_embeddings + vec_jobs (search index)."""
-        self.conn.execute("""
-            INSERT INTO job_embeddings (job_id, embedding)
-            VALUES (?, ?)
-            ON CONFLICT(job_id) DO UPDATE SET embedding = excluded.embedding
-        """, (job_id, embedding))
-        self.conn.execute("DELETE FROM vec_jobs WHERE job_id = ?", (job_id,))
-        self.conn.execute("""
-            INSERT INTO vec_jobs(job_id, embedding) VALUES (?, ?)
-        """, (job_id, embedding))
-        self.conn.commit()
+    def store_embedding(self, job_id: int, embedding: list[float]) -> None:
+        """Store embedding vector on the jobs row."""
+        self.conn.execute(
+            "UPDATE jobs SET embedding = %s WHERE id = %s",
+            (embedding, job_id),
+        )
 
     def delete_embedding(self, job_id: int) -> None:
-        """Delete an embedding for a job."""
-        self.conn.execute("DELETE FROM job_embeddings WHERE job_id = ?", (job_id,))
-        self.conn.execute("DELETE FROM vec_jobs WHERE job_id = ?", (job_id,))
-        self.conn.commit()
+        """Clear embedding for a job."""
+        self.conn.execute(
+            "UPDATE jobs SET embedding = NULL WHERE id = %s", (job_id,)
+        )
 
-    def search_similar(self, query_embedding: bytes, k: int = 25) -> list[dict]:
-        """KNN search via sqlite-vec, returns job dicts with distance score."""
+    def search_similar(self, query_embedding: list[float], k: int = 25) -> list[dict]:
+        """KNN search via pgvector, returns job dicts with distance score."""
         rows = self.conn.execute("""
-            SELECT v.distance,
+            SELECT embedding <=> %s::vector AS distance,
                    j.*, s.last_sync
-            FROM vec_jobs v
-            JOIN jobs j ON j.id = v.job_id
+            FROM jobs j
             LEFT JOIN sync_status s ON j.company_slug = s.company_slug
-            WHERE v.embedding MATCH ?
-              AND v.k = ?
+            WHERE j.embedding IS NOT NULL
               AND j.disappeared_at IS NULL
-            ORDER BY v.distance
-        """, (query_embedding, k)).fetchall()
+            ORDER BY j.embedding <=> %s::vector
+            LIMIT %s
+        """, (query_embedding, query_embedding, k)).fetchall()
         return [dict(r) for r in rows]
 
     def search_similar_filtered(
         self,
-        query_embedding: bytes,
+        query_embedding: list[float],
         *,
         company: str | None = None,
         title: str | None = None,
@@ -573,97 +397,87 @@ class JobStore:
         posted_after: str | None = None,
         k: int = 25,
     ) -> list[dict]:
-        """KNN search with post-filters on company/title/location.
-
-        Oversamples by 4x to compensate for post-filter attrition, then
-        applies filters and returns up to `k` results.
-        """
-        oversample = k * 4
-        conditions = ["j.disappeared_at IS NULL"]
-        params: list = [query_embedding, oversample]
+        """KNN search with filters on company/title/location."""
+        conditions = [
+            "j.disappeared_at IS NULL",
+            "j.embedding IS NOT NULL",
+        ]
+        params: list = [query_embedding]
 
         if company:
-            conditions.append("j.company_slug = ?")
+            conditions.append("j.company_slug = %s")
             params.append(company)
 
         if posted_after:
-            conditions.append("j.published_at >= ?")
+            conditions.append("j.published_at >= %s")
             params.append(posted_after)
 
         if title:
             terms = [t.strip() for t in title.split(",") if t.strip()]
             if terms:
-                or_clauses = ["j.title LIKE ? COLLATE NOCASE"] * len(terms)
+                or_clauses = ["j.title ILIKE %s"] * len(terms)
                 conditions.append(f"({' OR '.join(or_clauses)})")
                 params.extend(f"%{t}%" for t in terms)
 
         if location:
             terms = [t.strip() for t in location.split(",") if t.strip()]
             if terms:
-                or_clauses = ["j.location LIKE ? COLLATE NOCASE"] * len(terms)
+                or_clauses = ["j.location ILIKE %s"] * len(terms)
                 conditions.append(f"({' OR '.join(or_clauses)})")
                 params.extend(f"%{t}%" for t in terms)
 
-        params.append(k)
+        params.extend([query_embedding, k])
         where = " AND ".join(conditions)
 
         sql = f"""
-            SELECT v.distance,
+            SELECT j.embedding <=> %s::vector AS distance,
                    j.*, s.last_sync
-            FROM vec_jobs v
-            JOIN jobs j ON j.id = v.job_id
+            FROM jobs j
             LEFT JOIN sync_status s ON j.company_slug = s.company_slug
-            WHERE v.embedding MATCH ?
-              AND v.k = ?
-              AND {where}
-            ORDER BY v.distance
-            LIMIT ?
+            WHERE {where}
+            ORDER BY j.embedding <=> %s::vector
+            LIMIT %s
         """
 
         rows = self.conn.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
 
-    def _embedding_conditions(self, slugs: list[str] | None = None) -> tuple[str, list[str]]:
-        """WHERE clause for jobs needing embeddings: has stripped text, no embedding row."""
+    def _embedding_conditions(self, slugs: list[str] | None = None) -> tuple[str, list]:
+        """WHERE clause for jobs needing embeddings."""
         conditions = [
-            "j.description_stripped IS NOT NULL",
-            "j.disappeared_at IS NULL",
-            "e.job_id IS NULL",
+            "description_stripped IS NOT NULL",
+            "disappeared_at IS NULL",
+            "embedding IS NULL",
         ]
-        params: list[str] = []
+        params: list = []
         if slugs:
-            placeholders = ", ".join("?" for _ in slugs)
-            conditions.append(f"j.company_slug IN ({placeholders})")
-            params.extend(slugs)
+            conditions.append("company_slug = ANY(%s)")
+            params.append(slugs)
         return " AND ".join(conditions), params
 
     def count_jobs_needing_embeddings(self, slugs: list[str] | None = None) -> int:
         """Count jobs with stripped descriptions but no embedding."""
         where, params = self._embedding_conditions(slugs)
-        row = self.conn.execute(f"""
-            SELECT COUNT(*) FROM jobs j
-            LEFT JOIN job_embeddings e ON j.id = e.job_id
-            WHERE {where}
-        """, params).fetchone()
-        return row[0]
+        row = self.conn.execute(
+            f"SELECT COUNT(*) AS cnt FROM jobs WHERE {where}", params
+        ).fetchone()
+        return row["cnt"]
 
     def list_jobs_needing_embeddings(self, slugs: list[str] | None = None, limit: int = 0) -> list[EmbedWorkItem]:
         """Jobs with stripped descriptions but no embedding."""
         where, params = self._embedding_conditions(slugs)
 
         sql = f"""
-            SELECT j.id, j.company_slug, j.job_id, j.title,
-                   j.department, j.location, j.description_stripped
-            FROM jobs j
-            LEFT JOIN job_embeddings e ON j.id = e.job_id
+            SELECT id, company_slug, job_id, title,
+                   department, location, description_stripped
+            FROM jobs
             WHERE {where}
         """
-        all_params: list[str] = list(params)
         if limit > 0:
-            sql += " LIMIT ?"
-            all_params.append(str(limit))
+            sql += " LIMIT %s"
+            params.append(limit)
 
-        rows = self.conn.execute(sql, all_params).fetchall()
+        rows = self.conn.execute(sql, params).fetchall()
         return [dict(r) for r in rows]  # type: ignore[return-value]
 
     # -------------------------------------------------------------------
@@ -673,13 +487,17 @@ class JobStore:
     def is_stale(self, slug: str, hours: float) -> bool:
         """Check if a company needs re-syncing."""
         row = self.conn.execute(
-            "SELECT last_sync FROM sync_status WHERE company_slug = ?",
+            "SELECT last_sync FROM sync_status WHERE company_slug = %s",
             (slug,),
         ).fetchone()
         if not row:
             return True
         try:
-            last = datetime.fromisoformat(row["last_sync"])
+            last = row["last_sync"]
+            if isinstance(last, str):
+                last = datetime.fromisoformat(last)
+            if last.tzinfo is None:
+                last = last.replace(tzinfo=timezone.utc)
             elapsed = (datetime.now(timezone.utc) - last).total_seconds() / 3600
             return elapsed > hours
         except (ValueError, TypeError):
@@ -689,34 +507,40 @@ class JobStore:
         """Record a successful sync."""
         now = _utcnow()
         self.conn.execute(
-            """INSERT OR REPLACE INTO sync_status
+            """INSERT INTO sync_status
                (company_slug, last_sync, job_count, error)
-               VALUES (?, ?, ?, NULL)""",
+               VALUES (%s, %s, %s, NULL)
+               ON CONFLICT(company_slug) DO UPDATE SET
+                last_sync = excluded.last_sync,
+                job_count = excluded.job_count,
+                error = NULL""",
             (slug, now, count),
         )
-        self.conn.commit()
 
     def record_sync_error(self, slug: str, error: str) -> None:
         """Record a sync failure."""
         now = _utcnow()
         row = self.conn.execute(
-            "SELECT job_count FROM sync_status WHERE company_slug = ?",
+            "SELECT job_count FROM sync_status WHERE company_slug = %s",
             (slug,),
         ).fetchone()
         job_count = row["job_count"] if row else 0
         self.conn.execute(
-            """INSERT OR REPLACE INTO sync_status
+            """INSERT INTO sync_status
                (company_slug, last_sync, job_count, error)
-               VALUES (?, ?, ?, ?)""",
+               VALUES (%s, %s, %s, %s)
+               ON CONFLICT(company_slug) DO UPDATE SET
+                last_sync = excluded.last_sync,
+                job_count = excluded.job_count,
+                error = excluded.error""",
             (slug, now, job_count, error),
         )
-        self.conn.commit()
 
     def get_sync_status(self, slug: str | None = None) -> list[dict]:
         """Get sync status for one or all companies."""
         if slug:
             rows = self.conn.execute(
-                "SELECT * FROM sync_status WHERE company_slug = ?", (slug,)
+                "SELECT * FROM sync_status WHERE company_slug = %s", (slug,)
             ).fetchall()
         else:
             rows = self.conn.execute(

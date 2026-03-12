@@ -120,9 +120,9 @@ def compute_batch_size(avg_tokens: int = 1438, target_tokens: int = 62_500) -> i
     return min(target_tokens // avg_tokens, MAX_BATCH_SIZE)
 
 
-def serialize_f32(vector: list[float]) -> bytes:
-    """Convert float list to little-endian bytes for BLOB storage."""
-    return struct.pack(f"<{len(vector)}f", *vector)
+def serialize_f32(vector: list[float]) -> list[float]:
+    """Pass-through for pgvector (accepts lists directly)."""
+    return vector
 
 
 def deserialize_f32(blob: bytes) -> np.ndarray:

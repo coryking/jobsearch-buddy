@@ -3,13 +3,13 @@
 Architecture: producer-consumer with a single-threaded DB writer.
 
     Producer (run thread)          Workers (ThreadPool)         Writer (single thread)
-    ┌─────────────────┐            ┌──────────────┐            ┌──────────────┐
-    │ poll DB          │──items──▶  │ work_queue   │──process──▶│ write_queue   │
-    │ filter dispatched│            │ (bounded)    │  submit_   │ (unbounded)  │
-    │ flush + re-poll  │            │              │  write()   │              │
-    └─────────────────┘            └──────────────┘            └──────────────┘
+    +------------------+            +--------------+            +--------------+
+    | poll DB          |--items-->  | work_queue   |--process-->| write_queue   |
+    | filter dispatched|            | (bounded)    |  submit_   | (unbounded)  |
+    | flush + re-poll  |            |              |  write()   |              |
+    +------------------+            +--------------+            +--------------+
 
-Workers pull from work_queue continuously — no batch boundaries, no idle time.
+Workers pull from work_queue continuously -- no batch boundaries, no idle time.
 The dispatched set (in-memory) tracks items already queued so re-polls after
 flush don't duplicate in-flight work. Safe on crash: items are still NULL in
 the DB and get picked up on the next run.
@@ -23,7 +23,6 @@ import threading
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Hashable
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 from typing import ClassVar, Generic, TypeVar
 
 T = TypeVar("T")
@@ -40,9 +39,9 @@ class WriteQueue:
     exhaustion, and zombie lock issues at high worker counts.
     """
 
-    def __init__(self, db_path: str):
+    def __init__(self, conninfo: str):
         self._queue: queue.Queue[Callable[[JobStore], None] | None] = queue.Queue()
-        self._db_path = db_path
+        self._conninfo = conninfo
         self._thread: threading.Thread | None = None
 
     def start(self) -> None:
@@ -50,7 +49,7 @@ class WriteQueue:
         self._thread.start()
 
     def _run(self) -> None:
-        store = JobStore(self._db_path)
+        store = JobStore(self._conninfo)
         try:
             while True:
                 fn = self._queue.get()
@@ -86,21 +85,21 @@ class WorkerPhase(ABC, Generic[T]):
     Type parameter T is the work item type (e.g. StripWorkItem, EmbedBatch).
     """
 
-    def __init__(self, db_path: str | Path, *, max_workers: int,
+    def __init__(self, conninfo: str, *, max_workers: int,
                  display: PhaseState,
                  upstream_done: threading.Event | None = None):
-        self.db_path = str(db_path)
+        self.conninfo = conninfo
         self.max_workers = max_workers
         self.display = display
         self._shutdown = threading.Event()
         self._upstream_done = upstream_done
-        self._reader: JobStore | None = None  # created lazily in run() thread
+        self._reader: JobStore | None = None
         self._writer: WriteQueue | None = None
 
     def _get_reader(self) -> JobStore:
-        """Lazy reader connection — created on the thread that calls run()."""
+        """Lazy reader connection -- created on the thread that calls run()."""
         if self._reader is None:
-            self._reader = JobStore(self.db_path)
+            self._reader = JobStore(self.conninfo)
         return self._reader
 
     def submit_write(self, fn: Callable[[JobStore], None]) -> None:
@@ -159,7 +158,7 @@ class WorkerPhase(ABC, Generic[T]):
         self.display.max_workers = self.max_workers
         self.on_phase_start()
 
-        self._writer = WriteQueue(self.db_path)
+        self._writer = WriteQueue(self.conninfo)
         self._writer.start()
 
         work_queue: queue.Queue[T | None] = queue.Queue(maxsize=self.max_workers * 2)

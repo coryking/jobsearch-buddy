@@ -8,7 +8,6 @@ import typer
 
 from jobbuddy.cli import app, console
 from jobbuddy.registry import list_companies, lookup_by_name
-from jobbuddy.settings import get_settings
 
 
 def parse_since(value: str) -> str:
@@ -49,11 +48,16 @@ def list_jobs(
 
     posted_after = parse_since(since) if since else None
 
-    if not get_settings().db_path.exists():
-        console.print("[yellow]No cached data. Run 'jsb sync' to populate.[/yellow]")
-        raise SystemExit(0)
+    try:
+        store = JobStore()
+    except Exception:
+        console.print("[yellow]Cannot connect to database. Check pg_service.conf.[/yellow]")
+        raise SystemExit(1)
 
-    store = JobStore()
+    if not store.cache_exists():
+        console.print("[yellow]No cached data. Run 'jsb sync' to populate.[/yellow]")
+        store.close()
+        raise SystemExit(0)
 
     # Resolve company slug if provided
     company_slug = None
@@ -117,10 +121,6 @@ def search(
 
     posted_after = parse_since(since) if since else None
 
-    if not get_settings().db_path.exists():
-        console.print("[yellow]No cached data. Run 'jsb sync' to populate.[/yellow]")
-        raise SystemExit(0)
-
     company_slug = None
     if company:
         resolved = lookup_by_name(company)
@@ -129,7 +129,11 @@ def search(
         else:
             company_slug = company  # try raw slug
 
-    store = JobStore()
+    try:
+        store = JobStore()
+    except Exception:
+        console.print("[yellow]Cannot connect to database. Check pg_service.conf.[/yellow]")
+        raise SystemExit(1)
     try:
         rows = store.query_jobs(
             company=company_slug,

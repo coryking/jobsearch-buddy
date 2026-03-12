@@ -305,10 +305,16 @@ def search_jobs(
 
     Returns the company registry if the company name isn't found."""
     from jobbuddy.search import VectorSearch
-    from jobbuddy.settings import get_settings
 
-    if not get_settings().db_path.exists():
-        return "No cached job data. Run `jsb sync` in the terminal to populate the cache."
+    try:
+        from jobbuddy.store import JobStore
+        test_store = JobStore()
+        has_data = test_store.cache_exists()
+        test_store.close()
+        if not has_data:
+            return "No cached job data. Run `jsb sync` in the terminal to populate the cache."
+    except Exception:
+        return "Cannot connect to database. Check pg_service.conf configuration."
 
     # Require at least a title or semantic query
     if not title_filter and not query:

@@ -1,4 +1,4 @@
-"""Tests for boilerplate stripping — store methods and StripPhase."""
+"""Tests for boilerplate stripping -- store methods and StripPhase."""
 
 from unittest.mock import MagicMock, patch
 
@@ -8,6 +8,8 @@ from jobbuddy.models import Job
 from jobbuddy.store import JobStore
 from jobbuddy.sync.display import PhaseState
 from jobbuddy.sync.strip import StripPhase
+
+TEST_CONNINFO = "service=job-search-buddy-remote"
 
 
 def _make_job(id: str = "123", title: str = "PM", location: str = "Seattle", **kw) -> Job:
@@ -21,13 +23,6 @@ def _make_job(id: str = "123", title: str = "PM", location: str = "Seattle", **k
     )
 
 
-@pytest.fixture
-def store():
-    s = JobStore(":memory:")
-    yield s
-    s.close()
-
-
 # ---------------------------------------------------------------------------
 # Store: description_stripped column
 # ---------------------------------------------------------------------------
@@ -35,20 +30,21 @@ def store():
 
 class TestStoreStripping:
     def test_description_stripped_column_exists(self, store):
-        cols = {row[1] for row in store.conn.execute("PRAGMA table_info(jobs)").fetchall()}
-        assert "description_stripped" in cols
+        row = store.conn.execute("""
+            SELECT column_name FROM information_schema.columns
+            WHERE table_name = 'jobs' AND column_name = 'description_stripped'
+        """).fetchone()
+        assert row is not None
 
     def test_get_jobs_needing_stripping(self, store):
         store.upsert_jobs("acme", [
             _make_job("1", description="Full description here"),
             _make_job("2", description="Another description"),
-            _make_job("3"),  # no description — should be excluded
+            _make_job("3"),  # no description -- should be excluded
         ])
-        # Manually set one as already stripped
         store.conn.execute(
             "UPDATE jobs SET description_stripped = 'cleaned' WHERE job_id = '1'"
         )
-        store.conn.commit()
 
         needing = store.get_jobs_needing_stripping()
         assert len(needing) == 1
@@ -59,7 +55,6 @@ class TestStoreStripping:
             _make_job("1", description="desc"),
             _make_job("2", description="desc"),
         ])
-        # Make job 2 disappear
         store.upsert_jobs("acme", [_make_job("1", description="desc")])
 
         needing = store.get_jobs_needing_stripping()
@@ -79,7 +74,7 @@ class TestStoreStripping:
         store.upsert_jobs("acme", [_make_job("1", description="raw")])
         pk = store.conn.execute("SELECT id FROM jobs WHERE job_id = '1'").fetchone()["id"]
         store.update_stripped_description(pk, "cleaned text")
-        row = store.conn.execute("SELECT description_stripped FROM jobs WHERE id = ?", (pk,)).fetchone()
+        row = store.conn.execute("SELECT description_stripped FROM jobs WHERE id = %s", (pk,)).fetchone()
         assert row["description_stripped"] == "cleaned text"
 
     def test_clear_stripped_descriptions(self, store):
@@ -88,47 +83,8 @@ class TestStoreStripping:
         store.update_stripped_description(pk, "cleaned")
         cleared = store.clear_stripped_descriptions()
         assert cleared == 1
-        row = store.conn.execute("SELECT description_stripped FROM jobs WHERE id = ?", (pk,)).fetchone()
+        row = store.conn.execute("SELECT description_stripped FROM jobs WHERE id = %s", (pk,)).fetchone()
         assert row["description_stripped"] is None
-
-    def test_column_migration_adds_description_stripped(self, tmp_path):
-        """Opening a DB without description_stripped column adds it via migration."""
-        import sqlite3
-
-        db_path = tmp_path / "old.db"
-        conn = sqlite3.connect(str(db_path))
-        conn.executescript("""
-            CREATE TABLE jobs (
-                id             INTEGER PRIMARY KEY AUTOINCREMENT,
-                company_slug   TEXT NOT NULL,
-                job_id         TEXT NOT NULL,
-                title          TEXT NOT NULL,
-                location       TEXT,
-                url            TEXT,
-                published_at   DATE,
-                department     TEXT,
-                team           TEXT,
-                salary         TEXT,
-                description    TEXT,
-                ats_metadata   TEXT,
-                last_seen      TIMESTAMP NOT NULL,
-                disappeared_at TIMESTAMP,
-                UNIQUE (company_slug, job_id)
-            );
-            CREATE TABLE sync_status (
-                company_slug TEXT PRIMARY KEY,
-                last_sync    TIMESTAMP NOT NULL,
-                job_count    INTEGER NOT NULL DEFAULT 0,
-                error        TEXT
-            );
-        """)
-        conn.commit()
-        conn.close()
-
-        store = JobStore(str(db_path))
-        cols = {row[1] for row in store.conn.execute("PRAGMA table_info(jobs)").fetchall()}
-        assert "description_stripped" in cols
-        store.close()
 
 
 # ---------------------------------------------------------------------------
@@ -138,22 +94,15 @@ class TestStoreStripping:
 
 class TestEmbedTextStripped:
     def test_embed_text_prefers_stripped(self, store):
-        """update_stripped_description deletes embedding, triggering re-embed."""
-        import struct
-
         store.upsert_jobs("acme", [_make_job("1", description="raw description")])
         pk = store.conn.execute("SELECT id FROM jobs WHERE job_id = '1'").fetchone()["id"]
 
-        # Give it a stripped description so it's eligible for embedding
-        store.conn.execute("UPDATE jobs SET description_stripped = 'raw description' WHERE id = ?", (pk,))
-        store.conn.commit()
+        store.conn.execute("UPDATE jobs SET description_stripped = 'raw description' WHERE id = %s", (pk,))
 
-        # Embed it
-        blob = struct.pack(f"<1536f", *([0.1] * 1536))
-        store.store_embedding(pk, blob)
+        vec = [0.1] * 1536
+        store.store_embedding(pk, vec)
         assert store.count_jobs_needing_embeddings() == 0
 
-        # Update stripped description — cascade deletes embedding
         store.update_stripped_description(pk, "stripped description")
         assert store.count_jobs_needing_embeddings() == 1
 
@@ -177,28 +126,26 @@ class TestEmbedTextStripped:
 
 
 class TestStripPhase:
-    """Tests for StripPhase directly — no sync_jobs() pipeline."""
+    """Tests for StripPhase directly -- no sync_jobs() pipeline."""
 
-    def _seed_jobs(self, db_path, jobs):
-        store = JobStore(db_path)
+    def _seed_jobs(self, conninfo, jobs):
+        store = JobStore(conninfo)
         store.upsert_jobs("acme", jobs)
         store.close()
 
-    def test_strip_phase_noop_when_no_work(self, tmp_path):
+    def test_strip_phase_noop_when_no_work(self, pg_conninfo):
         """StripPhase returns early when no jobs need stripping."""
-        db = str(tmp_path / "test.db")
-        self._seed_jobs(db, [_make_job("1")])  # no description → nothing to strip
+        self._seed_jobs(pg_conninfo, [_make_job("1")])
 
         display = PhaseState("Strip")
-        StripPhase(db, display=display, max_workers=1).run()
+        StripPhase(pg_conninfo, display=display, max_workers=1).run()
 
-        assert display.status == "pending"  # never started
+        assert display.status == "pending"
 
     @patch("jobbuddy.sync.strip.create_openai_client")
-    def test_strip_phase_calls_llm(self, mock_factory, tmp_path):
+    def test_strip_phase_calls_llm(self, mock_factory, pg_conninfo):
         """StripPhase calls OpenAI API for unstripped jobs."""
-        db = str(tmp_path / "test.db")
-        self._seed_jobs(db, [
+        self._seed_jobs(pg_conninfo, [
             _make_job("1", description="raw description with boilerplate"),
             _make_job("2", description="another raw description"),
         ])
@@ -211,15 +158,14 @@ class TestStripPhase:
         mock_factory.return_value = mock_client
 
         display = PhaseState("Strip")
-        StripPhase(db, display=display, max_workers=1).run()
+        StripPhase(pg_conninfo, display=display, max_workers=1).run()
 
         assert mock_client.chat.completions.create.call_count == 2
         assert display.total == 2
         assert display.done == 2
         assert display.status == "idle"
 
-        # Verify descriptions were updated
-        store = JobStore(db)
+        store = JobStore(pg_conninfo)
         row1 = store.conn.execute("SELECT description_stripped FROM jobs WHERE job_id = '1'").fetchone()
         row2 = store.conn.execute("SELECT description_stripped FROM jobs WHERE job_id = '2'").fetchone()
         assert row1["description_stripped"] == "cleaned description"
@@ -227,19 +173,16 @@ class TestStripPhase:
         store.close()
 
     @patch("jobbuddy.sync.strip.create_openai_client")
-    def test_strip_phase_skips_already_stripped(self, mock_factory, tmp_path):
+    def test_strip_phase_skips_already_stripped(self, mock_factory, pg_conninfo):
         """StripPhase skips jobs that already have stripped descriptions."""
-        db = str(tmp_path / "test.db")
-        self._seed_jobs(db, [
+        self._seed_jobs(pg_conninfo, [
             _make_job("1", description="raw"),
             _make_job("2", description="raw"),
         ])
-        # Manually mark job 1 as stripped
-        store = JobStore(db)
+        store = JobStore(pg_conninfo)
         store.conn.execute(
             "UPDATE jobs SET description_stripped = 'already clean' WHERE job_id = '1'"
         )
-        store.conn.commit()
         store.close()
 
         mock_response = MagicMock()
@@ -250,21 +193,14 @@ class TestStripPhase:
         mock_factory.return_value = mock_client
 
         display = PhaseState("Strip")
-        StripPhase(db, display=display, max_workers=1).run()
+        StripPhase(pg_conninfo, display=display, max_workers=1).run()
 
         assert mock_client.chat.completions.create.call_count == 1
 
     @patch("jobbuddy.sync.strip.create_openai_client")
-    def test_strip_phase_rejects_empty_llm_response(self, mock_factory, tmp_path):
-        """Empty LLM response records an error, not a silent empty write.
-
-        Regression: LLM returning empty content wrote description_stripped=''
-        which poisoned the embed phase (infinite silent retry on unfixable jobs).
-        The phase should record an error; the item stays unstripped in the DB
-        so it can be retried.
-        """
-        db = str(tmp_path / "test.db")
-        self._seed_jobs(db, [_make_job("1", description="real job description")])
+    def test_strip_phase_rejects_empty_llm_response(self, mock_factory, pg_conninfo):
+        """Empty LLM response records an error, not a silent empty write."""
+        self._seed_jobs(pg_conninfo, [_make_job("1", description="real job description")])
 
         mock_response = MagicMock()
         mock_response.choices[0].message.content = ""
@@ -274,16 +210,13 @@ class TestStripPhase:
         mock_factory.return_value = mock_client
 
         display = PhaseState("Strip")
-        StripPhase(db, display=display, max_workers=1).run()
+        StripPhase(pg_conninfo, display=display, max_workers=1).run()
 
-        # Error recorded, item NOT marked as done
         assert display.errors >= 1
 
-        # description_stripped stays NULL — not written as empty string
-        store = JobStore(db)
+        store = JobStore(pg_conninfo)
         row = store.conn.execute(
             "SELECT description_stripped FROM jobs WHERE job_id = '1'"
         ).fetchone()
         assert row["description_stripped"] is None
         store.close()
-

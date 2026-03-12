@@ -1,4 +1,4 @@
-"""Tests for sync orchestration in jobbuddy.sync."""
+"""Tests for sync orchestration in jobbuddy.sync (PostgreSQL)."""
 
 import queue
 from unittest.mock import MagicMock, patch
@@ -43,7 +43,7 @@ def _drain_events(eq):
 class TestSync:
     @patch("jobbuddy.sync.list_companies")
     @patch("jobbuddy.sync.fetch.get_fetcher")
-    def test_sync_single_company(self, mock_get_fetcher, mock_list_companies, tmp_path):
+    def test_sync_single_company(self, mock_get_fetcher, mock_list_companies, pg_conninfo):
         """Sync one company populates cache."""
         company = _make_company("acme")
         mock_list_companies.return_value = {"acme": company}
@@ -52,18 +52,16 @@ class TestSync:
         mock_fetcher.list_jobs.return_value = [_make_job("1"), _make_job("2")]
         mock_get_fetcher.return_value = mock_fetcher
 
-        db = tmp_path / "test.db"
         with patch("jobbuddy.sync.lookup_by_name", return_value=company):
-            results = sync_jobs(company_slugs=["acme"], db_path=str(db))
+            results = sync_jobs(company_slugs=["acme"], conninfo=pg_conninfo)
 
         assert len(results) == 1
         assert results[0].ok
         assert results[0].job_count == 2
         assert results[0].slug == "acme"
 
-        # Verify data in the DB
         from jobbuddy.store import JobStore
-        store = JobStore(str(db))
+        store = JobStore(pg_conninfo)
         assert store.job_count() == 2
         rows = store.query_jobs(company="acme")
         assert len(rows) == 2
@@ -71,7 +69,7 @@ class TestSync:
 
     @patch("jobbuddy.sync.list_companies")
     @patch("jobbuddy.sync.fetch.get_fetcher")
-    def test_sync_error_isolation(self, mock_get_fetcher, mock_list_companies, tmp_path):
+    def test_sync_error_isolation(self, mock_get_fetcher, mock_list_companies, pg_conninfo):
         """One company failing doesn't stop others."""
         good_co = _make_company("good")
         bad_co = _make_company("bad")
@@ -87,8 +85,7 @@ class TestSync:
 
         mock_get_fetcher.side_effect = side_effect
 
-        db = tmp_path / "test.db"
-        results = sync_jobs(max_workers=1, db_path=str(db))
+        results = sync_jobs(max_workers=1, conninfo=pg_conninfo)
 
         ok_results = [r for r in results if r.ok]
         err_results = [r for r in results if not r.ok]
@@ -98,7 +95,7 @@ class TestSync:
 
     @patch("jobbuddy.sync.list_companies")
     @patch("jobbuddy.sync.fetch.get_fetcher")
-    def test_sync_events_fire(self, mock_get_fetcher, mock_list_companies, tmp_path):
+    def test_sync_events_fire(self, mock_get_fetcher, mock_list_companies, pg_conninfo):
         """FetchResult events fire for each company."""
         company = _make_company("acme")
         mock_list_companies.return_value = {"acme": company}
@@ -108,15 +105,13 @@ class TestSync:
         mock_get_fetcher.return_value = mock_fetcher
 
         eq = queue.SimpleQueue()
-        db = tmp_path / "test.db"
-        sync_jobs(events=eq, db_path=str(db))
+        sync_jobs(events=eq, conninfo=pg_conninfo)
 
         events = _drain_events(eq)
         fetch_results = [e for e in events if isinstance(e, FetchResult)]
         assert len(fetch_results) == 1
         assert fetch_results[0].result.ok
 
-        # Should have Done sentinel
         assert any(isinstance(e, Done) for e in events)
 
     def test_sync_unknown_company_raises(self):
@@ -134,7 +129,7 @@ class TestSync:
 
     @patch("jobbuddy.sync.list_companies")
     @patch("jobbuddy.sync.fetch.get_fetcher")
-    def test_sync_stale_skips_recent(self, mock_get_fetcher, mock_list_companies, tmp_path):
+    def test_sync_stale_skips_recent(self, mock_get_fetcher, mock_list_companies, pg_conninfo):
         """--stale flag skips recently synced companies."""
         company = _make_company("acme")
         mock_list_companies.return_value = {"acme": company}
@@ -143,15 +138,14 @@ class TestSync:
         mock_fetcher.list_jobs.return_value = [_make_job("1")]
         mock_get_fetcher.return_value = mock_fetcher
 
-        db = tmp_path / "test.db"
         # First sync
-        sync_jobs(db_path=str(db))
+        sync_jobs(conninfo=pg_conninfo)
         # Second sync with stale_hours=24 should skip
         eq = queue.SimpleQueue()
         results = sync_jobs(
             stale_hours=24,
             events=eq,
-            db_path=str(db),
+            conninfo=pg_conninfo,
         )
         assert len(results) == 0
 
@@ -162,37 +156,22 @@ class TestSync:
 
 
 class TestEnrichment:
-    """Tests for EnrichPhase directly — no sync_jobs() pipeline."""
+    """Tests for EnrichPhase directly -- no sync_jobs() pipeline."""
 
-    def _seed_jobs(self, db_path, slug, jobs):
+    def _seed_jobs(self, conninfo, slug, jobs):
         """Insert jobs into the DB (simulates what FetchPhase does)."""
         from jobbuddy.store import JobStore
-        store = JobStore(db_path)
+        store = JobStore(conninfo)
         store.upsert_jobs(slug, jobs)
         store.close()
 
-    def _make_enricher(self, db_path, slug, company, mock_fetcher, max_workers=1):
-        """Create an EnrichPhase with a mocked fetcher."""
-        from jobbuddy.sync.display import PhaseState
-        from jobbuddy.sync.enrich import EnrichPhase
-        with patch("jobbuddy.sync.enrich.get_fetcher", return_value=mock_fetcher):
-            phase = EnrichPhase(
-                db_path,
-                slugs=[slug],
-                targets=[company],
-                display=PhaseState("Enrich"),
-                max_workers=max_workers,
-            )
-        return phase
-
     @patch("jobbuddy.sync.enrich.get_fetcher")
     def test_enrichment_fetches_descriptions_for_stub_fetchers(
-        self, mock_get_fetcher, tmp_path
+        self, mock_get_fetcher, pg_conninfo
     ):
         """Jobs from fetchers with descriptions_in_listing=False get descriptions."""
         company = _make_company("workday-co", ats="workday")
-        db = str(tmp_path / "test.db")
-        self._seed_jobs(db, "workday-co", [
+        self._seed_jobs(pg_conninfo, "workday-co", [
             _make_job("1", "PM", ats_metadata={"ext_path": "/job/1"}),
             _make_job("2", "SWE", ats_metadata={"ext_path": "/job/2"}),
         ])
@@ -211,12 +190,12 @@ class TestEnrichment:
         from jobbuddy.sync.display import PhaseState
         from jobbuddy.sync.enrich import EnrichPhase
         EnrichPhase(
-            db, slugs=["workday-co"], targets=[company],
+            pg_conninfo, slugs=["workday-co"], targets=[company],
             display=PhaseState("Enrich"), max_workers=1,
         ).run()
 
         from jobbuddy.store import JobStore
-        store = JobStore(db)
+        store = JobStore(pg_conninfo)
         row1 = store.conn.execute("SELECT description FROM jobs WHERE job_id = '1'").fetchone()
         row2 = store.conn.execute("SELECT description FROM jobs WHERE job_id = '2'").fetchone()
         assert row1["description"] == "PM description"
@@ -224,11 +203,10 @@ class TestEnrichment:
         store.close()
 
     @patch("jobbuddy.sync.enrich.get_fetcher")
-    def test_no_enrichment_for_full_fetchers(self, mock_get_fetcher, tmp_path):
+    def test_no_enrichment_for_full_fetchers(self, mock_get_fetcher, pg_conninfo):
         """Fetchers with descriptions_in_listing=True don't trigger enrichment."""
         company = _make_company("acme")
-        db = str(tmp_path / "test.db")
-        self._seed_jobs(db, "acme", [_make_job("1")])
+        self._seed_jobs(pg_conninfo, "acme", [_make_job("1")])
 
         mock_fetcher = MagicMock()
         mock_fetcher.descriptions_in_listing = True
@@ -237,18 +215,17 @@ class TestEnrichment:
         from jobbuddy.sync.display import PhaseState
         from jobbuddy.sync.enrich import EnrichPhase
         EnrichPhase(
-            db, slugs=["acme"], targets=[company],
+            pg_conninfo, slugs=["acme"], targets=[company],
             display=PhaseState("Enrich"), max_workers=1,
         ).run()
 
         mock_fetcher.fetch_descriptions.assert_not_called()
 
     @patch("jobbuddy.sync.enrich.get_fetcher")
-    def test_enrichment_skips_already_described_jobs(self, mock_get_fetcher, tmp_path):
+    def test_enrichment_skips_already_described_jobs(self, mock_get_fetcher, pg_conninfo):
         """EnrichPhase doesn't re-enrich jobs that already have descriptions."""
         company = _make_company("workday-co", ats="workday")
-        db = str(tmp_path / "test.db")
-        self._seed_jobs(db, "workday-co", [_make_job("1")])
+        self._seed_jobs(pg_conninfo, "workday-co", [_make_job("1")])
 
         mock_fetcher = MagicMock()
         mock_fetcher.descriptions_in_listing = False
@@ -264,27 +241,24 @@ class TestEnrichment:
         from jobbuddy.sync.display import PhaseState
         from jobbuddy.sync.enrich import EnrichPhase
 
-        # First run: enriches the job
         EnrichPhase(
-            db, slugs=["workday-co"], targets=[company],
+            pg_conninfo, slugs=["workday-co"], targets=[company],
             display=PhaseState("Enrich"), max_workers=1,
         ).run()
         assert mock_fetcher.fetch_descriptions.call_count == 1
 
-        # Second run: nothing to do
         mock_fetcher.fetch_descriptions.reset_mock()
         EnrichPhase(
-            db, slugs=["workday-co"], targets=[company],
+            pg_conninfo, slugs=["workday-co"], targets=[company],
             display=PhaseState("Enrich"), max_workers=1,
         ).run()
         mock_fetcher.fetch_descriptions.assert_not_called()
 
     @patch("jobbuddy.sync.enrich.get_fetcher")
-    def test_enrichment_failure_isolated(self, mock_get_fetcher, tmp_path):
-        """Enrichment failure is caught by WorkerPhase — run() completes."""
+    def test_enrichment_failure_isolated(self, mock_get_fetcher, pg_conninfo):
+        """Enrichment failure is caught by WorkerPhase -- run() completes."""
         company = _make_company("workday-co", ats="workday")
-        db = str(tmp_path / "test.db")
-        self._seed_jobs(db, "workday-co", [_make_job("1")])
+        self._seed_jobs(pg_conninfo, "workday-co", [_make_job("1")])
 
         mock_fetcher = MagicMock()
         mock_fetcher.descriptions_in_listing = False
@@ -295,18 +269,17 @@ class TestEnrichment:
         from jobbuddy.sync.enrich import EnrichPhase
         display = PhaseState("Enrich")
         EnrichPhase(
-            db, slugs=["workday-co"], targets=[company],
+            pg_conninfo, slugs=["workday-co"], targets=[company],
             display=display, max_workers=1,
         ).run()
 
         assert display.errors == 1
 
     @patch("jobbuddy.sync.enrich.get_fetcher")
-    def test_enrichment_display_state(self, mock_get_fetcher, tmp_path):
+    def test_enrichment_display_state(self, mock_get_fetcher, pg_conninfo):
         """EnrichPhase updates PhaseState: total, done, status."""
         company = _make_company("workday-co", ats="workday")
-        db = str(tmp_path / "test.db")
-        self._seed_jobs(db, "workday-co", [_make_job("1"), _make_job("2")])
+        self._seed_jobs(pg_conninfo, "workday-co", [_make_job("1"), _make_job("2")])
 
         mock_fetcher = MagicMock()
         mock_fetcher.descriptions_in_listing = False
@@ -323,7 +296,7 @@ class TestEnrichment:
         from jobbuddy.sync.enrich import EnrichPhase
         display = PhaseState("Enrich")
         EnrichPhase(
-            db, slugs=["workday-co"], targets=[company],
+            pg_conninfo, slugs=["workday-co"], targets=[company],
             display=display, max_workers=1,
         ).run()
 
@@ -332,11 +305,10 @@ class TestEnrichment:
         assert display.status == "idle"
 
     @patch("jobbuddy.sync.enrich.get_fetcher")
-    def test_enrichment_passes_metadata(self, mock_get_fetcher, tmp_path):
+    def test_enrichment_passes_metadata(self, mock_get_fetcher, pg_conninfo):
         """Enrichment passes ats_metadata from DB to fetch_descriptions."""
         company = _make_company("workday-co", ats="workday")
-        db = str(tmp_path / "test.db")
-        self._seed_jobs(db, "workday-co", [
+        self._seed_jobs(pg_conninfo, "workday-co", [
             _make_job("1", ats_metadata={"ext_path": "/job/1"}),
         ])
 
@@ -356,7 +328,7 @@ class TestEnrichment:
         from jobbuddy.sync.display import PhaseState
         from jobbuddy.sync.enrich import EnrichPhase
         EnrichPhase(
-            db, slugs=["workday-co"], targets=[company],
+            pg_conninfo, slugs=["workday-co"], targets=[company],
             display=PhaseState("Enrich"), max_workers=1,
         ).run()
 
@@ -364,11 +336,10 @@ class TestEnrichment:
         assert captured_metadata["1"]["ext_path"] == "/job/1"
 
     @patch("jobbuddy.sync.enrich.get_fetcher")
-    def test_incremental_commit_survives_partial_failure(self, mock_get_fetcher, tmp_path):
+    def test_incremental_commit_survives_partial_failure(self, mock_get_fetcher, pg_conninfo):
         """Descriptions committed via on_fetched survive even if later jobs fail."""
         company = _make_company("workday-co", ats="workday")
-        db = str(tmp_path / "test.db")
-        self._seed_jobs(db, "workday-co", [_make_job("1"), _make_job("2")])
+        self._seed_jobs(pg_conninfo, "workday-co", [_make_job("1"), _make_job("2")])
 
         mock_fetcher = MagicMock()
         mock_fetcher.descriptions_in_listing = False
@@ -384,12 +355,12 @@ class TestEnrichment:
         from jobbuddy.sync.display import PhaseState
         from jobbuddy.sync.enrich import EnrichPhase
         EnrichPhase(
-            db, slugs=["workday-co"], targets=[company],
+            pg_conninfo, slugs=["workday-co"], targets=[company],
             display=PhaseState("Enrich"), max_workers=1,
         ).run()
 
         from jobbuddy.store import JobStore
-        store = JobStore(db)
+        store = JobStore(pg_conninfo)
         row1 = store.conn.execute("SELECT description FROM jobs WHERE job_id = '1'").fetchone()
         row2 = store.conn.execute("SELECT description FROM jobs WHERE job_id = '2'").fetchone()
         assert row1["description"] == "first description"

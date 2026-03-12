@@ -1,4 +1,4 @@
-"""EmbedPhase -- embedding generation via Azure OpenAI text-embedding-3-small.
+"""EmbedPhase -- embedding generation via OpenAI text-embedding-3-small.
 
 Single model. Batch processing to maximize throughput within API limits.
 """
@@ -7,9 +7,8 @@ from __future__ import annotations
 
 import logging
 import threading
-from pathlib import Path
 
-from jobbuddy.embeddings import compute_batch_size, embed_texts, serialize_f32
+from jobbuddy.embeddings import compute_batch_size, embed_texts
 from jobbuddy.models import Job
 from jobbuddy.sync.base import WorkerPhase
 from jobbuddy.sync.display import PhaseState
@@ -25,10 +24,10 @@ class EmbedPhase(WorkerPhase["EmbedBatch"]):
     Each batch is embedded in a single API call, then results are stored individually.
     """
 
-    def __init__(self, db_path: str | Path, *, display: PhaseState,
+    def __init__(self, conninfo: str, *, display: PhaseState,
                  max_workers: int = 1, slugs: list[str] | None = None,
                  upstream_done: threading.Event | None = None):
-        super().__init__(db_path, max_workers=max_workers, display=display,
+        super().__init__(conninfo, max_workers=max_workers, display=display,
                          upstream_done=upstream_done)
         self._batch_size = compute_batch_size()
         self._slugs = slugs
@@ -95,9 +94,8 @@ class EmbedPhase(WorkerPhase["EmbedBatch"]):
             self.display.token_rate.record(total_tokens)
 
         for job_info, vec in zip(valid_jobs, vectors):
-            blob = serialize_f32(vec)
             jid = job_info["id"]
-            self.submit_write(lambda store, j=jid, b=blob: store.store_embedding(j, b))
+            self.submit_write(lambda store, j=jid, v=vec: store.store_embedding(j, v))
             self.display.advance(
                 detail=f"{job_info['company_slug']}: {job_info['title']}"
             )
