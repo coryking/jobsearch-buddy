@@ -154,6 +154,7 @@ class WorkerPhase(ABC, Generic[T]):
                         return
                     break
 
+        log.info("%s phase starting (%d items)", self.display.name, total)
         self.display.start(total)
         self.display.max_workers = self.max_workers
         self.on_phase_start()
@@ -218,6 +219,8 @@ class WorkerPhase(ABC, Generic[T]):
             if self._reader is not None:
                 self._reader.close()
             self.display.finish()
+            log.info("%s phase done (%d done, %d errors)",
+                     self.display.name, self.display.done, self.display.errors)
 
     def shutdown(self) -> None:
         self._shutdown.set()

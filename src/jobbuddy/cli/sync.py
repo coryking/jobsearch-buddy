@@ -12,6 +12,8 @@ from jobbuddy.cli import app, console
 from jobbuddy.registry import list_companies
 from jobbuddy.settings import get_settings
 
+log = logging.getLogger(__name__)
+
 
 # ---------------------------------------------------------------------------
 # Event consumer for fetch phase (FetchPhase still uses the event queue)
@@ -141,11 +143,11 @@ def sync(
     run_fetch = "fetch" in selected
     interactive = console.is_terminal
 
-    # Non-interactive: configure logging so warnings/errors go to stderr.
+    # Non-interactive: configure logging so info/warnings/errors go to stderr.
     # Interactive mode relies on the Rich Live TUI instead.
     if not interactive:
         logging.basicConfig(
-            level=logging.WARNING,
+            level=logging.INFO,
             format="%(levelname)s %(name)s: %(message)s",
         )
 
@@ -157,11 +159,17 @@ def sync(
 
     state = SyncDisplayState()
 
+    if not interactive:
+        phase_label = ", ".join(sorted(selected)) if phase_set else "all"
+        log.info("jsb sync starting (phases: %s)", phase_label)
+
     if run_fetch:
         registry = list_companies()
         scrapeable = sum(1 for c in registry.values() if c.ats is not None)
         target_count = len(company) if company else scrapeable
         state.fetch.start(target_count)
+        if not interactive:
+            log.info("Fetching %d companies", target_count)
 
     def _run_sync():
         return _run_fetch_with_events(
@@ -190,7 +198,15 @@ def sync(
 
     # Summary after sync completes
     if not results and run_fetch:
-        console.print("[dim]Nothing to sync.[/dim]")
+        if not interactive:
+            log.info("Nothing to sync")
+        else:
+            console.print("[dim]Nothing to sync.[/dim]")
         return
 
-    print_sync_summary(console, state)
+    if not interactive:
+        for phase in state.phases:
+            if phase.status != "pending":
+                log.info("%s: %d done, %d errors", phase.name, phase.done, phase.errors)
+    else:
+        print_sync_summary(console, state)

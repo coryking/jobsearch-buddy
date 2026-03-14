@@ -41,6 +41,7 @@ class FetchPhase:
         """
         results: list[SyncResult] = []
         slugs_to_embed: list[str] = []
+        log.info("Fetch phase starting (%d companies)", len(self.targets))
 
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
             future_to_slug = {}
@@ -74,6 +75,10 @@ class FetchPhase:
                 results.append(sr)
                 self.events.put(FetchResult(sr))
 
+        ok = sum(1 for r in results if r.ok)
+        errs = sum(1 for r in results if not r.ok)
+        total_jobs = sum(r.job_count or 0 for r in results)
+        log.info("Fetch phase done (%d ok, %d errors, %d jobs)", ok, errs, total_jobs)
         return results, slugs_to_embed
 
     def _fetch_company(self, company: Company) -> tuple[str, list[Job] | str]:
