@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from jobbuddy.models import Company, Job
+from jobbuddy.settings import Settings
 from jobbuddy.sync import SyncResult, sync_jobs
 from jobbuddy.sync.types import (
     CompanySkipped,
@@ -366,6 +367,123 @@ class TestEnrichment:
         assert row1["description"] == "first description"
         assert row2["description"] is None
         store.close()
+
+
+class TestValidateSyncConfig:
+    """Tests for validate_sync_config() — all preconditions checked up front."""
+
+    def _settings(self, has_openai: bool = True) -> Settings:
+        """Build a Settings with controlled OpenAI state."""
+        return Settings(
+            pg_service="job-search-buddy-test",
+            openai_api_key="test-key" if has_openai else None,
+        )
+
+    def test_rejects_invalid_phases(self):
+        """Invalid phase names raise ValueError before any I/O."""
+        from jobbuddy.sync import validate_sync_config
+
+        with pytest.raises(ValueError, match="Invalid phase"):
+            validate_sync_config(phases={"bogus"}, settings=self._settings())
+
+    def test_requires_openai_for_strip(self):
+        """Missing OpenAI key with strip phase raises ValueError."""
+        from jobbuddy.sync import validate_sync_config
+
+        with pytest.raises(ValueError, match="JOBBUDDY_OPENAI_API_KEY"):
+            validate_sync_config(
+                phases={"fetch", "strip"},
+                settings=self._settings(has_openai=False),
+            )
+
+    def test_requires_openai_for_embed(self):
+        """Missing OpenAI key with embed phase raises ValueError."""
+        from jobbuddy.sync import validate_sync_config
+
+        with pytest.raises(ValueError, match="JOBBUDDY_OPENAI_API_KEY"):
+            validate_sync_config(
+                phases={"fetch", "embed"},
+                settings=self._settings(has_openai=False),
+            )
+
+    def test_fetch_enrich_ok_without_openai(self):
+        """fetch + enrich works without OpenAI key."""
+        from jobbuddy.sync import validate_sync_config
+
+        config = validate_sync_config(
+            phases={"fetch", "enrich"},
+            settings=self._settings(has_openai=False),
+        )
+        assert config.phases == {"fetch", "enrich"}
+
+    def test_all_phases_requires_openai(self):
+        """Running all phases (default) requires OpenAI."""
+        from jobbuddy.sync import validate_sync_config
+
+        with pytest.raises(ValueError, match="JOBBUDDY_OPENAI_API_KEY"):
+            validate_sync_config(
+                phases=None,
+                settings=self._settings(has_openai=False),
+            )
+
+    @patch("jobbuddy.sync.lookup_by_name")
+    def test_resolves_company_slugs(self, mock_lookup):
+        """Company names are resolved to Company objects."""
+        from jobbuddy.sync import validate_sync_config
+
+        company = _make_company("acme")
+        mock_lookup.return_value = company
+        config = validate_sync_config(
+            phases={"fetch"},
+            company_slugs=["acme"],
+            settings=self._settings(),
+        )
+        assert len(config.targets) == 1
+        assert config.targets[0].slug == "acme"
+
+    @patch("jobbuddy.sync.lookup_by_name", return_value=None)
+    def test_unknown_company_raises(self, mock_lookup):
+        """Unknown company name raises ValueError."""
+        from jobbuddy.sync import validate_sync_config
+
+        with pytest.raises(ValueError, match="Unknown company"):
+            validate_sync_config(
+                phases={"fetch"},
+                company_slugs=["nonexistent"],
+                settings=self._settings(),
+            )
+
+    @patch("jobbuddy.sync.lookup_by_name")
+    def test_company_without_ats_raises(self, mock_lookup):
+        """Company without ATS config raises ValueError."""
+        from jobbuddy.sync import validate_sync_config
+
+        company = Company(slug="noats", name="No ATS", ats=None, board=None)
+        mock_lookup.return_value = company
+        with pytest.raises(ValueError, match="No ATS configured"):
+            validate_sync_config(
+                phases={"fetch"},
+                company_slugs=["noats"],
+                settings=self._settings(),
+            )
+
+    def test_returns_conninfo_from_settings(self):
+        """Config.conninfo comes from settings.pg_conninfo."""
+        from jobbuddy.sync import validate_sync_config
+
+        settings = self._settings()
+        config = validate_sync_config(
+            phases={"fetch", "enrich"},
+            settings=settings,
+        )
+        assert config.conninfo == settings.pg_conninfo
+
+    def test_default_phases_is_all(self):
+        """phases=None resolves to all four phases."""
+        from jobbuddy.sync import validate_sync_config, VALID_PHASES
+
+        config = validate_sync_config(phases=None, settings=self._settings())
+        assert config.phases == VALID_PHASES
 
 
 class TestSyncResult:
