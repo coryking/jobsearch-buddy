@@ -137,8 +137,10 @@ class WorkerPhase(ABC, Generic[T]):
         total = self.count_remaining()
 
         if total == 0 and not self._upstream_done:
+            log.info("%s phase skipped (nothing to do)", self.display.name)
             return
         if total == 0 and self._upstream_done and self._upstream_done.is_set():
+            log.info("%s phase skipped (nothing to do)", self.display.name)
             return
 
         # If upstream is still running and we have no work yet, wait for it
@@ -151,6 +153,7 @@ class WorkerPhase(ABC, Generic[T]):
                 if self._upstream_done.is_set():
                     total = self.count_remaining()
                     if total == 0:
+                        log.info("%s phase skipped (nothing to do)", self.display.name)
                         return
                     break
 
