@@ -1,6 +1,5 @@
 """Tests for sync orchestration in jobbuddy.sync (PostgreSQL)."""
 
-import queue
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -8,11 +7,6 @@ import pytest
 from jobbuddy.models import Company, Job
 from jobbuddy.settings import Settings
 from jobbuddy.sync import SyncResult, sync_jobs
-from jobbuddy.sync.types import (
-    CompanySkipped,
-    Done,
-    FetchResult,
-)
 
 
 def _make_job(id: str, title: str = "PM", ats_metadata: dict | None = None) -> Job:
@@ -28,17 +22,6 @@ def _make_job(id: str, title: str = "PM", ats_metadata: dict | None = None) -> J
 
 def _make_company(slug: str, ats: str = "greenhouse") -> Company:
     return Company(slug=slug, name=slug.title(), ats=ats, board=slug)
-
-
-def _drain_events(eq):
-    """Drain all events from a SimpleQueue into a list."""
-    events = []
-    while True:
-        try:
-            events.append(eq.get_nowait())
-        except queue.Empty:
-            break
-    return events
 
 
 class TestSync:
@@ -96,8 +79,10 @@ class TestSync:
 
     @patch("jobbuddy.sync.list_companies")
     @patch("jobbuddy.sync.fetch.get_fetcher")
-    def test_sync_events_fire(self, mock_get_fetcher, mock_list_companies, pg_conninfo):
-        """FetchResult events fire for each company."""
+    def test_sync_updates_display_state(self, mock_get_fetcher, mock_list_companies, pg_conninfo):
+        """sync_jobs updates display_state.fetch via PhaseState."""
+        from jobbuddy.sync.display import SyncDisplayState
+
         company = _make_company("acme")
         mock_list_companies.return_value = {"acme": company}
 
@@ -105,15 +90,11 @@ class TestSync:
         mock_fetcher.list_jobs.return_value = [_make_job("1")]
         mock_get_fetcher.return_value = mock_fetcher
 
-        eq = queue.SimpleQueue()
-        sync_jobs(events=eq, conninfo=pg_conninfo)
+        state = SyncDisplayState()
+        sync_jobs(display_state=state, conninfo=pg_conninfo)
 
-        events = _drain_events(eq)
-        fetch_results = [e for e in events if isinstance(e, FetchResult)]
-        assert len(fetch_results) == 1
-        assert fetch_results[0].result.ok
-
-        assert any(isinstance(e, Done) for e in events)
+        assert state.fetch.done == 1
+        assert state.fetch.status == "idle"
 
     # NOTE: test_sync_unknown_company_raises and test_sync_no_ats_raises
     # moved to TestValidateSyncConfig — validation happens in
@@ -133,18 +114,11 @@ class TestSync:
         # First sync
         sync_jobs(conninfo=pg_conninfo)
         # Second sync with stale_hours=24 should skip
-        eq = queue.SimpleQueue()
         results = sync_jobs(
             stale_hours=24,
-            events=eq,
             conninfo=pg_conninfo,
         )
         assert len(results) == 0
-
-        events = _drain_events(eq)
-        skipped = [e for e in events if isinstance(e, CompanySkipped)]
-        assert len(skipped) == 1
-        assert skipped[0].slug == "acme"
 
 
 class TestFetchPhaseState:

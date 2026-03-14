@@ -151,7 +151,7 @@ def sync_jobs(
         company_slugs: Sync only these companies (None = all).
         stale_hours: Skip companies synced within this many hours.
         max_workers: Thread pool size for fetch phase.
-        events: Legacy event queue (kept for backward compatibility).
+        events: Deprecated, ignored. Kept for signature compatibility.
         conninfo: PostgreSQL connection string (None = default from settings).
         display_state: Shared display state for Rich Live TUI.
         phases: Which phases to run (None = all). Must be subset of VALID_PHASES.
@@ -160,9 +160,6 @@ def sync_jobs(
     import random
 
     run_phases = phases if phases is not None else VALID_PHASES
-
-    if events is None:
-        events = queue.SimpleQueue()
 
     if display_state is None:
         display_state = SyncDisplayState()
@@ -191,23 +188,21 @@ def sync_jobs(
                 for c in targets:
                     if store.is_stale(c.slug, stale_hours):
                         filtered.append(c)
-                    else:
-                        events.put(CompanySkipped(c.slug, "recently synced"))
                 targets = filtered
 
             if not targets:
-                events.put(Done())
                 return []
 
             # Shuffle to spread same-platform companies across time
             random.shuffle(targets)
 
             # Phase 1: Fetch
-            results, slugs_to_embed = FetchPhase(store, targets, max_workers, events).run()
+            results, slugs_to_embed = FetchPhase(
+                store, targets, max_workers, display=display_state.fetch,
+            ).run()
         finally:
             store.close()
     else:
-        events.put(Done())
         # When skipping fetch, build targets for enrich from registry
         if company_slugs:
             targets = _resolve_company_targets(company_slugs)
@@ -307,8 +302,4 @@ def sync_jobs(
     for t in threads:
         t.join()
 
-    # Signal fetch consumer that all phases are complete.
-    # (When fetch is skipped, Done was already sent above.)
-    if "fetch" in run_phases:
-        events.put(Done())
     return results
