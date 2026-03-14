@@ -144,12 +144,14 @@ def sync(
     interactive = console.is_terminal
 
     # Non-interactive: configure logging so info/warnings/errors go to stderr.
-    # Interactive mode relies on the Rich Live TUI instead.
+    # Root stays at WARNING to suppress httpx/urllib3 noise; only our
+    # loggers get INFO.
     if not interactive:
         logging.basicConfig(
-            level=logging.INFO,
+            level=logging.WARNING,
             format="%(levelname)s %(name)s: %(message)s",
         )
+        logging.getLogger("jobbuddy").setLevel(logging.INFO)
 
     # Determine display filter: show only selected phases (capitalized to match PhaseState names)
     if phase_set:
