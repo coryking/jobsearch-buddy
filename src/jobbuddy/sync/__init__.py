@@ -6,20 +6,23 @@ Orchestrates four phases:
 3. StripPhase: LLM-based boilerplate removal (requires OpenAI API)
 4. EmbedPhase: embedding generation (requires OpenAI API)
 
-Strip and embed are optional -- they only run when OpenAI credentials are
-configured (JOBBUDDY_OPENAI_API_KEY). Without credentials, sync runs
-fetch + enrich only.
+All four phases run by default. Strip and embed require OpenAI credentials
+(JOBBUDDY_OPENAI_API_KEY) — sync fails fast if they're missing.
 
 Phases use DB-as-queue: each polls PostgreSQL for work items and updates
 PhaseState objects for live display. No event queue for inter-phase
 coordination -- phases are independent and idempotent.
 """
 
+from __future__ import annotations
+
 import queue
 import threading
+from dataclasses import dataclass, field
 
+from jobbuddy.models import Company
 from jobbuddy.registry import list_companies, lookup_by_name
-from jobbuddy.settings import get_settings
+from jobbuddy.settings import Settings, get_settings
 from jobbuddy.store import JobStore
 from jobbuddy.sync.display import SyncDisplayState
 from jobbuddy.sync.types import (
@@ -29,7 +32,7 @@ from jobbuddy.sync.types import (
     SyncResult,
 )
 
-__all__ = ["sync_jobs", "SyncResult", "VALID_PHASES"]
+__all__ = ["sync_jobs", "validate_sync_config", "SyncConfig", "SyncResult", "VALID_PHASES"]
 from jobbuddy.sync.embed import EmbedPhase
 from jobbuddy.sync.enrich import EnrichPhase
 from jobbuddy.sync.fetch import FetchPhase
@@ -37,11 +40,80 @@ from jobbuddy.sync.strip import StripPhase
 
 
 # ---------------------------------------------------------------------------
-# Orchestrator
+# Configuration
 # ---------------------------------------------------------------------------
 
 
 VALID_PHASES = {"fetch", "enrich", "strip", "embed"}
+_OPENAI_PHASES = {"strip", "embed"}
+
+
+@dataclass
+class SyncConfig:
+    """Validated sync configuration. Built by validate_sync_config()."""
+
+    phases: set[str]
+    conninfo: str
+    targets: list[Company] = field(default_factory=list)
+    company_slugs: list[str] | None = None
+    stale_hours: float | None = None
+    max_workers: int = 5
+    force_strip: bool = False
+
+
+def validate_sync_config(
+    *,
+    phases: set[str] | None = None,
+    company_slugs: list[str] | None = None,
+    stale_hours: float | None = None,
+    max_workers: int = 5,
+    force_strip: bool = False,
+    settings: Settings | None = None,
+) -> SyncConfig:
+    """Validate all sync preconditions up front. Returns SyncConfig or raises ValueError.
+
+    Checks: phase names valid, OpenAI key present for strip/embed, company slugs
+    resolve to known companies with ATS config.
+    """
+    if settings is None:
+        settings = get_settings()
+
+    # Resolve phases
+    resolved_phases = phases if phases is not None else VALID_PHASES
+    invalid = resolved_phases - VALID_PHASES
+    if invalid:
+        raise ValueError(
+            f"Invalid phase(s): {', '.join(sorted(invalid))}. "
+            f"Valid phases: {', '.join(sorted(VALID_PHASES))}"
+        )
+
+    # OpenAI required for strip/embed
+    needs_openai = resolved_phases & _OPENAI_PHASES
+    if needs_openai and not settings.has_openai:
+        raise ValueError(
+            f"JOBBUDDY_OPENAI_API_KEY required for {', '.join(sorted(needs_openai))} phase(s)"
+        )
+
+    # Resolve company targets
+    targets: list[Company] = []
+    if company_slugs:
+        for cs in company_slugs:
+            company = lookup_by_name(cs)
+            if not company:
+                raise ValueError(f"Unknown company: {cs}")
+            if not company.ats:
+                raise ValueError(f"No ATS configured for {company.name}")
+            targets.append(company)
+
+    return SyncConfig(
+        phases=resolved_phases,
+        conninfo=settings.pg_conninfo,
+        targets=targets,
+        company_slugs=company_slugs,
+        stale_hours=stale_hours,
+        max_workers=max_workers,
+        force_strip=force_strip,
+    )
 
 
 def sync_jobs(
