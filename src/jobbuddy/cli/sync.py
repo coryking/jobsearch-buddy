@@ -114,32 +114,23 @@ def sync(
         jsb sync strip embed        # just strip + embed
         jsb sync fetch              # fetch only
     """
-    from jobbuddy.sync import VALID_PHASES, sync_jobs
+    from jobbuddy.sync import VALID_PHASES, sync_jobs, validate_sync_config
     from jobbuddy.sync.display import SyncDisplayState, create_live, print_sync_summary
 
-    # Validate and resolve phase set
-    if phases:
-        phase_set = set(phases)
-        invalid = phase_set - VALID_PHASES
-        if invalid:
-            console.print(
-                f"[red]Invalid phase(s): {', '.join(sorted(invalid))}[/red]\n"
-                f"[dim]Valid phases: {', '.join(sorted(VALID_PHASES))}[/dim]"
-            )
-            raise SystemExit(1)
-    else:
-        phase_set = None  # all phases
+    # Validate all preconditions up front — before any I/O
+    phase_set = set(phases) if phases else None
+    try:
+        config = validate_sync_config(
+            phases=phase_set,
+            company_slugs=company or None,
+            stale_hours=stale,
+            force_strip=force,
+        )
+    except ValueError as e:
+        console.print(f"[red]{e}[/red]")
+        raise SystemExit(1)
 
-    # Phases requiring OpenAI
-    openai_phases = {"strip", "embed"}
-    selected = phase_set or VALID_PHASES
-    if selected & openai_phases:
-        settings = get_settings()
-        if not settings.has_openai:
-            console.print("[red]OpenAI API not configured.[/red]")
-            console.print("[dim]Set JOBBUDDY_OPENAI_API_KEY (and optionally JOBBUDDY_OPENAI_BASE_URL)[/dim]")
-            raise SystemExit(1)
-
+    selected = config.phases
     run_fetch = "fetch" in selected
     interactive = console.is_terminal
 

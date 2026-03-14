@@ -115,18 +115,9 @@ class TestSync:
 
         assert any(isinstance(e, Done) for e in events)
 
-    def test_sync_unknown_company_raises(self):
-        """Syncing a non-existent company raises ValueError."""
-        with patch("jobbuddy.sync.lookup_by_name", return_value=None):
-            with pytest.raises(ValueError, match="Unknown company"):
-                sync_jobs(company_slugs=["nonexistent"])
-
-    def test_sync_no_ats_raises(self):
-        """Syncing a company without ATS config raises ValueError."""
-        company = Company(slug="noats", name="No ATS", ats=None, board=None)
-        with patch("jobbuddy.sync.lookup_by_name", return_value=company):
-            with pytest.raises(ValueError, match="No ATS configured"):
-                sync_jobs(company_slugs=["noats"])
+    # NOTE: test_sync_unknown_company_raises and test_sync_no_ats_raises
+    # moved to TestValidateSyncConfig — validation happens in
+    # validate_sync_config(), not sync_jobs().
 
     @patch("jobbuddy.sync.list_companies")
     @patch("jobbuddy.sync.fetch.get_fetcher")

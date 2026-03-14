@@ -116,6 +116,19 @@ def validate_sync_config(
     )
 
 
+def _resolve_company_targets(company_slugs: list[str]) -> list[Company]:
+    """Resolve company slug/name strings to Company objects."""
+    targets = []
+    for cs in company_slugs:
+        company = lookup_by_name(cs)
+        if not company:
+            raise ValueError(f"Unknown company: {cs}")
+        if not company.ats:
+            raise ValueError(f"No ATS configured for {company.name}")
+        targets.append(company)
+    return targets
+
+
 def sync_jobs(
     company_slugs: list[str] | None = None,
     stale_hours: float | None = None,
@@ -146,17 +159,7 @@ def sync_jobs(
     """
     import random
 
-    # Resolve which phases to run
-    if phases is not None:
-        invalid = phases - VALID_PHASES
-        if invalid:
-            raise ValueError(
-                f"Invalid phase(s): {', '.join(sorted(invalid))}. "
-                f"Valid phases: {', '.join(sorted(VALID_PHASES))}"
-            )
-        run_phases = phases
-    else:
-        run_phases = VALID_PHASES
+    run_phases = phases if phases is not None else VALID_PHASES
 
     if events is None:
         events = queue.SimpleQueue()
@@ -166,7 +169,6 @@ def sync_jobs(
 
     registry = list_companies()
 
-    # Resolve conninfo
     if conninfo is None:
         conninfo = get_settings().pg_conninfo
 
@@ -175,16 +177,9 @@ def sync_jobs(
     slugs_to_embed: list[str] = []
 
     if "fetch" in run_phases:
-        # Build target list (validate before opening DB)
+        # Build target list
         if company_slugs:
-            targets = []
-            for cs in company_slugs:
-                company = lookup_by_name(cs)
-                if not company:
-                    raise ValueError(f"Unknown company: {cs}")
-                if not company.ats:
-                    raise ValueError(f"No ATS configured for {company.name}")
-                targets.append(company)
+            targets = _resolve_company_targets(company_slugs)
         else:
             targets = [c for c in registry.values() if c.ats is not None]
 
@@ -215,11 +210,7 @@ def sync_jobs(
         events.put(Done())
         # When skipping fetch, build targets for enrich from registry
         if company_slugs:
-            targets = []
-            for cs in company_slugs:
-                company = lookup_by_name(cs)
-                if company and company.ats:
-                    targets.append(company)
+            targets = _resolve_company_targets(company_slugs)
         else:
             targets = [c for c in registry.values() if c.ats is not None]
 
@@ -238,15 +229,6 @@ def sync_jobs(
     #   strip_done  -> embed keeps polling for newly-stripped descriptions
     enrich_done = threading.Event()
     strip_done = threading.Event()
-
-    settings = get_settings()
-
-    # Strip and embed require OpenAI credentials — fail loud if missing.
-    openai_phases = run_phases & {"strip", "embed"}
-    if openai_phases and not settings.has_openai:
-        raise ValueError(
-            f"JOBBUDDY_OPENAI_API_KEY required for {', '.join(sorted(openai_phases))} phase(s)"
-        )
 
     # Ensure schema/migrations run in the main thread before spawning
     # phase threads -- avoids race where multiple threads try to migrate
