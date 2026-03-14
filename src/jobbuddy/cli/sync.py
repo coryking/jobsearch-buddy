@@ -1,5 +1,6 @@
 """Sync pipeline command with phase selection."""
 
+import logging
 import queue
 import threading
 from typing import Optional
@@ -138,6 +139,15 @@ def sync(
             raise SystemExit(1)
 
     run_fetch = "fetch" in selected
+    interactive = console.is_terminal
+
+    # Non-interactive: configure logging so warnings/errors go to stderr.
+    # Interactive mode relies on the Rich Live TUI instead.
+    if not interactive:
+        logging.basicConfig(
+            level=logging.WARNING,
+            format="%(levelname)s %(name)s: %(message)s",
+        )
 
     # Determine display filter: show only selected phases (capitalized to match PhaseState names)
     if phase_set:
@@ -153,26 +163,32 @@ def sync(
         target_count = len(company) if company else scrapeable
         state.fetch.start(target_count)
 
-    with create_live(console, state, filter_phases=filter_phases):
-        try:
-            results = _run_fetch_with_events(
-                lambda events: sync_jobs(
-                    company_slugs=company or None,
-                    stale_hours=stale,
-                    events=events,
-                    display_state=state,
-                    phases=phase_set,
-                    force_strip=force,
-                ),
-                state,
-            )
-        except KeyboardInterrupt:
-            return
-        except ValueError as e:
-            console.print(f"[red]{e}[/red]")
-            raise SystemExit(1)
+    def _run_sync():
+        return _run_fetch_with_events(
+            lambda events: sync_jobs(
+                company_slugs=company or None,
+                stale_hours=stale,
+                events=events,
+                display_state=state,
+                phases=phase_set,
+                force_strip=force,
+            ),
+            state,
+        )
 
-    # Summary after Live exits
+    try:
+        if interactive:
+            with create_live(console, state, filter_phases=filter_phases):
+                results = _run_sync()
+        else:
+            results = _run_sync()
+    except KeyboardInterrupt:
+        return
+    except ValueError as e:
+        console.print(f"[red]{e}[/red]")
+        raise SystemExit(1)
+
+    # Summary after sync completes
     if not results and run_fetch:
         console.print("[dim]Nothing to sync.[/dim]")
         return
