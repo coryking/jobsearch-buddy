@@ -102,9 +102,10 @@ class ATSFetcher(ABC):
                     raise
                 wait = self.backoff_base * (2 ** attempt)
 
+            reason = str(last_exc).split("\n", 1)[0]
             log.warning(
                 "Retrying (attempt %d/%d, wait %.1fs): %s",
-                attempt + 1, self.max_retries, wait, last_exc,
+                attempt + 1, self.max_retries, wait, reason,
             )
             if on_retry:
                 on_retry(attempt + 1, self.max_retries, wait, str(last_exc))
