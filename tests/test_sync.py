@@ -1,17 +1,12 @@
 """Tests for sync orchestration in jobbuddy.sync (PostgreSQL)."""
 
-import queue
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from jobbuddy.models import Company, Job
+from jobbuddy.settings import Settings
 from jobbuddy.sync import SyncResult, sync_jobs
-from jobbuddy.sync.types import (
-    CompanySkipped,
-    Done,
-    FetchResult,
-)
 
 
 def _make_job(id: str, title: str = "PM", ats_metadata: dict | None = None) -> Job:
@@ -27,17 +22,6 @@ def _make_job(id: str, title: str = "PM", ats_metadata: dict | None = None) -> J
 
 def _make_company(slug: str, ats: str = "greenhouse") -> Company:
     return Company(slug=slug, name=slug.title(), ats=ats, board=slug)
-
-
-def _drain_events(eq):
-    """Drain all events from a SimpleQueue into a list."""
-    events = []
-    while True:
-        try:
-            events.append(eq.get_nowait())
-        except queue.Empty:
-            break
-    return events
 
 
 class TestSync:
@@ -95,8 +79,10 @@ class TestSync:
 
     @patch("jobbuddy.sync.list_companies")
     @patch("jobbuddy.sync.fetch.get_fetcher")
-    def test_sync_events_fire(self, mock_get_fetcher, mock_list_companies, pg_conninfo):
-        """FetchResult events fire for each company."""
+    def test_sync_updates_display_state(self, mock_get_fetcher, mock_list_companies, pg_conninfo):
+        """sync_jobs updates display_state.fetch via PhaseState."""
+        from jobbuddy.sync.display import SyncDisplayState
+
         company = _make_company("acme")
         mock_list_companies.return_value = {"acme": company}
 
@@ -104,28 +90,15 @@ class TestSync:
         mock_fetcher.list_jobs.return_value = [_make_job("1")]
         mock_get_fetcher.return_value = mock_fetcher
 
-        eq = queue.SimpleQueue()
-        sync_jobs(events=eq, conninfo=pg_conninfo)
+        state = SyncDisplayState()
+        sync_jobs(display_state=state, conninfo=pg_conninfo)
 
-        events = _drain_events(eq)
-        fetch_results = [e for e in events if isinstance(e, FetchResult)]
-        assert len(fetch_results) == 1
-        assert fetch_results[0].result.ok
+        assert state.fetch.done == 1
+        assert state.fetch.status == "idle"
 
-        assert any(isinstance(e, Done) for e in events)
-
-    def test_sync_unknown_company_raises(self):
-        """Syncing a non-existent company raises ValueError."""
-        with patch("jobbuddy.sync.lookup_by_name", return_value=None):
-            with pytest.raises(ValueError, match="Unknown company"):
-                sync_jobs(company_slugs=["nonexistent"])
-
-    def test_sync_no_ats_raises(self):
-        """Syncing a company without ATS config raises ValueError."""
-        company = Company(slug="noats", name="No ATS", ats=None, board=None)
-        with patch("jobbuddy.sync.lookup_by_name", return_value=company):
-            with pytest.raises(ValueError, match="No ATS configured"):
-                sync_jobs(company_slugs=["noats"])
+    # NOTE: test_sync_unknown_company_raises and test_sync_no_ats_raises
+    # moved to TestValidateSyncConfig — validation happens in
+    # validate_sync_config(), not sync_jobs().
 
     @patch("jobbuddy.sync.list_companies")
     @patch("jobbuddy.sync.fetch.get_fetcher")
@@ -141,18 +114,75 @@ class TestSync:
         # First sync
         sync_jobs(conninfo=pg_conninfo)
         # Second sync with stale_hours=24 should skip
-        eq = queue.SimpleQueue()
         results = sync_jobs(
             stale_hours=24,
-            events=eq,
             conninfo=pg_conninfo,
         )
         assert len(results) == 0
 
-        events = _drain_events(eq)
-        skipped = [e for e in events if isinstance(e, CompanySkipped)]
-        assert len(skipped) == 1
-        assert skipped[0].slug == "acme"
+
+class TestFetchPhaseState:
+    """Tests for FetchPhase updating PhaseState directly (no event queue)."""
+
+    @patch("jobbuddy.sync.fetch.get_fetcher")
+    def test_fetch_updates_done_count(self, mock_get_fetcher, pg_conninfo):
+        """FetchPhase sets done count on PhaseState."""
+        from jobbuddy.sync.display import PhaseState
+        from jobbuddy.sync.fetch import FetchPhase
+        from jobbuddy.store import JobStore
+
+        company = _make_company("acme")
+        mock_fetcher = MagicMock()
+        mock_fetcher.list_jobs.return_value = [_make_job("1"), _make_job("2")]
+        mock_get_fetcher.return_value = mock_fetcher
+
+        display = PhaseState("Fetch")
+        store = JobStore(pg_conninfo)
+        FetchPhase(store, [company], max_workers=1, display=display).run()
+        store.close()
+
+        assert display.done == 1  # 1 company completed
+        assert display.status == "idle"
+
+    @patch("jobbuddy.sync.fetch.get_fetcher")
+    def test_fetch_tracks_errors(self, mock_get_fetcher, pg_conninfo):
+        """FetchPhase records errors on PhaseState."""
+        from jobbuddy.sync.display import PhaseState
+        from jobbuddy.sync.fetch import FetchPhase
+        from jobbuddy.store import JobStore
+
+        company = _make_company("bad")
+        mock_fetcher = MagicMock()
+        mock_fetcher.list_jobs.side_effect = Exception("Connection refused")
+        mock_get_fetcher.return_value = mock_fetcher
+
+        display = PhaseState("Fetch")
+        store = JobStore(pg_conninfo)
+        FetchPhase(store, [company], max_workers=1, display=display).run()
+        store.close()
+
+        assert display.errors == 1
+        assert display.done == 1  # still counts as processed
+
+    @patch("jobbuddy.sync.fetch.get_fetcher")
+    def test_fetch_counts_jobs_in_info(self, mock_get_fetcher, pg_conninfo):
+        """FetchPhase tracks total job count via info counter."""
+        from jobbuddy.sync.display import PhaseState
+        from jobbuddy.sync.fetch import FetchPhase
+        from jobbuddy.store import JobStore
+
+        company = _make_company("acme")
+        mock_fetcher = MagicMock()
+        mock_fetcher.list_jobs.return_value = [_make_job("1"), _make_job("2"), _make_job("3")]
+        mock_get_fetcher.return_value = mock_fetcher
+
+        display = PhaseState("Fetch")
+        store = JobStore(pg_conninfo)
+        FetchPhase(store, [company], max_workers=1, display=display).run()
+        store.close()
+
+        assert display.info  # should have job count string
+        assert display._info_counter == 3
 
 
 class TestEnrichment:
@@ -366,6 +396,123 @@ class TestEnrichment:
         assert row1["description"] == "first description"
         assert row2["description"] is None
         store.close()
+
+
+class TestValidateSyncConfig:
+    """Tests for validate_sync_config() — all preconditions checked up front."""
+
+    def _settings(self, has_openai: bool = True) -> Settings:
+        """Build a Settings with controlled OpenAI state."""
+        return Settings(
+            pg_service="job-search-buddy-test",
+            openai_api_key="test-key" if has_openai else None,
+        )
+
+    def test_rejects_invalid_phases(self):
+        """Invalid phase names raise ValueError before any I/O."""
+        from jobbuddy.sync import validate_sync_config
+
+        with pytest.raises(ValueError, match="Invalid phase"):
+            validate_sync_config(phases={"bogus"}, settings=self._settings())
+
+    def test_requires_openai_for_strip(self):
+        """Missing OpenAI key with strip phase raises ValueError."""
+        from jobbuddy.sync import validate_sync_config
+
+        with pytest.raises(ValueError, match="JOBBUDDY_OPENAI_API_KEY"):
+            validate_sync_config(
+                phases={"fetch", "strip"},
+                settings=self._settings(has_openai=False),
+            )
+
+    def test_requires_openai_for_embed(self):
+        """Missing OpenAI key with embed phase raises ValueError."""
+        from jobbuddy.sync import validate_sync_config
+
+        with pytest.raises(ValueError, match="JOBBUDDY_OPENAI_API_KEY"):
+            validate_sync_config(
+                phases={"fetch", "embed"},
+                settings=self._settings(has_openai=False),
+            )
+
+    def test_fetch_enrich_ok_without_openai(self):
+        """fetch + enrich works without OpenAI key."""
+        from jobbuddy.sync import validate_sync_config
+
+        config = validate_sync_config(
+            phases={"fetch", "enrich"},
+            settings=self._settings(has_openai=False),
+        )
+        assert config.phases == {"fetch", "enrich"}
+
+    def test_all_phases_requires_openai(self):
+        """Running all phases (default) requires OpenAI."""
+        from jobbuddy.sync import validate_sync_config
+
+        with pytest.raises(ValueError, match="JOBBUDDY_OPENAI_API_KEY"):
+            validate_sync_config(
+                phases=None,
+                settings=self._settings(has_openai=False),
+            )
+
+    @patch("jobbuddy.sync.lookup_by_name")
+    def test_resolves_company_slugs(self, mock_lookup):
+        """Company names are resolved to Company objects."""
+        from jobbuddy.sync import validate_sync_config
+
+        company = _make_company("acme")
+        mock_lookup.return_value = company
+        config = validate_sync_config(
+            phases={"fetch"},
+            company_slugs=["acme"],
+            settings=self._settings(),
+        )
+        assert len(config.targets) == 1
+        assert config.targets[0].slug == "acme"
+
+    @patch("jobbuddy.sync.lookup_by_name", return_value=None)
+    def test_unknown_company_raises(self, mock_lookup):
+        """Unknown company name raises ValueError."""
+        from jobbuddy.sync import validate_sync_config
+
+        with pytest.raises(ValueError, match="Unknown company"):
+            validate_sync_config(
+                phases={"fetch"},
+                company_slugs=["nonexistent"],
+                settings=self._settings(),
+            )
+
+    @patch("jobbuddy.sync.lookup_by_name")
+    def test_company_without_ats_raises(self, mock_lookup):
+        """Company without ATS config raises ValueError."""
+        from jobbuddy.sync import validate_sync_config
+
+        company = Company(slug="noats", name="No ATS", ats=None, board=None)
+        mock_lookup.return_value = company
+        with pytest.raises(ValueError, match="No ATS configured"):
+            validate_sync_config(
+                phases={"fetch"},
+                company_slugs=["noats"],
+                settings=self._settings(),
+            )
+
+    def test_returns_conninfo_from_settings(self):
+        """Config.conninfo comes from settings.pg_conninfo."""
+        from jobbuddy.sync import validate_sync_config
+
+        settings = self._settings()
+        config = validate_sync_config(
+            phases={"fetch", "enrich"},
+            settings=settings,
+        )
+        assert config.conninfo == settings.pg_conninfo
+
+    def test_default_phases_is_all(self):
+        """phases=None resolves to all four phases."""
+        from jobbuddy.sync import validate_sync_config, VALID_PHASES
+
+        config = validate_sync_config(phases=None, settings=self._settings())
+        assert config.phases == VALID_PHASES
 
 
 class TestSyncResult:

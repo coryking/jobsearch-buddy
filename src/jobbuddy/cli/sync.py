@@ -1,97 +1,13 @@
 """Sync pipeline command with phase selection."""
 
 import logging
-import queue
-import threading
 from typing import Optional
 
-import humanize
 import typer
 
 from jobbuddy.cli import app, console
-from jobbuddy.registry import list_companies
-from jobbuddy.settings import get_settings
 
 log = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# Event consumer for fetch phase (FetchPhase still uses the event queue)
-# ---------------------------------------------------------------------------
-
-
-def _consume_events(events, display_state):
-    """Drain the event queue on a daemon thread. Handles fetch-phase events only.
-
-    The fetch phase still uses the legacy event queue pattern. Other phases
-    (enrich, strip, embed) update PhaseState objects directly.
-    """
-    from jobbuddy.sync.types import (
-        CompanySkipped,
-        Done,
-        FetchProgress,
-        FetchResult,
-        FetchStarted,
-        RetryEvent,
-    )
-
-    fetch = display_state.fetch
-
-    while True:
-        event = events.get()
-
-        match event:
-            case Done():
-                fetch.finish()
-                break
-
-            case FetchStarted(slug=slug):
-                fetch.set_active_detail(slug, slug)
-
-            case FetchProgress(slug=slug, fetched=fetched, total=total):
-                fetch.set_active_detail(slug, f"{slug}: {humanize.intcomma(fetched)}/{humanize.intcomma(total)} jobs")
-
-            case FetchResult(result=sr):
-                fetch.remove_active_detail(sr.slug)
-                if sr.ok:
-                    fetch.advance()
-                    if sr.job_count:
-                        fetch.add_to_info_counter(sr.job_count, " jobs")
-                else:
-                    fetch.record_error()
-                    fetch.advance()
-                if fetch.total is not None and fetch.done >= fetch.total:
-                    fetch.finish()
-
-            case CompanySkipped(slug=slug, reason=reason):
-                fetch.advance()
-                if fetch.total is not None and fetch.done >= fetch.total:
-                    fetch.finish()
-
-            case RetryEvent(slug=slug, job_id=job_id, attempt=attempt, max_attempts=max_attempts, wait_seconds=wait, reason=reason):
-                target = slug if slug else job_id
-                fetch.set_active_detail(target, f"{target}: retry {attempt}/{max_attempts}")
-
-
-def _run_fetch_with_events(fn, display_state):
-    """Create queue, start consumer thread, call fn(events=queue), join."""
-    from jobbuddy.sync.types import Done
-
-    eq = queue.SimpleQueue()
-    consumer = threading.Thread(
-        target=_consume_events,
-        args=(eq, display_state),
-        daemon=True,
-    )
-    consumer.start()
-    try:
-        result = fn(events=eq)
-    except BaseException:
-        eq.put(Done())
-        consumer.join(timeout=2)
-        raise
-    consumer.join(timeout=5)
-    return result
 
 
 # ---------------------------------------------------------------------------
@@ -114,101 +30,94 @@ def sync(
         jsb sync strip embed        # just strip + embed
         jsb sync fetch              # fetch only
     """
-    from jobbuddy.sync import VALID_PHASES, sync_jobs
+    from jobbuddy.sync import sync_jobs, validate_sync_config
     from jobbuddy.sync.display import SyncDisplayState, create_live, print_sync_summary
 
-    # Validate and resolve phase set
-    if phases:
-        phase_set = set(phases)
-        invalid = phase_set - VALID_PHASES
-        if invalid:
-            console.print(
-                f"[red]Invalid phase(s): {', '.join(sorted(invalid))}[/red]\n"
-                f"[dim]Valid phases: {', '.join(sorted(VALID_PHASES))}[/dim]"
-            )
-            raise SystemExit(1)
-    else:
-        phase_set = None  # all phases
-
-    # Phases requiring OpenAI
-    openai_phases = {"strip", "embed"}
-    selected = phase_set or VALID_PHASES
-    if selected & openai_phases:
-        settings = get_settings()
-        if not settings.has_openai:
-            console.print("[red]OpenAI API not configured.[/red]")
-            console.print("[dim]Set JOBBUDDY_OPENAI_API_KEY (and optionally JOBBUDDY_OPENAI_BASE_URL)[/dim]")
-            raise SystemExit(1)
-
-    run_fetch = "fetch" in selected
-    interactive = console.is_terminal
-
-    # Non-interactive: configure logging so info/warnings/errors go to stderr.
-    # Root stays at WARNING to suppress httpx/urllib3 noise; only our
-    # loggers get INFO.
-    if not interactive:
-        logging.basicConfig(
-            level=logging.WARNING,
-            format="%(levelname)s %(name)s: %(message)s",
+    # Validate all preconditions up front — before any I/O
+    phase_set = set(phases) if phases else None
+    try:
+        config = validate_sync_config(
+            phases=phase_set,
+            company_slugs=company or None,
+            stale_hours=stale,
+            force_strip=force,
         )
-        logging.getLogger("jobbuddy").setLevel(logging.INFO)
+    except ValueError as e:
+        console.print(f"[red]{e}[/red]")
+        raise SystemExit(1)
 
-    # Determine display filter: show only selected phases (capitalized to match PhaseState names)
-    if phase_set:
-        filter_phases = [p.capitalize() for p in sorted(phase_set, key=lambda p: ["fetch", "enrich", "strip", "embed"].index(p))]
-    else:
-        filter_phases = None  # show all
+    interactive = console.is_terminal
+    if not interactive:
+        _setup_logging()
 
     state = SyncDisplayState()
 
     if not interactive:
-        phase_label = ", ".join(sorted(selected)) if phase_set else "all"
+        phase_label = ", ".join(sorted(config.phases)) if phase_set else "all"
         log.info("jsb sync starting (phases: %s)", phase_label)
 
-    if run_fetch:
-        registry = list_companies()
-        scrapeable = sum(1 for c in registry.values() if c.ats is not None)
-        target_count = len(company) if company else scrapeable
-        state.fetch.start(target_count)
-        if not interactive:
-            log.info("Fetching %d companies", target_count)
-
-    def _run_sync():
-        return _run_fetch_with_events(
-            lambda events: sync_jobs(
-                company_slugs=company or None,
-                stale_hours=stale,
-                events=events,
-                display_state=state,
-                phases=phase_set,
-                force_strip=force,
-            ),
-            state,
+    def _run():
+        return sync_jobs(
+            company_slugs=company or None,
+            stale_hours=stale,
+            display_state=state,
+            phases=phase_set,
+            force_strip=force,
         )
+
+    # Determine display filter for TUI
+    filter_phases = (
+        [p.capitalize() for p in sorted(config.phases, key=lambda p: ["fetch", "enrich", "strip", "embed"].index(p))]
+        if phase_set else None
+    )
 
     try:
         if interactive:
             with create_live(console, state, filter_phases=filter_phases):
-                results = _run_sync()
+                results = _run()
         else:
-            results = _run_sync()
+            results = _run()
     except KeyboardInterrupt:
         return
     except ValueError as e:
         console.print(f"[red]{e}[/red]")
         raise SystemExit(1)
 
-    # Summary after sync completes
-    if not results and run_fetch:
-        if not interactive:
-            log.info("Nothing to sync")
-        else:
+    _print_summary(state, results, "fetch" in config.phases, interactive)
+
+
+def _setup_logging() -> None:
+    """Configure logging for non-interactive (systemd/cron) runs.
+
+    Root logger stays at WARNING to suppress httpx/urllib3 noise;
+    only jobbuddy loggers get INFO.
+    """
+    logging.basicConfig(
+        level=logging.WARNING,
+        format="%(levelname)s %(name)s: %(message)s",
+    )
+    logging.getLogger("jobbuddy").setLevel(logging.INFO)
+
+
+def _print_summary(
+    state,
+    results: list,
+    ran_fetch: bool,
+    interactive: bool,
+) -> None:
+    """Print sync results — Rich table for interactive, log lines otherwise."""
+    from jobbuddy.sync.display import print_sync_summary
+
+    if not results and ran_fetch:
+        if interactive:
             console.print("[dim]Nothing to sync.[/dim]")
+        else:
+            log.info("Nothing to sync")
         return
 
-    if not interactive:
+    if interactive:
+        print_sync_summary(console, state)
+    else:
         for phase in state.phases:
             if phase.status != "pending":
                 log.info("%s: %d done, %d errors", phase.name, phase.done, phase.errors)
-    else:
-        print_sync_summary(console, state)

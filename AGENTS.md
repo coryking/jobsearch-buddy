@@ -131,7 +131,7 @@ Override defaults with env vars (prefix `JOBBUDDY_`) or a `.env` file:
 | `data_dir`                 | `JOBBUDDY_DATA_DIR`                  | platformdirs `user_data_dir/data`          |
 | `pg_service`               | `JOBBUDDY_PG_SERVICE`                | `job-search-buddy-remote`                  |
 | `listings_dir`             | `JOBBUDDY_LISTINGS_DIR`              | platformdirs `user_data_dir/listings`      |
-| `openai_api_key`           | `JOBBUDDY_OPENAI_API_KEY`            | `None` *(enables strip/embed/search)*      |
+| `openai_api_key`           | `JOBBUDDY_OPENAI_API_KEY`            | `None` *(required for strip/embed/search)* |
 | `openai_base_url`          | `JOBBUDDY_OPENAI_BASE_URL`           | `None` *(omit for api.openai.com)*         |
 | `openai_azure_api_version` | `JOBBUDDY_OPENAI_AZURE_API_VERSION`  | `None` *(if set, uses AzureOpenAI client)* |
 | `strip_model`              | `JOBBUDDY_STRIP_MODEL`               | `gpt-5-nano`                               |
@@ -147,10 +147,18 @@ The sync pipeline uses a **DB-as-queue** pattern with four phases:
 3. **Strip** — LLM-based boilerplate removal via OpenAI-compatible API
 4. **Embed** — batch embedding generation via OpenAI-compatible API
 
-Strip and embed are optional — they only run when `JOBBUDDY_OPENAI_API_KEY` is
-set. Without it, `jsb sync` runs fetch + enrich only.
+`jsb sync` runs all four phases by default. Strip and embed require
+`JOBBUDDY_OPENAI_API_KEY` — sync fails fast at startup if it's missing.
+Use `jsb sync fetch enrich` to run without OpenAI credentials.
 
-Each phase (strip, enrich, embed) extends the `WorkerPhase` ABC (`sync/base.py`),
+Preconditions (phase names, OpenAI key, company resolution) are validated
+up front by `validate_sync_config()` before any I/O. The orchestrator
+(`sync_jobs()`) trusts the caller and does not re-validate.
+
+All phases update `PhaseState` objects directly for display. The fetch phase
+uses the same pattern as enrich/strip/embed — no event queue.
+
+Each phase (enrich, strip, embed) extends the `WorkerPhase` ABC (`sync/base.py`),
 which provides: DB polling for work items, `ThreadPoolExecutor` parallelism,
 per-thread DB connections, graceful shutdown via `threading.Event`, and display
 state updates. Phases poll the database for unprocessed items, process them in

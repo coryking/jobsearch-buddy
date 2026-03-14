@@ -5,18 +5,14 @@ from __future__ import annotations
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from time import monotonic
+
+import humanize
+
 from jobbuddy.fetchers import get_fetcher
 from jobbuddy.models import Company, Job
 from jobbuddy.store import JobStore
-from jobbuddy.sync.types import (
-    EventQueue,
-    FetchProgress,
-    FetchResult,
-    FetchStarted,
-    Phase,
-    RetryEvent,
-    SyncResult,
-)
+from jobbuddy.sync.display import PhaseState
+from jobbuddy.sync.types import SyncResult
 
 log = logging.getLogger(__name__)
 
@@ -27,12 +23,12 @@ class FetchPhase:
         store: JobStore,
         targets: list[Company],
         max_workers: int,
-        events: EventQueue,
+        display: PhaseState,
     ):
         self.store = store
         self.targets = targets
         self.max_workers = max_workers
-        self.events = events
+        self.display = display
 
     def run(self) -> tuple[list[SyncResult], list[str]]:
         """Fetch jobs for all target companies in parallel.
@@ -41,6 +37,9 @@ class FetchPhase:
         """
         results: list[SyncResult] = []
         slugs_to_embed: list[str] = []
+
+        self.display.start(len(self.targets))
+        self.display.max_workers = self.max_workers
         log.info("Fetch phase starting (%d companies)", len(self.targets))
 
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
@@ -61,20 +60,27 @@ class FetchPhase:
                     sr = SyncResult(slug, error=str(e), elapsed=elapsed)
                     self.store.record_sync_error(slug, str(e))
                     results.append(sr)
-                    self.events.put(FetchResult(sr))
+                    self.display.record_error()
+                    self.display.advance()
+                    self.display.remove_active_detail(slug)
                     continue
 
                 if isinstance(payload, str):
                     sr = SyncResult(slug, error=payload, elapsed=elapsed)
                     self.store.record_sync_error(slug, payload)
+                    self.display.record_error()
                 else:
                     self.store.upsert_jobs(slug, payload)
                     slugs_to_embed.append(slug)
                     sr = SyncResult(slug, job_count=len(payload), elapsed=elapsed)
+                    if sr.job_count:
+                        self.display.add_to_info_counter(sr.job_count, " jobs")
 
                 results.append(sr)
-                self.events.put(FetchResult(sr))
+                self.display.advance()
+                self.display.remove_active_detail(slug)
 
+        self.display.finish()
         ok = sum(1 for r in results if r.ok)
         errs = sum(1 for r in results if not r.ok)
         total_jobs = sum(r.job_count or 0 for r in results)
@@ -83,19 +89,17 @@ class FetchPhase:
 
     def _fetch_company(self, company: Company) -> tuple[str, list[Job] | str]:
         """Worker function: fetch jobs. Returns (slug, jobs) or (slug, error_string)."""
-        self.events.put(FetchStarted(company.slug))
+        self.display.set_active_detail(company.slug, company.slug)
         try:
             fetcher = get_fetcher(company)
 
             def _progress(fetched: int, total: int) -> None:
-                self.events.put(FetchProgress(company.slug, fetched, total))
+                self.display.set_active_detail(
+                    company.slug,
+                    f"{company.slug}: {humanize.intcomma(fetched)}/{humanize.intcomma(total)} jobs",
+                )
 
-            def _on_retry(attempt: int, max_attempts: int, wait: float, reason: str) -> None:
-                self.events.put(RetryEvent(
-                    Phase.FETCH, company.slug, "", attempt, max_attempts, wait, reason,
-                ))
-
-            jobs = fetcher.list_jobs(on_progress=_progress, on_retry=_on_retry)
+            jobs = fetcher.list_jobs(on_progress=_progress)
             return (company.slug, jobs)
         except Exception as e:
             return (company.slug, str(e))

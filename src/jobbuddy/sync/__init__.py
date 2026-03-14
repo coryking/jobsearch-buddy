@@ -6,30 +6,27 @@ Orchestrates four phases:
 3. StripPhase: LLM-based boilerplate removal (requires OpenAI API)
 4. EmbedPhase: embedding generation (requires OpenAI API)
 
-Strip and embed are optional -- they only run when OpenAI credentials are
-configured (JOBBUDDY_OPENAI_API_KEY). Without credentials, sync runs
-fetch + enrich only.
+All four phases run by default. Strip and embed require OpenAI credentials
+(JOBBUDDY_OPENAI_API_KEY) — sync fails fast if they're missing.
 
 Phases use DB-as-queue: each polls PostgreSQL for work items and updates
 PhaseState objects for live display. No event queue for inter-phase
 coordination -- phases are independent and idempotent.
 """
 
-import queue
-import threading
+from __future__ import annotations
 
+import threading
+from dataclasses import dataclass, field
+
+from jobbuddy.models import Company
 from jobbuddy.registry import list_companies, lookup_by_name
-from jobbuddy.settings import get_settings
+from jobbuddy.settings import Settings, get_settings
 from jobbuddy.store import JobStore
 from jobbuddy.sync.display import SyncDisplayState
-from jobbuddy.sync.types import (
-    CompanySkipped,
-    Done,
-    EventQueue,
-    SyncResult,
-)
+from jobbuddy.sync.types import SyncResult
 
-__all__ = ["sync_jobs", "SyncResult", "VALID_PHASES"]
+__all__ = ["sync_jobs", "validate_sync_config", "SyncConfig", "SyncResult", "VALID_PHASES"]
 from jobbuddy.sync.embed import EmbedPhase
 from jobbuddy.sync.enrich import EnrichPhase
 from jobbuddy.sync.fetch import FetchPhase
@@ -37,18 +34,99 @@ from jobbuddy.sync.strip import StripPhase
 
 
 # ---------------------------------------------------------------------------
-# Orchestrator
+# Configuration
 # ---------------------------------------------------------------------------
 
 
 VALID_PHASES = {"fetch", "enrich", "strip", "embed"}
+_OPENAI_PHASES = {"strip", "embed"}
+
+
+@dataclass
+class SyncConfig:
+    """Validated sync configuration. Built by validate_sync_config()."""
+
+    phases: set[str]
+    conninfo: str
+    targets: list[Company] = field(default_factory=list)
+    company_slugs: list[str] | None = None
+    stale_hours: float | None = None
+    max_workers: int = 5
+    force_strip: bool = False
+
+
+def validate_sync_config(
+    *,
+    phases: set[str] | None = None,
+    company_slugs: list[str] | None = None,
+    stale_hours: float | None = None,
+    max_workers: int = 5,
+    force_strip: bool = False,
+    settings: Settings | None = None,
+) -> SyncConfig:
+    """Validate all sync preconditions up front. Returns SyncConfig or raises ValueError.
+
+    Checks: phase names valid, OpenAI key present for strip/embed, company slugs
+    resolve to known companies with ATS config.
+    """
+    if settings is None:
+        settings = get_settings()
+
+    # Resolve phases
+    resolved_phases = phases if phases is not None else VALID_PHASES
+    invalid = resolved_phases - VALID_PHASES
+    if invalid:
+        raise ValueError(
+            f"Invalid phase(s): {', '.join(sorted(invalid))}. "
+            f"Valid phases: {', '.join(sorted(VALID_PHASES))}"
+        )
+
+    # OpenAI required for strip/embed
+    needs_openai = resolved_phases & _OPENAI_PHASES
+    if needs_openai and not settings.has_openai:
+        raise ValueError(
+            f"JOBBUDDY_OPENAI_API_KEY required for {', '.join(sorted(needs_openai))} phase(s)"
+        )
+
+    # Resolve company targets
+    targets: list[Company] = []
+    if company_slugs:
+        for cs in company_slugs:
+            company = lookup_by_name(cs)
+            if not company:
+                raise ValueError(f"Unknown company: {cs}")
+            if not company.ats:
+                raise ValueError(f"No ATS configured for {company.name}")
+            targets.append(company)
+
+    return SyncConfig(
+        phases=resolved_phases,
+        conninfo=settings.pg_conninfo,
+        targets=targets,
+        company_slugs=company_slugs,
+        stale_hours=stale_hours,
+        max_workers=max_workers,
+        force_strip=force_strip,
+    )
+
+
+def _resolve_company_targets(company_slugs: list[str]) -> list[Company]:
+    """Resolve company slug/name strings to Company objects."""
+    targets = []
+    for cs in company_slugs:
+        company = lookup_by_name(cs)
+        if not company:
+            raise ValueError(f"Unknown company: {cs}")
+        if not company.ats:
+            raise ValueError(f"No ATS configured for {company.name}")
+        targets.append(company)
+    return targets
 
 
 def sync_jobs(
     company_slugs: list[str] | None = None,
     stale_hours: float | None = None,
     max_workers: int = 5,
-    events: EventQueue | None = None,
     conninfo: str | None = None,
     display_state: SyncDisplayState | None = None,
     phases: set[str] | None = None,
@@ -62,39 +140,17 @@ def sync_jobs(
     full-fetcher jobs immediately while enrich is still fetching descriptions
     for stub fetchers.
 
-    Args:
-        company_slugs: Sync only these companies (None = all).
-        stale_hours: Skip companies synced within this many hours.
-        max_workers: Thread pool size for fetch phase.
-        events: Legacy event queue (kept for backward compatibility).
-        conninfo: PostgreSQL connection string (None = default from settings).
-        display_state: Shared display state for Rich Live TUI.
-        phases: Which phases to run (None = all). Must be subset of VALID_PHASES.
-        force_strip: Clear existing stripped descriptions before strip phase.
+    Callers should use validate_sync_config() first to check preconditions.
     """
     import random
 
-    # Resolve which phases to run
-    if phases is not None:
-        invalid = phases - VALID_PHASES
-        if invalid:
-            raise ValueError(
-                f"Invalid phase(s): {', '.join(sorted(invalid))}. "
-                f"Valid phases: {', '.join(sorted(VALID_PHASES))}"
-            )
-        run_phases = phases
-    else:
-        run_phases = VALID_PHASES
-
-    if events is None:
-        events = queue.SimpleQueue()
+    run_phases = phases if phases is not None else VALID_PHASES
 
     if display_state is None:
         display_state = SyncDisplayState()
 
     registry = list_companies()
 
-    # Resolve conninfo
     if conninfo is None:
         conninfo = get_settings().pg_conninfo
 
@@ -103,16 +159,9 @@ def sync_jobs(
     slugs_to_embed: list[str] = []
 
     if "fetch" in run_phases:
-        # Build target list (validate before opening DB)
+        # Build target list
         if company_slugs:
-            targets = []
-            for cs in company_slugs:
-                company = lookup_by_name(cs)
-                if not company:
-                    raise ValueError(f"Unknown company: {cs}")
-                if not company.ats:
-                    raise ValueError(f"No ATS configured for {company.name}")
-                targets.append(company)
+            targets = _resolve_company_targets(company_slugs)
         else:
             targets = [c for c in registry.values() if c.ats is not None]
 
@@ -124,30 +173,24 @@ def sync_jobs(
                 for c in targets:
                     if store.is_stale(c.slug, stale_hours):
                         filtered.append(c)
-                    else:
-                        events.put(CompanySkipped(c.slug, "recently synced"))
                 targets = filtered
 
             if not targets:
-                events.put(Done())
                 return []
 
             # Shuffle to spread same-platform companies across time
             random.shuffle(targets)
 
             # Phase 1: Fetch
-            results, slugs_to_embed = FetchPhase(store, targets, max_workers, events).run()
+            results, slugs_to_embed = FetchPhase(
+                store, targets, max_workers, display=display_state.fetch,
+            ).run()
         finally:
             store.close()
     else:
-        events.put(Done())
         # When skipping fetch, build targets for enrich from registry
         if company_slugs:
-            targets = []
-            for cs in company_slugs:
-                company = lookup_by_name(cs)
-                if company and company.ats:
-                    targets.append(company)
+            targets = _resolve_company_targets(company_slugs)
         else:
             targets = [c for c in registry.values() if c.ats is not None]
 
@@ -166,15 +209,6 @@ def sync_jobs(
     #   strip_done  -> embed keeps polling for newly-stripped descriptions
     enrich_done = threading.Event()
     strip_done = threading.Event()
-
-    settings = get_settings()
-
-    # Strip and embed require OpenAI credentials — fail loud if missing.
-    openai_phases = run_phases & {"strip", "embed"}
-    if openai_phases and not settings.has_openai:
-        raise ValueError(
-            f"JOBBUDDY_OPENAI_API_KEY required for {', '.join(sorted(openai_phases))} phase(s)"
-        )
 
     # Ensure schema/migrations run in the main thread before spawning
     # phase threads -- avoids race where multiple threads try to migrate
@@ -253,8 +287,4 @@ def sync_jobs(
     for t in threads:
         t.join()
 
-    # Signal fetch consumer that all phases are complete.
-    # (When fetch is skipped, Done was already sent above.)
-    if "fetch" in run_phases:
-        events.put(Done())
     return results
