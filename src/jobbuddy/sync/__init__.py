@@ -168,7 +168,13 @@ def sync_jobs(
     strip_done = threading.Event()
 
     settings = get_settings()
-    has_openai = settings.has_openai
+
+    # Strip and embed require OpenAI credentials — fail loud if missing.
+    openai_phases = run_phases & {"strip", "embed"}
+    if openai_phases and not settings.has_openai:
+        raise ValueError(
+            f"JOBBUDDY_OPENAI_API_KEY required for {', '.join(sorted(openai_phases))} phase(s)"
+        )
 
     # Ensure schema/migrations run in the main thread before spawning
     # phase threads -- avoids race where multiple threads try to migrate
@@ -192,9 +198,9 @@ def sync_jobs(
             max_workers=max_workers,
         )
 
-    # Build strip phase (if selected and OpenAI credentials configured)
+    # Build strip phase (if selected)
     strip_phase = None
-    if "strip" in run_phases and has_openai:
+    if "strip" in run_phases:
         strip_phase = StripPhase(
             conninfo,
             display=display_state.strip,
@@ -202,9 +208,9 @@ def sync_jobs(
             upstream_done=enrich_done,
         )
 
-    # Build embed phase (if selected and OpenAI credentials configured)
+    # Build embed phase (if selected)
     embed_phase = None
-    if "embed" in run_phases and has_openai:
+    if "embed" in run_phases:
         embed_phase = EmbedPhase(
             conninfo,
             display=display_state.embed,
