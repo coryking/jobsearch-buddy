@@ -16,7 +16,6 @@ coordination -- phases are independent and idempotent.
 
 from __future__ import annotations
 
-import queue
 import threading
 from dataclasses import dataclass, field
 
@@ -25,12 +24,7 @@ from jobbuddy.registry import list_companies, lookup_by_name
 from jobbuddy.settings import Settings, get_settings
 from jobbuddy.store import JobStore
 from jobbuddy.sync.display import SyncDisplayState
-from jobbuddy.sync.types import (
-    CompanySkipped,
-    Done,
-    EventQueue,
-    SyncResult,
-)
+from jobbuddy.sync.types import SyncResult
 
 __all__ = ["sync_jobs", "validate_sync_config", "SyncConfig", "SyncResult", "VALID_PHASES"]
 from jobbuddy.sync.embed import EmbedPhase
@@ -133,7 +127,6 @@ def sync_jobs(
     company_slugs: list[str] | None = None,
     stale_hours: float | None = None,
     max_workers: int = 5,
-    events: EventQueue | None = None,
     conninfo: str | None = None,
     display_state: SyncDisplayState | None = None,
     phases: set[str] | None = None,
@@ -147,15 +140,7 @@ def sync_jobs(
     full-fetcher jobs immediately while enrich is still fetching descriptions
     for stub fetchers.
 
-    Args:
-        company_slugs: Sync only these companies (None = all).
-        stale_hours: Skip companies synced within this many hours.
-        max_workers: Thread pool size for fetch phase.
-        events: Deprecated, ignored. Kept for signature compatibility.
-        conninfo: PostgreSQL connection string (None = default from settings).
-        display_state: Shared display state for Rich Live TUI.
-        phases: Which phases to run (None = all). Must be subset of VALID_PHASES.
-        force_strip: Clear existing stripped descriptions before strip phase.
+    Callers should use validate_sync_config() first to check preconditions.
     """
     import random
 
