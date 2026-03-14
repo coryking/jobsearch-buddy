@@ -147,6 +147,70 @@ class TestSync:
         assert skipped[0].slug == "acme"
 
 
+class TestFetchPhaseState:
+    """Tests for FetchPhase updating PhaseState directly (no event queue)."""
+
+    @patch("jobbuddy.sync.fetch.get_fetcher")
+    def test_fetch_updates_done_count(self, mock_get_fetcher, pg_conninfo):
+        """FetchPhase sets done count on PhaseState."""
+        from jobbuddy.sync.display import PhaseState
+        from jobbuddy.sync.fetch import FetchPhase
+        from jobbuddy.store import JobStore
+
+        company = _make_company("acme")
+        mock_fetcher = MagicMock()
+        mock_fetcher.list_jobs.return_value = [_make_job("1"), _make_job("2")]
+        mock_get_fetcher.return_value = mock_fetcher
+
+        display = PhaseState("Fetch")
+        store = JobStore(pg_conninfo)
+        FetchPhase(store, [company], max_workers=1, display=display).run()
+        store.close()
+
+        assert display.done == 1  # 1 company completed
+        assert display.status == "idle"
+
+    @patch("jobbuddy.sync.fetch.get_fetcher")
+    def test_fetch_tracks_errors(self, mock_get_fetcher, pg_conninfo):
+        """FetchPhase records errors on PhaseState."""
+        from jobbuddy.sync.display import PhaseState
+        from jobbuddy.sync.fetch import FetchPhase
+        from jobbuddy.store import JobStore
+
+        company = _make_company("bad")
+        mock_fetcher = MagicMock()
+        mock_fetcher.list_jobs.side_effect = Exception("Connection refused")
+        mock_get_fetcher.return_value = mock_fetcher
+
+        display = PhaseState("Fetch")
+        store = JobStore(pg_conninfo)
+        FetchPhase(store, [company], max_workers=1, display=display).run()
+        store.close()
+
+        assert display.errors == 1
+        assert display.done == 1  # still counts as processed
+
+    @patch("jobbuddy.sync.fetch.get_fetcher")
+    def test_fetch_counts_jobs_in_info(self, mock_get_fetcher, pg_conninfo):
+        """FetchPhase tracks total job count via info counter."""
+        from jobbuddy.sync.display import PhaseState
+        from jobbuddy.sync.fetch import FetchPhase
+        from jobbuddy.store import JobStore
+
+        company = _make_company("acme")
+        mock_fetcher = MagicMock()
+        mock_fetcher.list_jobs.return_value = [_make_job("1"), _make_job("2"), _make_job("3")]
+        mock_get_fetcher.return_value = mock_fetcher
+
+        display = PhaseState("Fetch")
+        store = JobStore(pg_conninfo)
+        FetchPhase(store, [company], max_workers=1, display=display).run()
+        store.close()
+
+        assert display.info  # should have job count string
+        assert display._info_counter == 3
+
+
 class TestEnrichment:
     """Tests for EnrichPhase directly -- no sync_jobs() pipeline."""
 
