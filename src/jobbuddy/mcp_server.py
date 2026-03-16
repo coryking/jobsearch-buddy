@@ -43,7 +43,7 @@ mcp = FastMCP(
         "Tool routing:\n"
         "- Search/browse jobs (any or all companies) → search_jobs (reads from local cache)\n"
         "- Meaning-based / 'find me jobs like...' / vague descriptions → search_jobs with query param\n"
-        "- Job details (one or many, by company+job_id) → get_job_post_details (live fetch, parallel)\n"
+        "- Job details (one or many, by company+job_id) → get_job_post_details (cached, live fetch fallback)\n"
         "- Record application (URL or company+job_id) → log_job_application (live fetch)\n"
         "- Freeform activity (recruiter call, interview, referral, no job_id) → log_job_activity\n"
         "- Review application history, contacts, and activity for any company → review_activity_log\n"
@@ -72,7 +72,7 @@ def get_job_post_details(
     jobs: Annotated[str, Field(description=(
         'JSON array of companies with job IDs to fetch. '
         'Format: [{"company": "acme", "job_ids": ["123", "456"]}, {"company": "beta", "job_ids": ["789"]}]. '
-        'Company can be a slug or name from the registry. Fetches all jobs in parallel.'
+        'Company can be a slug or name from the registry.'
     ))],
 ) -> str:
     """Fetch full details of one or more job postings — title, salary, location, description.
@@ -81,8 +81,11 @@ def get_job_post_details(
     "what about this one", "pull up details on these". Read-only — does not log.
     Use log_job_application to record applications.
 
-    Accepts one or many companies, each with one or many job IDs. All fetches run in parallel."""
+    Accepts one or many companies, each with one or many job IDs. Returns cached data
+    from local DB when available, only live-fetches jobs not in the cache."""
     from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    from jobbuddy.store import JobStore
 
     try:
         requests = json.loads(jobs)
@@ -92,36 +95,68 @@ def get_job_post_details(
     if not isinstance(requests, list) or not requests:
         return "Error: jobs must be a non-empty JSON array."
 
-    # Build flat list of (company, job_id) pairs
-    work: list[tuple[str, str]] = []
+    # Build flat list of (company_input, job_id) and resolve slugs
+    work: list[tuple[str, str]] = []  # (company_input, job_id)
+    slug_map: dict[str, str] = {}     # company_input -> slug
+    name_map: dict[str, str] = {}     # slug -> company display name
     for entry in requests:
         company = entry.get("company", "")
         job_ids = entry.get("job_ids", [])
         if not company or not job_ids:
             return f"Error: Each entry needs 'company' and 'job_ids'. Got: {entry}"
+        # Resolve company name/slug once per entry
+        if company not in slug_map:
+            resolved = lookup_by_name(company)
+            if resolved:
+                slug_map[company] = resolved.slug
+                name_map[resolved.slug] = resolved.name
         for jid in job_ids:
             work.append((company, str(jid)))
 
-    def fetch_one(company_input: str, job_id: str) -> CompactJob | str:
-        try:
-            result = fetch_by_id(company_input, job_id)
-            return CompactJob.from_result(result)
-        except ValueError as e:
-            return f"Error fetching {company_input}/{job_id}: {e}"
+    # Try local DB first for all resolved jobs
+    db_pairs = [
+        (slug_map[comp], jid)
+        for comp, jid in work
+        if comp in slug_map
+    ]
+    cached: dict[tuple[str, str], dict] = {}
+    if db_pairs:
+        store = JobStore()
+        cached = store.get_jobs_by_external_ids(db_pairs)
 
+    # Build results: use cache hits, live-fetch misses
     results: list[dict | str] = [None] * len(work)  # type: ignore[list-item]
-    with ThreadPoolExecutor(max_workers=10) as pool:
-        futures = {
-            pool.submit(fetch_one, comp, jid): i
-            for i, (comp, jid) in enumerate(work)
-        }
-        for future in as_completed(futures):
-            idx = futures[future]
-            result = future.result()
-            if isinstance(result, CompactJob):
-                results[idx] = result.model_dump()
-            else:
-                results[idx] = {"error": result}
+    misses: list[tuple[int, str, str]] = []  # (index, company_input, job_id)
+
+    for i, (comp, jid) in enumerate(work):
+        slug = slug_map.get(comp)
+        if slug and (slug, jid) in cached:
+            row = cached[(slug, jid)]
+            results[i] = CompactJob.from_db_row(row, name_map[slug]).model_dump()
+        else:
+            misses.append((i, comp, jid))
+
+    # Live-fetch any misses in parallel
+    if misses:
+        def fetch_one(company_input: str, job_id: str) -> CompactJob | str:
+            try:
+                result = fetch_by_id(company_input, job_id)
+                return CompactJob.from_result(result)
+            except (ValueError, Exception) as e:
+                return f"Error fetching {company_input}/{job_id}: {e}"
+
+        with ThreadPoolExecutor(max_workers=10) as pool:
+            futures = {
+                pool.submit(fetch_one, comp, jid): idx
+                for idx, comp, jid in misses
+            }
+            for future in as_completed(futures):
+                idx = futures[future]
+                result = future.result()
+                if isinstance(result, CompactJob):
+                    results[idx] = result.model_dump()
+                else:
+                    results[idx] = {"error": result}
 
     return json.dumps(results, indent=2, default=str)
 

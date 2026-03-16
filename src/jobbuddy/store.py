@@ -297,6 +297,21 @@ class JobStore:
         ).fetchall()
         return [dict(row) for row in rows]
 
+    def get_jobs_by_external_ids(self, pairs: list[tuple[str, str]]) -> dict[tuple[str, str], dict]:
+        """Fetch jobs by (company_slug, job_id) pairs. Returns {(slug, job_id): row}."""
+        if not pairs:
+            return {}
+        slugs = [s for s, _ in pairs]
+        jids = [j for _, j in pairs]
+        rows = self.conn.execute(
+            """SELECT * FROM jobs
+               WHERE (company_slug, job_id) IN (
+                   SELECT unnest(%s::text[]), unnest(%s::text[])
+               )""",
+            (slugs, jids),
+        ).fetchall()
+        return {(r["company_slug"], r["job_id"]): dict(r) for r in rows}
+
     # -------------------------------------------------------------------
     # Embeddings
     # -------------------------------------------------------------------

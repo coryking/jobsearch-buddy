@@ -244,7 +244,7 @@ class CompactJob(BaseModel):
     company: str
     location: str
     url: str
-    apply_url: str
+    apply_url: str | None = None
     id: str
     published_at: str | None = None
     department: str | None = None
@@ -261,6 +261,27 @@ class CompactJob(BaseModel):
     def from_result(cls, result: FetchResult) -> "CompactJob":
         meta = _filter_metadata(result.job.ats_metadata)
         return cls(company=result.company.name, metadata=meta, **result.job.model_dump())
+
+    @classmethod
+    def from_db_row(cls, row: dict, company_name: str) -> "CompactJob":
+        """Build from a JobStore row dict."""
+        meta = _filter_metadata(row.get("ats_metadata"))
+        # Prefer stripped description, fall back to raw
+        desc = row.get("description_stripped") or row.get("description")
+        return cls(
+            title=row["title"],
+            company=company_name,
+            location=row["location"],
+            url=row["url"],
+            apply_url=row.get("apply_url"),
+            id=row["job_id"],
+            published_at=row.get("published_at"),
+            department=row.get("department"),
+            team=row.get("team"),
+            salary=row.get("salary"),
+            description=desc,
+            metadata=meta,
+        )
 
 
 class _HTMLStripper(HTMLParser):
