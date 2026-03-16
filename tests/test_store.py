@@ -8,16 +8,7 @@ import pytest
 from jobbuddy.models import Job
 from jobbuddy.store import JobStore
 
-
-def _make_job(id: str = "123", title: str = "PM", location: str = "Seattle", **kw) -> Job:
-    return Job(
-        id=id,
-        title=title,
-        location=location,
-        url=f"https://example.com/jobs/{id}",
-        apply_url=f"https://example.com/jobs/{id}/apply",
-        **kw,
-    )
+from conftest import make_job
 
 
 # ---------------------------------------------------------------------------
@@ -55,7 +46,7 @@ class TestSchema:
     def test_context_manager(self, pg_conninfo):
         """JobStore works as a context manager."""
         with JobStore(pg_conninfo) as s:
-            s.upsert_jobs("acme", [_make_job("1")])
+            s.upsert_jobs("acme", [make_job("1")])
             assert s.job_count() == 1
         # clean up
         conn = psycopg.connect(pg_conninfo)
@@ -72,56 +63,56 @@ class TestSchema:
 
 class TestUpsertAndQuery:
     def test_upsert_inserts_jobs(self, store):
-        jobs = [_make_job("1", "PM", "Seattle"), _make_job("2", "SWE", "Remote")]
+        jobs = [make_job("1", "PM", "Seattle"), make_job("2", "SWE", "Remote")]
         store.upsert_jobs("acme", jobs)
         rows = store.query_jobs()
         assert len(rows) == 2
 
     def test_upsert_replaces_on_resync(self, store):
-        store.upsert_jobs("acme", [_make_job("1", "PM", "Seattle")])
-        store.upsert_jobs("acme", [_make_job("1", "PM Updated", "NYC")])
+        store.upsert_jobs("acme", [make_job("1", "PM", "Seattle")])
+        store.upsert_jobs("acme", [make_job("1", "PM Updated", "NYC")])
         rows = store.query_jobs(company="acme")
         assert len(rows) == 1
         assert rows[0]["title"] == "PM Updated"
         assert rows[0]["location"] == "NYC"
 
     def test_upsert_marks_disappeared_jobs(self, store):
-        store.upsert_jobs("acme", [_make_job("1"), _make_job("2")])
+        store.upsert_jobs("acme", [make_job("1"), make_job("2")])
         assert len(store.query_jobs()) == 2
-        store.upsert_jobs("acme", [_make_job("1")])
+        store.upsert_jobs("acme", [make_job("1")])
         assert len(store.query_jobs()) == 1
         assert len(store.query_jobs(include_disappeared=True)) == 2
 
     def test_disappeared_job_reappears(self, store):
-        store.upsert_jobs("acme", [_make_job("1"), _make_job("2")])
-        store.upsert_jobs("acme", [_make_job("1")])
+        store.upsert_jobs("acme", [make_job("1"), make_job("2")])
+        store.upsert_jobs("acme", [make_job("1")])
         assert len(store.query_jobs()) == 1
-        store.upsert_jobs("acme", [_make_job("1"), _make_job("2")])
+        store.upsert_jobs("acme", [make_job("1"), make_job("2")])
         assert len(store.query_jobs()) == 2
 
     def test_upsert_deduplicates_input(self, store):
-        dupes = [_make_job("1", "PM v1"), _make_job("1", "PM v2")]
+        dupes = [make_job("1", "PM v1"), make_job("1", "PM v2")]
         store.upsert_jobs("acme", dupes)
         rows = store.query_jobs(company="acme")
         assert len(rows) == 1
         assert rows[0]["title"] == "PM v2"
 
     def test_upsert_isolates_companies(self, store):
-        store.upsert_jobs("acme", [_make_job("1")])
-        store.upsert_jobs("beta", [_make_job("2"), _make_job("3")])
+        store.upsert_jobs("acme", [make_job("1")])
+        store.upsert_jobs("beta", [make_job("2"), make_job("3")])
         store.upsert_jobs("acme", [])
         assert len(store.query_jobs()) == 2
 
     def test_null_description_preserves_existing(self, store):
         """Re-syncing with NULL description keeps previously-enriched description."""
-        store.upsert_jobs("acme", [_make_job("1", description="enriched")])
-        store.upsert_jobs("acme", [_make_job("1")])
+        store.upsert_jobs("acme", [make_job("1", description="enriched")])
+        store.upsert_jobs("acme", [make_job("1")])
         rows = store.query_jobs(company="acme")
         assert rows[0]["description"] == "enriched"
 
     def test_surrogate_key_assigned(self, store):
         """Jobs get an integer surrogate key (id)."""
-        store.upsert_jobs("acme", [_make_job("1")])
+        store.upsert_jobs("acme", [make_job("1")])
         row = store.conn.execute("SELECT id FROM jobs WHERE job_id = '1'").fetchone()
         assert row["id"] is not None
         assert isinstance(row["id"], int)
@@ -136,14 +127,14 @@ class TestQueryFilters:
     @pytest.fixture(autouse=True)
     def populate(self, store):
         store.upsert_jobs("acme", [
-            _make_job("1", "Product Manager", "Seattle, WA", salary="$150k"),
-            _make_job("2", "Software Engineer", "Remote", team="Platform"),
-            _make_job("3", "Senior PM", "New York, NY"),
-            _make_job("4", "Data Scientist", "Seattle, WA"),
+            make_job("1", "Product Manager", "Seattle, WA", salary="$150k"),
+            make_job("2", "Software Engineer", "Remote", team="Platform"),
+            make_job("3", "Senior PM", "New York, NY"),
+            make_job("4", "Data Scientist", "Seattle, WA"),
         ])
         store.upsert_jobs("beta", [
-            _make_job("5", "Product Manager", "London"),
-            _make_job("6", "Designer", "Remote"),
+            make_job("5", "Product Manager", "London"),
+            make_job("6", "Designer", "Remote"),
         ])
 
     def test_query_all(self, store):
@@ -184,16 +175,16 @@ class TestQueryFilters:
 class TestDescriptions:
     def test_get_jobs_needing_descriptions(self, store):
         store.upsert_jobs("acme", [
-            _make_job("1", description="has one"),
-            _make_job("2"),
-            _make_job("3"),
+            make_job("1", description="has one"),
+            make_job("2"),
+            make_job("3"),
         ])
         needing = store.get_jobs_needing_descriptions("acme")
         ids = {j["job_id"] for j in needing}
         assert ids == {"2", "3"}
 
     def test_update_descriptions(self, store):
-        store.upsert_jobs("acme", [_make_job("1"), _make_job("2")])
+        store.upsert_jobs("acme", [make_job("1"), make_job("2")])
         store.update_descriptions("acme", {"1": "desc for 1"})
         row = store.conn.execute("SELECT description FROM jobs WHERE job_id = '1'").fetchone()
         assert row["description"] == "desc for 1"
@@ -209,7 +200,7 @@ class TestSyncBookkeeping:
         assert store.is_stale("unknown-co", 24) is True
 
     def test_is_stale_recently_synced(self, store):
-        store.upsert_jobs("acme", [_make_job("1")])
+        store.upsert_jobs("acme", [make_job("1")])
         assert store.is_stale("acme", 24) is False
 
     def test_record_sync_error(self, store):
@@ -230,7 +221,7 @@ class TestEmbeddings:
     def _insert_jobs_with_stripped(self, store, *stripped_descs):
         """Insert jobs with description_stripped set."""
         jobs = [
-            _make_job(str(i + 1), description=f"full desc {i}", description_stripped=desc)
+            make_job(str(i + 1), description=f"full desc {i}", description_stripped=desc)
             for i, desc in enumerate(stripped_descs)
         ]
         store.upsert_jobs("acme", jobs)
@@ -255,9 +246,9 @@ class TestEmbeddings:
         """Jobs with description_stripped need embeddings; those without don't."""
         self._insert_jobs_with_stripped(store, "Build AI.", "Lead teams.")
         store.upsert_jobs("acme", [
-            _make_job("1", description="Build AI."),
-            _make_job("2", description="Lead teams."),
-            _make_job("3"),
+            make_job("1", description="Build AI."),
+            make_job("2", description="Lead teams."),
+            make_job("3"),
         ])
         store.conn.execute("UPDATE jobs SET description_stripped = 'Build AI.' WHERE job_id = '1'")
         store.conn.execute("UPDATE jobs SET description_stripped = 'Lead teams.' WHERE job_id = '2'")
@@ -370,8 +361,8 @@ class TestEmbeddings:
 
     def test_search_similar_filtered_by_company(self, store):
         """search_similar_filtered respects company filter."""
-        store.upsert_jobs("acme", [_make_job("1", "PM", "Seattle", description="Lead product.")])
-        store.upsert_jobs("beta", [_make_job("2", "PM", "Seattle", description="Lead product.")])
+        store.upsert_jobs("acme", [make_job("1", "PM", "Seattle", description="Lead product.")])
+        store.upsert_jobs("beta", [make_job("2", "PM", "Seattle", description="Lead product.")])
         for slug, jid in [("acme", "1"), ("beta", "2")]:
             store.conn.execute(
                 "UPDATE jobs SET description_stripped = 'stripped' WHERE company_slug = %s AND job_id = %s",
@@ -443,7 +434,7 @@ class TestEmbeddings:
 
     def test_check_constraint_rejects_empty_stripped_description(self, store):
         """DB CHECK constraint prevents description_stripped='' from being stored."""
-        store.upsert_jobs("acme", [_make_job("1", description="full desc")])
+        store.upsert_jobs("acme", [make_job("1", description="full desc")])
         with pytest.raises(psycopg.errors.CheckViolation):
             store.conn.execute(
                 "UPDATE jobs SET description_stripped = '' WHERE job_id = '1'"

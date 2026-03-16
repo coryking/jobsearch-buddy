@@ -17,19 +17,8 @@ from jobbuddy.embeddings import (
     embed_texts,
     serialize_f32,
 )
-from jobbuddy.models import Job
 
-
-def _make_job(**kw) -> Job:
-    defaults = dict(
-        id="123",
-        title="Product Manager",
-        location="Seattle, WA",
-        url="https://example.com/jobs/123",
-        apply_url="https://example.com/jobs/123/apply",
-    )
-    defaults.update(kw)
-    return Job(**defaults)
+from conftest import make_job
 
 
 def _mock_response(n: int = 1, dim: int = DIMENSIONS):
@@ -200,30 +189,30 @@ class TestSerializeF32:
 
 class TestEmbedText:
     def test_returns_none_without_description(self):
-        job = _make_job(description=None)
+        job = make_job(description=None)
         assert job.embed_text("Acme Corp") is None
 
     def test_returns_none_for_empty_description(self):
-        job = _make_job(description="")
+        job = make_job(description="")
         assert job.embed_text("Acme Corp") is None
 
     def test_includes_company_and_title(self):
-        job = _make_job(description="Build cool things.")
+        job = make_job(title="Product Manager", description="Build cool things.")
         text = job.embed_text("Acme Corp")
         assert text.startswith("Acme Corp — Product Manager")
 
     def test_includes_department_and_location(self):
-        job = _make_job(description="Build cool things.", department="Engineering", location="Seattle, WA")
+        job = make_job(title="Product Manager", location="Seattle, WA", description="Build cool things.", department="Engineering")
         text = job.embed_text("Acme Corp")
         assert "Engineering, Seattle, WA" in text
 
     def test_includes_description(self):
-        job = _make_job(description="Build cool things.")
+        job = make_job(title="Product Manager", description="Build cool things.")
         text = job.embed_text("Acme Corp")
         assert text.endswith("Build cool things.")
 
     def test_omits_meta_when_no_department_and_empty_location(self):
-        job = _make_job(description="Build cool things.", department=None, location="")
+        job = make_job(title="Product Manager", location="", description="Build cool things.", department=None)
         text = job.embed_text("Acme Corp")
         lines = text.split("\n")
         assert lines[0] == "Acme Corp — Product Manager"

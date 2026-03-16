@@ -8,16 +8,7 @@ from jobbuddy.models import Company, Job
 from jobbuddy.settings import Settings
 from jobbuddy.sync import SyncResult, sync_jobs
 
-
-def _make_job(id: str, title: str = "PM", ats_metadata: dict | None = None) -> Job:
-    return Job(
-        id=id,
-        title=title,
-        location="Seattle",
-        url=f"https://example.com/jobs/{id}",
-        apply_url=f"https://example.com/jobs/{id}/apply",
-        ats_metadata=ats_metadata,
-    )
+from conftest import make_job, seed_jobs
 
 
 def _make_company(slug: str, ats: str = "greenhouse") -> Company:
@@ -33,7 +24,7 @@ class TestSync:
         mock_list_companies.return_value = {"acme": company}
 
         mock_fetcher = MagicMock()
-        mock_fetcher.list_jobs.return_value = [_make_job("1"), _make_job("2")]
+        mock_fetcher.list_jobs.return_value = [make_job("1"), make_job("2")]
         mock_get_fetcher.return_value = mock_fetcher
 
         with patch("jobbuddy.sync.lookup_by_name", return_value=company):
@@ -64,7 +55,7 @@ class TestSync:
             if company.slug == "bad":
                 fetcher.list_jobs.side_effect = Exception("Connection refused")
             else:
-                fetcher.list_jobs.return_value = [_make_job("1")]
+                fetcher.list_jobs.return_value = [make_job("1")]
             return fetcher
 
         mock_get_fetcher.side_effect = side_effect
@@ -87,7 +78,7 @@ class TestSync:
         mock_list_companies.return_value = {"acme": company}
 
         mock_fetcher = MagicMock()
-        mock_fetcher.list_jobs.return_value = [_make_job("1")]
+        mock_fetcher.list_jobs.return_value = [make_job("1")]
         mock_get_fetcher.return_value = mock_fetcher
 
         state = SyncDisplayState()
@@ -108,7 +99,7 @@ class TestSync:
         mock_list_companies.return_value = {"acme": company}
 
         mock_fetcher = MagicMock()
-        mock_fetcher.list_jobs.return_value = [_make_job("1")]
+        mock_fetcher.list_jobs.return_value = [make_job("1")]
         mock_get_fetcher.return_value = mock_fetcher
 
         # First sync
@@ -133,7 +124,7 @@ class TestFetchPhaseState:
 
         company = _make_company("acme")
         mock_fetcher = MagicMock()
-        mock_fetcher.list_jobs.return_value = [_make_job("1"), _make_job("2")]
+        mock_fetcher.list_jobs.return_value = [make_job("1"), make_job("2")]
         mock_get_fetcher.return_value = mock_fetcher
 
         display = PhaseState("Fetch")
@@ -173,7 +164,7 @@ class TestFetchPhaseState:
 
         company = _make_company("acme")
         mock_fetcher = MagicMock()
-        mock_fetcher.list_jobs.return_value = [_make_job("1"), _make_job("2"), _make_job("3")]
+        mock_fetcher.list_jobs.return_value = [make_job("1"), make_job("2"), make_job("3")]
         mock_get_fetcher.return_value = mock_fetcher
 
         display = PhaseState("Fetch")
@@ -188,22 +179,15 @@ class TestFetchPhaseState:
 class TestEnrichment:
     """Tests for EnrichPhase directly -- no sync_jobs() pipeline."""
 
-    def _seed_jobs(self, conninfo, slug, jobs):
-        """Insert jobs into the DB (simulates what FetchPhase does)."""
-        from jobbuddy.store import JobStore
-        store = JobStore(conninfo)
-        store.upsert_jobs(slug, jobs)
-        store.close()
-
     @patch("jobbuddy.sync.enrich.get_fetcher")
     def test_enrichment_fetches_descriptions_for_stub_fetchers(
         self, mock_get_fetcher, pg_conninfo
     ):
         """Jobs from fetchers with descriptions_in_listing=False get descriptions."""
         company = _make_company("workday-co", ats="workday")
-        self._seed_jobs(pg_conninfo, "workday-co", [
-            _make_job("1", "PM", ats_metadata={"ext_path": "/job/1"}),
-            _make_job("2", "SWE", ats_metadata={"ext_path": "/job/2"}),
+        seed_jobs(pg_conninfo, "workday-co", [
+            make_job("1", "PM", ats_metadata={"ext_path": "/job/1"}),
+            make_job("2", "SWE", ats_metadata={"ext_path": "/job/2"}),
         ])
 
         mock_fetcher = MagicMock()
@@ -236,7 +220,7 @@ class TestEnrichment:
     def test_no_enrichment_for_full_fetchers(self, mock_get_fetcher, pg_conninfo):
         """Fetchers with descriptions_in_listing=True don't trigger enrichment."""
         company = _make_company("acme")
-        self._seed_jobs(pg_conninfo, "acme", [_make_job("1")])
+        seed_jobs(pg_conninfo, "acme", [make_job("1")])
 
         mock_fetcher = MagicMock()
         mock_fetcher.descriptions_in_listing = True
@@ -255,7 +239,7 @@ class TestEnrichment:
     def test_enrichment_skips_already_described_jobs(self, mock_get_fetcher, pg_conninfo):
         """EnrichPhase doesn't re-enrich jobs that already have descriptions."""
         company = _make_company("workday-co", ats="workday")
-        self._seed_jobs(pg_conninfo, "workday-co", [_make_job("1")])
+        seed_jobs(pg_conninfo, "workday-co", [make_job("1")])
 
         mock_fetcher = MagicMock()
         mock_fetcher.descriptions_in_listing = False
@@ -288,7 +272,7 @@ class TestEnrichment:
     def test_enrichment_failure_isolated(self, mock_get_fetcher, pg_conninfo):
         """Enrichment failure is caught by WorkerPhase -- run() completes."""
         company = _make_company("workday-co", ats="workday")
-        self._seed_jobs(pg_conninfo, "workday-co", [_make_job("1")])
+        seed_jobs(pg_conninfo, "workday-co", [make_job("1")])
 
         mock_fetcher = MagicMock()
         mock_fetcher.descriptions_in_listing = False
@@ -309,7 +293,7 @@ class TestEnrichment:
     def test_enrichment_display_state(self, mock_get_fetcher, pg_conninfo):
         """EnrichPhase updates PhaseState: total, done, status."""
         company = _make_company("workday-co", ats="workday")
-        self._seed_jobs(pg_conninfo, "workday-co", [_make_job("1"), _make_job("2")])
+        seed_jobs(pg_conninfo, "workday-co", [make_job("1"), make_job("2")])
 
         mock_fetcher = MagicMock()
         mock_fetcher.descriptions_in_listing = False
@@ -338,8 +322,8 @@ class TestEnrichment:
     def test_enrichment_passes_metadata(self, mock_get_fetcher, pg_conninfo):
         """Enrichment passes ats_metadata from DB to fetch_descriptions."""
         company = _make_company("workday-co", ats="workday")
-        self._seed_jobs(pg_conninfo, "workday-co", [
-            _make_job("1", ats_metadata={"ext_path": "/job/1"}),
+        seed_jobs(pg_conninfo, "workday-co", [
+            make_job("1", ats_metadata={"ext_path": "/job/1"}),
         ])
 
         captured_metadata = {}
@@ -369,7 +353,7 @@ class TestEnrichment:
     def test_incremental_commit_survives_partial_failure(self, mock_get_fetcher, pg_conninfo):
         """Descriptions committed via on_fetched survive even if later jobs fail."""
         company = _make_company("workday-co", ats="workday")
-        self._seed_jobs(pg_conninfo, "workday-co", [_make_job("1"), _make_job("2")])
+        seed_jobs(pg_conninfo, "workday-co", [make_job("1"), make_job("2")])
 
         mock_fetcher = MagicMock()
         mock_fetcher.descriptions_in_listing = False

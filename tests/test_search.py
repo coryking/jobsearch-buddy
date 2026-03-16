@@ -3,25 +3,12 @@
 from unittest.mock import patch
 
 import numpy as np
-import psycopg
 import pytest
 
-from jobbuddy.models import Job
 from jobbuddy.search import SearchResult, VectorSearch
 from jobbuddy.store import JobStore
 
-TEST_CONNINFO = "service=job-search-buddy-remote"
-
-
-def _make_job(id: str = "123", title: str = "PM", location: str = "Seattle", **kw) -> Job:
-    return Job(
-        id=id,
-        title=title,
-        location=location,
-        url=f"https://example.com/jobs/{id}",
-        apply_url=f"https://example.com/jobs/{id}/apply",
-        **kw,
-    )
+from conftest import make_job
 
 
 def _fake_vec(dimensions: int, seed: int = 0) -> np.ndarray:
@@ -35,26 +22,17 @@ def _fake_vec(dimensions: int, seed: int = 0) -> np.ndarray:
 DIMS = 1536
 
 
-def _cleanup():
-    conn = psycopg.connect(TEST_CONNINFO, autocommit=True)
-    conn.execute("DELETE FROM jobs")
-    conn.execute("DELETE FROM sync_status")
-    conn.close()
-
-
 @pytest.fixture
-def vs():
-    """VectorSearch pre-populated with jobs and embeddings, with cleanup."""
-    _cleanup()
-
-    search = VectorSearch(TEST_CONNINFO)
+def vs(pg_conninfo):
+    """VectorSearch pre-populated with jobs and embeddings."""
+    search = VectorSearch(pg_conninfo)
     store = search.store
 
     # Insert jobs with descriptions
     store.upsert_jobs("acme", [
-        _make_job("1", "AI Product Manager", "Seattle", description="Lead AI product strategy and roadmap."),
-        _make_job("2", "Software Engineer", "Remote", description="Build backend services and APIs."),
-        _make_job("3", "Data Scientist", "NYC", description="ML models for user recommendations."),
+        make_job("1", "AI Product Manager", "Seattle", description="Lead AI product strategy and roadmap."),
+        make_job("2", "Software Engineer", "Remote", description="Build backend services and APIs."),
+        make_job("3", "Data Scientist", "NYC", description="ML models for user recommendations."),
     ])
 
     for jid in ["1", "2", "3"]:
@@ -71,7 +49,6 @@ def vs():
 
     yield search
     search.close()
-    _cleanup()
 
 
 class TestVectorSearch:
@@ -107,16 +84,14 @@ class TestVectorSearch:
             results = vs.search(query="anything")
         assert len(results) == 0
 
-    def test_search_empty_embeddings(self):
+    def test_search_empty_embeddings(self, pg_conninfo):
         """Search with no embeddings returns empty."""
-        _cleanup()
-        search = VectorSearch(TEST_CONNINFO)
+        search = VectorSearch(pg_conninfo)
         query_vec = _fake_vec(DIMS, seed=0).tolist()
         with patch("jobbuddy.search.embed_query", return_value=query_vec):
             results = search.search(query="anything")
         assert results == []
         search.close()
-        _cleanup()
 
 
 class TestVectorSearchFiltered:
@@ -125,7 +100,7 @@ class TestVectorSearchFiltered:
     def test_search_with_query_and_company_filter(self, vs):
         """Semantic search filtered by company."""
         vs.store.upsert_jobs("beta", [
-            _make_job("10", "AI Engineer", "Seattle", description="AI systems."),
+            make_job("10", "AI Engineer", "Seattle", description="AI systems."),
         ])
         vs.store.conn.execute(
             "UPDATE jobs SET description_stripped = description WHERE job_id = '10'"

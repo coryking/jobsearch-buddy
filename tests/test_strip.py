@@ -4,23 +4,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from jobbuddy.models import Job
 from jobbuddy.store import JobStore
 from jobbuddy.sync.display import PhaseState
 from jobbuddy.sync.strip import StripPhase
 
-TEST_CONNINFO = "service=job-search-buddy-remote"
-
-
-def _make_job(id: str = "123", title: str = "PM", location: str = "Seattle", **kw) -> Job:
-    return Job(
-        id=id,
-        title=title,
-        location=location,
-        url=f"https://example.com/jobs/{id}",
-        apply_url=f"https://example.com/jobs/{id}/apply",
-        **kw,
-    )
+from conftest import make_job, seed_jobs
 
 
 # ---------------------------------------------------------------------------
@@ -38,9 +26,9 @@ class TestStoreStripping:
 
     def test_get_jobs_needing_stripping(self, store):
         store.upsert_jobs("acme", [
-            _make_job("1", description="Full description here"),
-            _make_job("2", description="Another description"),
-            _make_job("3"),  # no description -- should be excluded
+            make_job("1", description="Full description here"),
+            make_job("2", description="Another description"),
+            make_job("3"),  # no description -- should be excluded
         ])
         store.conn.execute(
             "UPDATE jobs SET description_stripped = 'cleaned' WHERE job_id = '1'"
@@ -52,10 +40,10 @@ class TestStoreStripping:
 
     def test_get_jobs_needing_stripping_excludes_disappeared(self, store):
         store.upsert_jobs("acme", [
-            _make_job("1", description="desc"),
-            _make_job("2", description="desc"),
+            make_job("1", description="desc"),
+            make_job("2", description="desc"),
         ])
-        store.upsert_jobs("acme", [_make_job("1", description="desc")])
+        store.upsert_jobs("acme", [make_job("1", description="desc")])
 
         needing = store.get_jobs_needing_stripping()
         assert len(needing) == 1
@@ -63,22 +51,22 @@ class TestStoreStripping:
 
     def test_get_jobs_needing_stripping_respects_limit(self, store):
         store.upsert_jobs("acme", [
-            _make_job("1", description="d1"),
-            _make_job("2", description="d2"),
-            _make_job("3", description="d3"),
+            make_job("1", description="d1"),
+            make_job("2", description="d2"),
+            make_job("3", description="d3"),
         ])
         needing = store.get_jobs_needing_stripping(limit=2)
         assert len(needing) == 2
 
     def test_update_stripped_description(self, store):
-        store.upsert_jobs("acme", [_make_job("1", description="raw")])
+        store.upsert_jobs("acme", [make_job("1", description="raw")])
         pk = store.conn.execute("SELECT id FROM jobs WHERE job_id = '1'").fetchone()["id"]
         store.update_stripped_description(pk, "cleaned text")
         row = store.conn.execute("SELECT description_stripped FROM jobs WHERE id = %s", (pk,)).fetchone()
         assert row["description_stripped"] == "cleaned text"
 
     def test_clear_stripped_descriptions(self, store):
-        store.upsert_jobs("acme", [_make_job("1", description="raw")])
+        store.upsert_jobs("acme", [make_job("1", description="raw")])
         pk = store.conn.execute("SELECT id FROM jobs WHERE job_id = '1'").fetchone()["id"]
         store.update_stripped_description(pk, "cleaned")
         cleared = store.clear_stripped_descriptions()
@@ -94,7 +82,7 @@ class TestStoreStripping:
 
 class TestEmbedTextStripped:
     def test_embed_text_prefers_stripped(self, store):
-        store.upsert_jobs("acme", [_make_job("1", description="raw description")])
+        store.upsert_jobs("acme", [make_job("1", description="raw description")])
         pk = store.conn.execute("SELECT id FROM jobs WHERE job_id = '1'").fetchone()["id"]
 
         store.conn.execute("UPDATE jobs SET description_stripped = 'raw description' WHERE id = %s", (pk,))
@@ -108,13 +96,13 @@ class TestEmbedTextStripped:
 
     def test_embed_text_falls_back_to_raw(self):
         """embed_text uses raw description when no stripped version available."""
-        job = _make_job("1", description="raw desc")
+        job = make_job("1", description="raw desc")
         text = job.embed_text("acme")
         assert "raw desc" in text
 
     def test_embed_text_uses_stripped_when_available(self):
         """embed_text uses stripped description when provided."""
-        job = _make_job("1", description="raw desc")
+        job = make_job("1", description="raw desc")
         text = job.embed_text("acme", description_stripped="stripped desc")
         assert "stripped desc" in text
         assert "raw desc" not in text
@@ -128,14 +116,9 @@ class TestEmbedTextStripped:
 class TestStripPhase:
     """Tests for StripPhase directly -- no sync_jobs() pipeline."""
 
-    def _seed_jobs(self, conninfo, jobs):
-        store = JobStore(conninfo)
-        store.upsert_jobs("acme", jobs)
-        store.close()
-
     def test_strip_phase_noop_when_no_work(self, pg_conninfo):
         """StripPhase returns early when no jobs need stripping."""
-        self._seed_jobs(pg_conninfo, [_make_job("1")])
+        seed_jobs(pg_conninfo, "acme", [make_job("1")])
 
         display = PhaseState("Strip")
         StripPhase(pg_conninfo, display=display, max_workers=1).run()
@@ -145,9 +128,9 @@ class TestStripPhase:
     @patch("jobbuddy.sync.strip.create_openai_client")
     def test_strip_phase_calls_llm(self, mock_factory, pg_conninfo):
         """StripPhase calls OpenAI API for unstripped jobs."""
-        self._seed_jobs(pg_conninfo, [
-            _make_job("1", description="raw description with boilerplate"),
-            _make_job("2", description="another raw description"),
+        seed_jobs(pg_conninfo, "acme", [
+            make_job("1", description="raw description with boilerplate"),
+            make_job("2", description="another raw description"),
         ])
 
         mock_response = MagicMock()
@@ -175,9 +158,9 @@ class TestStripPhase:
     @patch("jobbuddy.sync.strip.create_openai_client")
     def test_strip_phase_skips_already_stripped(self, mock_factory, pg_conninfo):
         """StripPhase skips jobs that already have stripped descriptions."""
-        self._seed_jobs(pg_conninfo, [
-            _make_job("1", description="raw"),
-            _make_job("2", description="raw"),
+        seed_jobs(pg_conninfo, "acme", [
+            make_job("1", description="raw"),
+            make_job("2", description="raw"),
         ])
         store = JobStore(pg_conninfo)
         store.conn.execute(
@@ -200,7 +183,7 @@ class TestStripPhase:
     @patch("jobbuddy.sync.strip.create_openai_client")
     def test_strip_phase_rejects_empty_llm_response(self, mock_factory, pg_conninfo):
         """Empty LLM response records an error, not a silent empty write."""
-        self._seed_jobs(pg_conninfo, [_make_job("1", description="real job description")])
+        seed_jobs(pg_conninfo, "acme", [make_job("1", description="real job description")])
 
         mock_response = MagicMock()
         mock_response.choices[0].message.content = ""
