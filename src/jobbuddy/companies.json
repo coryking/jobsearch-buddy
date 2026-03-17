@@ -495,7 +495,7 @@
     "ats": "oracle_hcm",
     "board": "eeho",
     "default_filters": {
-      "keyword": "product manager",
+      "categories": ["300000001917356", "300000001917346", "302958497961746"],
       "location": "United States"
     },
     "name": "Oracle",
@@ -1096,7 +1096,7 @@
     "ats": "oracle_hcm",
     "board": "jpmc",
     "default_filters": {
-      "keywords": ["software engineer", "product manager"],
+      "categories": ["300000086152753", "300000086251864"],
       "location": "United States"
     },
     "name": "JPMorgan Chase",

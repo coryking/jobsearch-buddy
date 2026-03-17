@@ -37,7 +37,9 @@ class OracleHCMFetcher(ATSFetcher):
     def _job_url(self, job_id: str) -> str:
         return f"{self._base_url}/hcmUI/CandidateExperience/en/sites/{self.site_slug}/job/{job_id}"
 
-    def _list_api_url(self, keyword: str, location: str, offset: int) -> str:
+    def _list_api_url(
+        self, keyword: str, location: str, offset: int, *, category: str = ""
+    ) -> str:
         # Oracle finder syntax: finder=findReqs;param1=val1,param2=val2
         # Semicolon separates finder name from params, commas separate params
         finder_params = [f"siteNumber={self.site_number}"]
@@ -45,11 +47,17 @@ class OracleHCMFetcher(ATSFetcher):
             finder_params.append(f"keyword={keyword}")
         if location:
             finder_params.append(f"location={location}")
+        if category:
+            finder_params.append(f"selectedCategoriesFacet={category}")
+            finder_params.append("lastSelectedFacet=CATEGORIES")
+        # limit and offset must be finder params — the API ignores them as query params
+        finder_params.append(f"limit={PAGE_SIZE}")
+        finder_params.append(f"offset={offset}")
         finder = ",".join(finder_params)
         return (
             f"{self._base_url}/hcmRestApi/resources/latest/recruitingCEJobRequisitions"
             f"?finder=findReqs;{finder}"
-            f"&onlyData=true&expand=requisitionList&limit={PAGE_SIZE}&offset={offset}"
+            f"&onlyData=true&expand=requisitionList"
         )
 
     def _detail_api_url(self, job_id: str) -> str:
@@ -71,14 +79,21 @@ class OracleHCMFetcher(ATSFetcher):
             department=item.get("Category"),
         )
 
-    def _fetch_keyword(self, keyword: str, location: str) -> list[Job]:
-        """Fetch jobs for a single keyword, up to MAX_RESULTS."""
+    def _fetch_query(
+        self, keyword: str, location: str, *, category: str = ""
+    ) -> list[Job]:
+        """Fetch jobs for a single query (keyword and/or category).
+
+        Keyword queries cap at MAX_RESULTS (relevancy drops fast).
+        Category queries fetch all results (exact match, no relevancy decay).
+        """
+        max_results = None if category else MAX_RESULTS
         jobs: list[Job] = []
         offset = 0
         total = None
 
         while True:
-            url = self._list_api_url(keyword, location, offset)
+            url = self._list_api_url(keyword, location, offset, category=category)
             resp = self.client.get(url)
             resp.raise_for_status()
             data = resp.json()
@@ -95,7 +110,9 @@ class OracleHCMFetcher(ATSFetcher):
                     jobs.append(self._list_item_to_job(req))
 
             offset += PAGE_SIZE
-            if (total is not None and offset >= total) or len(jobs) >= MAX_RESULTS:
+            if total is not None and offset >= total:
+                break
+            if max_results and len(jobs) >= max_results:
                 break
 
         return jobs
@@ -106,18 +123,34 @@ class OracleHCMFetcher(ATSFetcher):
         # keywords can be a list (multiple queries merged + deduped) or a single string
         keywords_raw = self.default_filters.get("keywords") or self.default_filters.get("keyword", "")
         if isinstance(keywords_raw, str):
-            keywords = [keywords_raw]
+            keywords = [keywords_raw] if keywords_raw else [""]
         else:
             keywords = list(keywords_raw)
+
+        # categories filter by Oracle HCM category facet IDs
+        categories_raw = self.default_filters.get("categories", [])
+        if isinstance(categories_raw, str):
+            categories = [categories_raw]
+        else:
+            categories = list(categories_raw)
 
         seen_ids: set[str] = set()
         jobs: list[Job] = []
 
-        for kw in keywords:
-            for job in self._fetch_keyword(kw, location):
+        def _collect(new_jobs: list[Job]) -> None:
+            for job in new_jobs:
                 if job.id not in seen_ids:
                     seen_ids.add(job.id)
                     jobs.append(job)
+
+        if categories:
+            # Query per category (each may be combined with each keyword)
+            for cat in categories:
+                for kw in keywords:
+                    _collect(self._fetch_query(kw, location, category=cat))
+        else:
+            for kw in keywords:
+                _collect(self._fetch_query(kw, location))
 
         return jobs
 
