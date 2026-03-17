@@ -175,38 +175,42 @@ class AvatureFetcher(ATSFetcher):
     def _extract_description_from_html(self, html: str) -> str | None:
         """Extract job description from an Avature detail page.
 
-        The description lives in the last <article class="article article--details">
-        block, which contains a "Description & Requirements" (or similar) section
-        with rich HTML inside article__content__view__field__value divs.
+        The description lives in the article containing "Description" in its header.
+        Template variants differ in field classes and nesting, so we take the
+        brute-force approach: find the description article, strip all HTML tags,
+        and return the text.
         """
+        # Find all articles on the page
         articles = re.findall(
-            r'<article class="article article--details[^"]*"[^>]*>(.*?)</article>',
+            r'<article[^>]*>(.*?)</article>',
             html,
             re.DOTALL,
         )
         if not articles:
             return None
 
-        # The last (or largest) article is typically the description
-        desc_article = max(articles, key=len)
+        # Pick the article whose header mentions "Description"
+        desc_article = None
+        for article in articles:
+            if re.search(r"Description\s*(?:&amp;|&)\s*Requirements", article):
+                desc_article = article
+                break
 
-        # Extract all field values from the description article
-        values = re.findall(
-            r'<div class="article__content__view__field__value">\s*(.*?)\s*</div>',
+        # Fallback: largest article
+        if not desc_article:
+            desc_article = max(articles, key=len)
+
+        # Extract the content area (everything inside article__content__view)
+        content_match = re.search(
+            r'<div class="article__content__view">\s*(.*)',
             desc_article,
             re.DOTALL,
         )
-        if not values:
-            return None
+        if content_match:
+            return strip_html(content_match.group(1))
 
-        # The rich-text field value is the one with HTML content
-        # Pick the longest value (the actual description, not labels)
-        desc_html = max(values, key=len)
-        if len(desc_html) < 50:
-            # Too short to be a real description, try concatenating
-            desc_html = "\n".join(values)
-
-        return strip_html(desc_html) if desc_html else None
+        # Final fallback: strip entire article
+        return strip_html(desc_article)
 
     def fetch_description(self, job_id: str, metadata: dict | None = None) -> str | None:
         url = (metadata or {}).get("url")
