@@ -307,6 +307,39 @@ def _parse_workable(url: str) -> ParsedURL | None:
 
 
 # ---------------------------------------------------------------------------
+# Avature
+# ---------------------------------------------------------------------------
+# https://{company}.avature.net[/{locale}]/{section}/JobDetail/{slug}/{id}
+
+def _parse_avature(url: str) -> ParsedURL | None:
+    m = re.search(
+        r"([a-z0-9-]+)\.avature\.net(?:/[a-z]{2}_[A-Z]{2})?/([^/]+)/JobDetail/[^/]+/(\d+)",
+        url,
+        re.IGNORECASE,
+    )
+    if m:
+        return ParsedURL(ats="avature", board=m.group(1), job_id=m.group(3))
+    return None
+
+
+# ---------------------------------------------------------------------------
+# TalentBrew (Radancy)
+# ---------------------------------------------------------------------------
+# https://jobs.intuit.com/job/{location}/{title}/{tenant_id}/{job_id}
+
+def _parse_talentbrew(url: str) -> ParsedURL | None:
+    parsed = urlparse(url)
+    path = parsed.path
+
+    # Job detail: /job/{location}/{title}/{tenant_id}/{numeric_id}
+    m = re.search(r"/job/[^/]+/[^/]+/(\d+)/(\d+)", path)
+    if m:
+        return ParsedURL(ats="talentbrew", board="", job_id=m.group(2))
+
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Dispatcher
 # ---------------------------------------------------------------------------
 
@@ -320,6 +353,8 @@ _PARSERS = [
     _parse_eightfold,
     _parse_oracle_hcm,
     _parse_paylocity,
+    _parse_avature,
+    _parse_talentbrew,
 ]
 
 

@@ -368,9 +368,11 @@
     "name": "Incode"
   },
   "intuit": {
-    "ats": null,
-    "board": null,
-    "name": "Intuit"
+    "ats": "talentbrew",
+    "board": "",
+    "name": "Intuit",
+    "tb_host": "jobs.intuit.com",
+    "tb_tenant_id": 27595
   },
   "koidra": {
     "ats": null,
@@ -1089,6 +1091,13 @@
     "ats": "greenhouse",
     "board": "instacart",
     "name": "Instacart"
+  },
+  "jpmc": {
+    "ats": "oracle_hcm",
+    "board": "jpmc",
+    "name": "JPMorgan Chase",
+    "site_number": "CX_1001",
+    "site_slug": "CX_1001"
   },
   "justworks": {
     "ats": "greenhouse",
@@ -3531,5 +3540,57 @@
     "ats": "ashby",
     "board": "parafin",
     "name": "Parafin"
+  },
+  "bloomberg": {
+    "ats": "avature",
+    "board": "bloomberg",
+    "name": "Bloomberg",
+    "av_section": "careers"
+  },
+  "koch": {
+    "ats": "avature",
+    "board": "koch",
+    "name": "Koch Industries",
+    "av_section": "careers",
+    "av_locale": "en_US"
+  },
+  "xerox": {
+    "ats": "avature",
+    "board": "xerox",
+    "name": "Xerox",
+    "av_section": "careers",
+    "av_locale": "en_US"
+  },
+  "synopsys": {
+    "ats": "avature",
+    "board": "synopsys",
+    "name": "Synopsys",
+    "av_section": "careers"
+  },
+  "ally": {
+    "ats": "avature",
+    "board": "ally",
+    "name": "Ally Financial",
+    "av_section": "careers"
+  },
+  "broad-institute": {
+    "ats": "avature",
+    "board": "broadinstitute",
+    "name": "Broad Institute",
+    "av_section": "careers",
+    "av_locale": "en_US"
+  },
+  "maximus": {
+    "ats": "avature",
+    "board": "maximus",
+    "name": "Maximus",
+    "av_section": "careers"
+  },
+  "deloitte": {
+    "ats": "avature",
+    "board": "deloittebe",
+    "name": "Deloitte",
+    "av_section": "careers",
+    "av_locale": "en_US"
   }
 }

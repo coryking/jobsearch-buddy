@@ -1,6 +1,7 @@
 """ATS fetcher registry and factory."""
 
 from jobbuddy.fetchers.ashby import AshbyFetcher
+from jobbuddy.fetchers.avature import AvatureFetcher
 from jobbuddy.fetchers.base import ATSFetcher
 from jobbuddy.fetchers.eightfold import EightfoldFetcher
 from jobbuddy.fetchers.eightfold_v2 import EightfoldV2Fetcher
@@ -9,12 +10,14 @@ from jobbuddy.fetchers.lever import LeverFetcher
 from jobbuddy.fetchers.oracle_hcm import OracleHCMFetcher
 from jobbuddy.fetchers.paylocity import PaylocityFetcher
 from jobbuddy.fetchers.rippling import RipplingFetcher
+from jobbuddy.fetchers.talentbrew import TalentBrewFetcher
 from jobbuddy.fetchers.workable import WorkableFetcher
 from jobbuddy.fetchers.workday import WorkdayFetcher
 from jobbuddy.models import Company
 
 _REGISTRY: dict[str, type[ATSFetcher]] = {
     "ashby": AshbyFetcher,
+    "avature": AvatureFetcher,
     "eightfold": EightfoldFetcher,
     "eightfold_v2": EightfoldV2Fetcher,
     "greenhouse": GreenhouseFetcher,
@@ -22,6 +25,7 @@ _REGISTRY: dict[str, type[ATSFetcher]] = {
     "oracle_hcm": OracleHCMFetcher,
     "paylocity": PaylocityFetcher,
     "rippling": RipplingFetcher,
+    "talentbrew": TalentBrewFetcher,
     "workable": WorkableFetcher,
     "workday": WorkdayFetcher,
 }

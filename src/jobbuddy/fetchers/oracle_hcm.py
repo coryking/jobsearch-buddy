@@ -28,16 +28,11 @@ class OracleHCMFetcher(ATSFetcher):
         self.site_slug = site_slug
         self.default_filters = default_filters or {}
 
-    def _require_config(self) -> None:
-        if not self.ohcm_region:
-            raise ValueError(
-                f"Oracle HCM fetcher for '{self.board}' requires ohcm_region. "
-                "These are normally set from the company registry."
-            )
-
     @property
     def _base_url(self) -> str:
-        return f"https://{self.board}.fa.{self.ohcm_region}.oraclecloud.com"
+        if self.ohcm_region:
+            return f"https://{self.board}.fa.{self.ohcm_region}.oraclecloud.com"
+        return f"https://{self.board}.fa.oraclecloud.com"
 
     def _job_url(self, job_id: str) -> str:
         return f"{self._base_url}/hcmUI/CandidateExperience/en/sites/{self.site_slug}/job/{job_id}"
@@ -106,7 +101,6 @@ class OracleHCMFetcher(ATSFetcher):
         return jobs
 
     def list_jobs(self, *, on_progress: ProgressCallback | None = None, on_retry: RetryCallback | None = None) -> list[Job]:
-        self._require_config()
         location = self.default_filters.get("location", "")
 
         # keywords can be a list (multiple queries merged + deduped) or a single string
@@ -164,13 +158,11 @@ class OracleHCMFetcher(ATSFetcher):
         )
 
     def fetch_job(self, job_id: str) -> Job:
-        self._require_config()
         detail = self._fetch_detail_data(job_id)
         return self._parse_detail(detail, job_id)
 
     def fetch_description(self, job_id: str, metadata: dict | None = None) -> str | None:
         """Fetch description from detail API without building a full Job."""
-        self._require_config()
         detail = self._fetch_detail_data(job_id)
         desc_parts = []
         for field in ("ExternalDescriptionStr", "ExternalResponsibilitiesStr", "ExternalQualificationsStr"):
