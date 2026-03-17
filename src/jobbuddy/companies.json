@@ -3592,5 +3592,54 @@
     "name": "Deloitte",
     "av_section": "careers",
     "av_locale": "en_US"
+  },
+  "walgreens": {
+    "ats": "talentbrew",
+    "board": "",
+    "name": "Walgreens",
+    "tb_host": "jobs.walgreens.com",
+    "tb_tenant_id": 1242
+  },
+  "wegmans": {
+    "ats": "talentbrew",
+    "board": "",
+    "name": "Wegmans",
+    "tb_host": "jobs.wegmans.com",
+    "tb_tenant_id": 1839
+  },
+  "comcast": {
+    "ats": "talentbrew",
+    "board": "",
+    "name": "Comcast",
+    "tb_host": "jobs.comcast.com",
+    "tb_tenant_id": 45483
+  },
+  "spectrum": {
+    "ats": "talentbrew",
+    "board": "",
+    "name": "Spectrum",
+    "tb_host": "jobs.spectrum.com",
+    "tb_tenant_id": 4673
+  },
+  "boeing": {
+    "ats": "talentbrew",
+    "board": "",
+    "name": "Boeing",
+    "tb_host": "jobs.boeing.com",
+    "tb_tenant_id": 185
+  },
+  "citi": {
+    "ats": "talentbrew",
+    "board": "",
+    "name": "Citi",
+    "tb_host": "jobs.citi.com",
+    "tb_tenant_id": 287
+  },
+  "pge": {
+    "ats": "talentbrew",
+    "board": "",
+    "name": "PG&E",
+    "tb_host": "jobs.pge.com",
+    "tb_tenant_id": 29673
   }
 }

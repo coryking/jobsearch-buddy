@@ -88,40 +88,58 @@ class TalentBrewFetcher(ATSFetcher):
         return f"{self._base_url()}/search-jobs/results?{urlencode(params)}"
 
     def _parse_results_html(self, html: str) -> tuple[list[Job], int]:
-        """Parse the results HTML fragment. Returns (jobs, total_results)."""
+        """Parse the results HTML fragment. Returns (jobs, total_results).
+
+        Handles multiple TalentBrew template variants:
+        - Intuit style: <a href="/job/..." data-job-id="..." data-title="...">
+        - Walgreens style: <a href="/en/job/..." data-job-id="..."><h2>Title</h2>
+        """
         total_match = re.search(r'data-total-results="(\d+)"', html)
         total = int(total_match.group(1)) if total_match else 0
 
         jobs: list[Job] = []
 
-        # Each job link: <a href="/job/..." data-job-id="..." data-title="...">
+        # Link pattern: <a ... href="...job/..." ... data-job-id="...">
+        # href and data-job-id can appear in any order; other attrs may come first.
         link_pattern = re.compile(
-            r'<a\s+href="(/job/[^"]+)"[^>]*'
-            r'data-job-id="(\d+)"[^>]*'
-            r'data-title="([^"]+)"',
+            r'<a\s[^>]*href="((?:/[a-z]{2})?/job/[^"]+)"[^>]*data-job-id="(\d+)"[^>]*>',
             re.DOTALL,
         )
-        # Location comes right after in a span
         loc_pattern = re.compile(
-            r'<span\s+class="job-location">([^<]*)</span>'
+            r'<span\s+[^>]*class="[^"]*(?:job.location|location)[^"]*"[^>]*>([^<]*)</span>'
         )
 
         # Split by <li to process each job card
-        items = re.split(r"<li\s+", html)
+        items = re.split(r"<li[\s>]", html)
         for item in items[1:]:  # skip content before first <li
-            # Extract category from the li's data attributes
-            cat_match = re.search(r"data-category='([^']*)'", item)
-            if not cat_match:
-                cat_match = re.search(r'data-category="([^"]*)"', item)
-            category = cat_match.group(1) if cat_match else None
-
             link_match = link_pattern.search(item)
             if not link_match:
                 continue
 
             path = link_match.group(1)
             tb_job_id = link_match.group(2)
-            title = link_match.group(3)
+
+            # Title: prefer data-title attr, then <h2>, then <span class="..job-title">
+            title_attr = re.search(r'data-title="([^"]+)"', item)
+            if title_attr:
+                title = title_attr.group(1)
+            else:
+                title_el = re.search(
+                    r'<(?:h2|span)[^>]*class="[^"]*(?:headline|job.title)[^"]*"[^>]*>\s*(.*?)\s*</(?:h2|span)>',
+                    item, re.DOTALL,
+                )
+                if not title_el:
+                    title_el = re.search(r'<h[23][^>]*>\s*(.*?)\s*</h[23]>', item, re.DOTALL)
+                raw = title_el.group(1) if title_el else ""
+                title = re.sub(r'<[^>]+>', '', raw)  # strip nested tags
+                title = re.sub(r'\s+', ' ', title).strip()
+
+            if not title:
+                continue
+
+            # Category from data-category (not all templates have this)
+            cat_match = re.search(r"""data-category=['"]([^'"]+)['"]""", item)
+            category = cat_match.group(1) if cat_match else None
 
             loc_match = loc_pattern.search(item)
             location = loc_match.group(1).strip() if loc_match else ""
