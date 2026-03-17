@@ -1095,6 +1095,10 @@
   "jpmc": {
     "ats": "oracle_hcm",
     "board": "jpmc",
+    "default_filters": {
+      "keywords": ["software engineer", "product manager"],
+      "location": "United States"
+    },
     "name": "JPMorgan Chase",
     "site_number": "CX_1001",
     "site_slug": "CX_1001"
