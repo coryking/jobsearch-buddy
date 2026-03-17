@@ -53,7 +53,7 @@ uv run python -m pytest tests/ -v
 1. Create `fetchers/{platform}.py` inheriting `ATSFetcher`
 2. Implement `list_jobs()` → `list[Job]` and `fetch_job()` → `Job`
 3. Register in `fetchers/__init__.py` `FETCHER_MAP` and `SUPPORTED_ATS_TYPES`
-4. Add a test entry to `companies.json`
+4. Register with `jsb companies-add` or `register_company()` in `registry.py`
 
 Decide: full fetcher (returns descriptions in `list_jobs()`) or stub (returns
 stubs, enrichment fetches descriptions individually). Full is preferred when

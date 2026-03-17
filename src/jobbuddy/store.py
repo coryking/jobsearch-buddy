@@ -11,8 +11,9 @@ from datetime import datetime, timezone
 import psycopg
 from pgvector.psycopg import register_vector
 from psycopg.rows import dict_row
+from psycopg.types.json import Json
 
-from jobbuddy.models import Job
+from jobbuddy.models import Company, Job
 from jobbuddy.types import EmbedWorkItem, StripWorkItem
 
 log = logging.getLogger(__name__)
@@ -66,6 +67,53 @@ class JobStore:
         register_vector(conn)
         conn.row_factory = dict_row
         return conn
+
+    # -------------------------------------------------------------------
+    # Companies
+    # -------------------------------------------------------------------
+
+    def _hydrate_company(self, row: dict) -> Company:
+        """Build a Company from a DB row."""
+        config = row["config"] or {}
+        return Company(
+            slug=row["slug"], name=row["name"],
+            ats=row["ats"], board=row["board"], **config,
+        )
+
+    def load_companies(self) -> dict[str, Company]:
+        """Load all companies. Returns {slug: Company}."""
+        rows = self.conn.execute(
+            "SELECT * FROM companies ORDER BY slug"
+        ).fetchall()
+        return {r["slug"]: self._hydrate_company(r) for r in rows}
+
+    def get_company(self, slug: str) -> Company | None:
+        """Get a single company by slug."""
+        row = self.conn.execute(
+            "SELECT * FROM companies WHERE slug = %s", (slug,)
+        ).fetchone()
+        return self._hydrate_company(row) if row else None
+
+    def save_company(self, company: Company) -> None:
+        """Upsert a company. COALESCE on ats/board so ensure_company(ats=None)
+        doesn't clobber existing ATS config."""
+        extra = {
+            k: v for k, v in company.model_dump().items()
+            if k not in ("slug", "name", "ats", "board")
+        }
+        self.conn.execute(
+            """INSERT INTO companies (slug, name, ats, board, config)
+               VALUES (%s, %s, %s, %s, %s)
+               ON CONFLICT (slug) DO UPDATE SET
+                name = excluded.name,
+                ats = COALESCE(excluded.ats, companies.ats),
+                board = COALESCE(excluded.board, companies.board),
+                config = CASE
+                    WHEN excluded.ats IS NOT NULL THEN excluded.config
+                    ELSE companies.config
+                END""",
+            (company.slug, company.name, company.ats, company.board, Json(extra)),
+        )
 
     # -------------------------------------------------------------------
     # Jobs
@@ -185,9 +233,10 @@ class JobStore:
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
 
         sql = f"""
-            SELECT j.*, s.last_sync
+            SELECT j.*, s.last_sync, c.name AS company_name
             FROM jobs j
             LEFT JOIN sync_status s ON j.company_slug = s.company_slug
+            LEFT JOIN companies c ON j.company_slug = c.slug
             {where}
             ORDER BY j.published_at DESC NULLS LAST
             LIMIT %s
@@ -289,9 +338,10 @@ class JobStore:
         if not job_ids:
             return []
         rows = self.conn.execute(
-            """SELECT j.*, s.last_sync
+            """SELECT j.*, s.last_sync, c.name AS company_name
                 FROM jobs j
                 LEFT JOIN sync_status s ON j.company_slug = s.company_slug
+                LEFT JOIN companies c ON j.company_slug = c.slug
                 WHERE j.id = ANY(%s)""",
             (job_ids,),
         ).fetchall()
@@ -304,8 +354,11 @@ class JobStore:
         slugs = [s for s, _ in pairs]
         jids = [j for _, j in pairs]
         rows = self.conn.execute(
-            """SELECT * FROM jobs
-               WHERE (company_slug, job_id) IN (
+            """SELECT j.*, s.last_sync, c.name AS company_name
+               FROM jobs j
+               LEFT JOIN sync_status s ON j.company_slug = s.company_slug
+               LEFT JOIN companies c ON j.company_slug = c.slug
+               WHERE (j.company_slug, j.job_id) IN (
                    SELECT unnest(%s::text[]), unnest(%s::text[])
                )""",
             (slugs, jids),
@@ -333,9 +386,10 @@ class JobStore:
         """KNN search via pgvector, returns job dicts with distance score."""
         rows = self.conn.execute("""
             SELECT embedding <=> %s::vector AS distance,
-                   j.*, s.last_sync
+                   j.*, s.last_sync, c.name AS company_name
             FROM jobs j
             LEFT JOIN sync_status s ON j.company_slug = s.company_slug
+            LEFT JOIN companies c ON j.company_slug = c.slug
             WHERE j.embedding IS NOT NULL
               AND j.disappeared_at IS NULL
             ORDER BY j.embedding <=> %s::vector
@@ -387,9 +441,10 @@ class JobStore:
 
         sql = f"""
             SELECT j.embedding <=> %s::vector AS distance,
-                   j.*, s.last_sync
+                   j.*, s.last_sync, c.name AS company_name
             FROM jobs j
             LEFT JOIN sync_status s ON j.company_slug = s.company_slug
+            LEFT JOIN companies c ON j.company_slug = c.slug
             WHERE {where}
             ORDER BY j.embedding <=> %s::vector
             LIMIT %s

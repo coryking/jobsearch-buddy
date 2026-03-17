@@ -9,11 +9,21 @@ import pytest
 from pgvector.psycopg import register_vector
 from psycopg.rows import dict_row
 
-from jobbuddy.models import Job
+from jobbuddy.models import Company, Job
 from jobbuddy.settings import Settings
 from jobbuddy.store import JobStore
 
 TEST_CONNINFO = "service=job-search-buddy-test"
+
+# Standard test companies — every test that touches jobs/sync_status gets these
+TEST_COMPANIES = [
+    Company(slug="acme", name="Acme Corp", ats="greenhouse", board="acme"),
+    Company(slug="beta", name="Beta Inc", ats="greenhouse", board="beta"),
+    Company(slug="good", name="Good Co", ats="greenhouse", board="good"),
+    Company(slug="bad", name="Bad Co", ats="greenhouse", board="bad"),
+    Company(slug="broken-co", name="Broken Co"),
+    Company(slug="workday-co", name="Workday Co", ats="workday", board="workday-co"),
+]
 
 
 # ---------------------------------------------------------------------------
@@ -73,18 +83,22 @@ def make_job(
 
 
 def seed_jobs(conninfo: str, slug: str, jobs: list[Job]) -> None:
-    """Insert jobs into the DB. Used by test_strip and test_sync."""
+    """Insert jobs into the DB. Used by test_strip and test_sync.
+
+    The company row must already exist (seeded by the test_companies fixture).
+    """
     store = JobStore(conninfo)
     store.upsert_jobs(slug, jobs)
     store.close()
 
 
 def clean_tables(conninfo: str) -> None:
-    """Delete all rows from test tables."""
+    """Delete all rows from test tables (FK-safe ordering)."""
     conn = psycopg.connect(conninfo, autocommit=True)
     conn.execute("DELETE FROM jobs")
     conn.execute("DELETE FROM sync_status")
     conn.execute("DELETE FROM activity_log")
+    conn.execute("DELETE FROM companies")
     conn.close()
 
 
@@ -108,26 +122,30 @@ def ensure_pg_schema():
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture
-def store():
-    """Per-test JobStore with cleanup isolation.
+@pytest.fixture(autouse=True)
+def test_companies():
+    """Seed standard test companies before every test, clean up after.
 
-    Uses autocommit=True (matching production behavior) and
-    cleans up all data before and after the test.
+    Autouse ensures every test has company rows available for FK constraints.
     """
     clean_tables(TEST_CONNINFO)
     s = JobStore(TEST_CONNINFO)
+    for company in TEST_COMPANIES:
+        s.save_company(company)
+    s.close()
+    yield TEST_COMPANIES
+    clean_tables(TEST_CONNINFO)
+
+
+@pytest.fixture
+def store():
+    """Per-test JobStore connected to the test database."""
+    s = JobStore(TEST_CONNINFO)
     yield s
     s.close()
-    clean_tables(TEST_CONNINFO)
 
 
 @pytest.fixture
 def pg_conninfo():
-    """Return conninfo and clean up data before/after test.
-
-    For integration tests (sync) that create their own connections.
-    """
-    clean_tables(TEST_CONNINFO)
-    yield TEST_CONNINFO
-    clean_tables(TEST_CONNINFO)
+    """Return conninfo for tests that create their own connections."""
+    return TEST_CONNINFO

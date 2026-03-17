@@ -98,7 +98,6 @@ def get_job_post_details(
     # Build flat list of (company_input, job_id) and resolve slugs
     work: list[tuple[str, str]] = []  # (company_input, job_id)
     slug_map: dict[str, str] = {}     # company_input -> slug
-    name_map: dict[str, str] = {}     # slug -> company display name
     for entry in requests:
         company = entry.get("company", "")
         job_ids = entry.get("job_ids", [])
@@ -109,7 +108,6 @@ def get_job_post_details(
             resolved = lookup_by_name(company)
             if resolved:
                 slug_map[company] = resolved.slug
-                name_map[resolved.slug] = resolved.name
         for jid in job_ids:
             work.append((company, str(jid)))
 
@@ -132,7 +130,7 @@ def get_job_post_details(
         slug = slug_map.get(comp)
         if slug and (slug, jid) in cached:
             row = cached[(slug, jid)]
-            results[i] = CompactJob.from_db_row(row, name_map[slug]).model_dump()
+            results[i] = CompactJob.from_db_row(row, row.get("company_name") or slug).model_dump()
         else:
             misses.append((i, comp, jid))
 
@@ -442,10 +440,9 @@ def search_jobs(
                 row["distance"] = 1.0 - result.score
             rows.append(row)
 
-        registry = list_companies()
         log_entries = read_log()
 
-        return JobSearchResults.from_query(rows, registry, log_entries, company_slug=company_slug).to_mcp_result()
+        return JobSearchResults.from_query(rows, log_entries, company_slug=company_slug).to_mcp_result()
     finally:
         search.close()
 

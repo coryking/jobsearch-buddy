@@ -1,34 +1,26 @@
-"""Company registry — maps slugs to ATS config."""
+"""Company registry — maps slugs to ATS config (PostgreSQL-backed)."""
 
-import json
 import re
-from pathlib import Path
 
 from jobbuddy.models import Company, slugify
 
-REGISTRY_PATH = Path(__file__).parent / "companies.json"
+
+def _store():
+    from jobbuddy.store import JobStore
+    return JobStore()
 
 
-def load_registry() -> dict[str, Company]:
-    """Load the company registry. Returns {slug: Company}."""
-    if not REGISTRY_PATH.exists():
-        return {}
-    raw = json.loads(REGISTRY_PATH.read_text())
-    result = {}
-    for key, config in raw.items():
-        company = Company(slug=key, **config)
-        result[company.slug] = company
-    return result
+def load_registry(*, store=None) -> dict[str, Company]:
+    """Load all companies. Returns {slug: Company}."""
+    if store is not None:
+        return store.load_companies()
+    with _store() as s:
+        return s.load_companies()
 
 
 def save_registry(companies: dict[str, Company]) -> None:
-    """Save the company registry."""
-    raw = {}
-    for slug, company in companies.items():
-        d = company.model_dump()
-        d.pop("slug")  # slug is the dict key, not stored in value
-        raw[slug] = d
-    REGISTRY_PATH.write_text(json.dumps(raw, indent=2, sort_keys=True) + "\n")
+    """No-op. Kept for API compatibility."""
+    pass
 
 
 def lookup_by_slug(slug: str) -> Company | None:
@@ -84,11 +76,10 @@ def register_company(name: str, ats: str | None = None, board: str | None = None
     Slug is derived from board (if provided) or name, then normalized by Company's validator.
     When ats is None, the company is registered as a directory entry without
     job board scraping support (used for activity log tracking)."""
-    registry = load_registry()
     slug_input = board or name
     company = Company(slug=slug_input, name=name, ats=ats, board=board, **extra)
-    registry[company.slug] = company
-    save_registry(registry)
+    with _store() as s:
+        s.save_company(company)
     return company
 
 

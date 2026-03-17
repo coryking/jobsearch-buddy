@@ -102,7 +102,6 @@ class JobSearchResults(BaseModel):
     def from_query(
         cls,
         rows: list[dict],
-        registry: dict,
         log_entries: list[dict],
         *,
         company_slug: str | None = None,
@@ -126,9 +125,7 @@ class JobSearchResults(BaseModel):
         job_list: list[JobRow] = [headers]
 
         for row in rows:
-            slug = row["company_slug"]
-            co = registry.get(slug)
-            company_name = co.name if co else slug
+            company_name = row.get("company_name") or row["company_slug"]
 
             matched = log_by_job_id.get(row["job_id"], [])
             if not matched:

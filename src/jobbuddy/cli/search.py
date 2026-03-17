@@ -37,6 +37,30 @@ def companies():
     print(buf.getvalue(), end="")
 
 
+@app.command(name="companies-add")
+def companies_add(
+    name: str = typer.Argument(help="Company display name"),
+    ats: Optional[str] = typer.Option(None, "--ats", help="ATS platform (greenhouse, ashby, lever, workday, etc.)"),
+    board: Optional[str] = typer.Option(None, "--board", help="Board/account slug for the ATS"),
+    config: Optional[str] = typer.Option(None, "--config", help="Extra ATS config as raw JSON (e.g. '{\"wd_company\": \"adobe\", \"wd_instance\": 5}')"),
+):
+    """Register a new company in the database."""
+    import json as json_mod
+
+    from jobbuddy.registry import register_company
+
+    extra = {}
+    if config:
+        try:
+            extra = json_mod.loads(config)
+        except json_mod.JSONDecodeError as e:
+            console.print(f"[red]Invalid JSON in --config: {e}[/red]")
+            raise SystemExit(1)
+
+    company = register_company(name, ats=ats, board=board, **extra)
+    console.print(f"[green]Registered:[/green] {company.slug} ({company.name}, ats={company.ats}, board={company.board})")
+
+
 @app.command(name="list-jobs")
 def list_jobs(
     company: Optional[str] = typer.Argument(None, help="Company name or slug (omit for all cached jobs)"),

@@ -35,7 +35,6 @@ src/jobbuddy/
 ├── url.py              # ATS URL parser
 ├── job_log.py          # CSV activity log (WA unemployment audit compliance)
 ├── web.py              # Flask web UI for semantic search
-├── companies.json      # Company registry data
 ├── templates/
 │   └── search.html     # Jinja2 template for web search UI
 ├── sync/               # Sync pipeline (fetch → enrich → strip → embed)
