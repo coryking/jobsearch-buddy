@@ -5,6 +5,7 @@ import io
 import json
 import re
 from collections import Counter
+from datetime import date
 from html.parser import HTMLParser
 from typing import Any
 
@@ -37,7 +38,7 @@ class Job(BaseModel):
     location: str
     url: str
     apply_url: str
-    published_at: str | None = None
+    published_at: date | None = None
     department: str | None = None
     team: str | None = None
     salary: str | None = None
@@ -243,7 +244,7 @@ class CompactJob(BaseModel):
     url: str
     apply_url: str | None = None
     id: str
-    published_at: str | None = None
+    published_at: date | None = None
     department: str | None = None
     team: str | None = None
     salary: str | None = None

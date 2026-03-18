@@ -1,7 +1,6 @@
 """Job operations commands: save, lookup."""
 
 import json
-import re
 from pathlib import Path
 
 import typer
@@ -53,7 +52,7 @@ def save(
 
             out = output_dir.resolve()
             out.mkdir(parents=True, exist_ok=True)
-            pub_date = job.published_at[:10] if job.published_at and re.match(r"\d{4}-\d{2}-\d{2}", job.published_at) else date.today().isoformat()
+            pub_date = (job.published_at or date.today()).isoformat()
             filename = f"{pub_date}_{slugify(job.title)}_{job.id}.md"
             filepath = out / filename
             filepath.write_text(job_to_markdown(job))

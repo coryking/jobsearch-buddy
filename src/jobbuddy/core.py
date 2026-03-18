@@ -206,11 +206,7 @@ def save_job_listing(company: Company, job: Job) -> Path:
     output_dir = get_settings().listings_dir / company.slug
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    pub_date = (
-        job.published_at[:10]
-        if job.published_at and re.match(r"\d{4}-\d{2}-\d{2}", job.published_at)
-        else date.today().isoformat()
-    )
+    pub_date = (job.published_at or date.today()).isoformat()
     filename = f"{pub_date}_{slugify(job.title)}_{job.id}.md"
     filepath = output_dir / filename
     filepath.write_text(job_to_markdown(job))

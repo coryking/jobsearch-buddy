@@ -6,7 +6,7 @@ on (company_slug, job_id). Embeddings stored as pgvector vector(1536) column.
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 import psycopg
 from pgvector.psycopg import register_vector
@@ -24,13 +24,14 @@ def _utcnow() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _validate_date(value: str | None) -> str | None:
-    """Validate YYYY-MM-DD format. Returns None for malformed values."""
+def _validate_date(value: str | date | None) -> date | None:
+    """Coerce to date. Returns None for malformed values."""
     if not value:
         return None
+    if isinstance(value, date):
+        return value
     try:
-        datetime.strptime(value[:10], "%Y-%m-%d")
-        return value[:10]
+        return datetime.strptime(value[:10], "%Y-%m-%d").date()
     except (ValueError, TypeError):
         return None
 
