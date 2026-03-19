@@ -141,15 +141,33 @@ class JobStore:
 
             gone = current_ids - new_ids
             if gone:
-                for jid in gone:
-                    self.conn.execute(
+                with self.conn.cursor() as cur:
+                    cur.executemany(
                         """UPDATE jobs SET disappeared_at = %s
                            WHERE company_slug = %s AND job_id = %s AND disappeared_at IS NULL""",
-                        (now, slug, jid),
+                        [(now, slug, jid) for jid in gone],
+                        returning=False,
                     )
 
-            for j in jobs:
-                self.conn.execute(
+            upsert_params = [
+                (
+                    slug,
+                    j.id,
+                    j.title,
+                    j.location or None,
+                    j.url or None,
+                    _validate_date(j.published_at),
+                    j.department or None,
+                    j.team or None,
+                    j.salary or None,
+                    j.description or None,
+                    json.dumps(j.ats_metadata) if j.ats_metadata else None,
+                    now,
+                )
+                for j in jobs
+            ]
+            with self.conn.cursor() as cur:
+                cur.executemany(
                     """INSERT INTO jobs
                        (company_slug, job_id, title, location, url, published_at,
                         department, team, salary, description, ats_metadata, last_seen, disappeared_at)
@@ -166,20 +184,8 @@ class JobStore:
                         ats_metadata = COALESCE(excluded.ats_metadata, jobs.ats_metadata),
                         last_seen = excluded.last_seen,
                         disappeared_at = NULL""",
-                    (
-                        slug,
-                        j.id,
-                        j.title,
-                        j.location or None,
-                        j.url or None,
-                        _validate_date(j.published_at),
-                        j.department or None,
-                        j.team or None,
-                        j.salary or None,
-                        j.description or None,
-                        json.dumps(j.ats_metadata) if j.ats_metadata else None,
-                        now,
-                    ),
+                    upsert_params,
+                    returning=False,
                 )
 
             self.conn.execute(
@@ -262,10 +268,11 @@ class JobStore:
             return
 
         with self.conn.transaction():
-            for job_id, desc in descs.items():
-                self.conn.execute(
+            with self.conn.cursor() as cur:
+                cur.executemany(
                     "UPDATE jobs SET description = %s WHERE company_slug = %s AND job_id = %s",
-                    (desc, slug, job_id),
+                    [(desc, slug, job_id) for job_id, desc in descs.items()],
+                    returning=False,
                 )
 
     def _stripping_conditions(self, slugs: list[str] | None = None) -> tuple[str, list]:
