@@ -44,9 +44,11 @@ def block_prod_db():
 
     original_connect = psycopg.connect
 
+    _PROD_SERVICES = {"job-search-buddy-remote", "job-search-buddy-azure"}
+
     def guarded_connect(conninfo="", **kwargs):
         conn_str = str(conninfo) + str(kwargs)
-        if "job-search-buddy-remote" in conn_str:
+        if any(svc in conn_str for svc in _PROD_SERVICES):
             raise RuntimeError(
                 f"Test tried to connect to PRODUCTION database! conninfo={conninfo}"
             )

@@ -7,6 +7,15 @@ app = typer.Typer(help="Fetch job listings from ATS job boards.")
 console = Console(stderr=True)
 
 
+@app.callback()
+def main():
+    from jobbuddy.settings import get_settings
+
+    s = get_settings()
+    db = s.postgres_host or f"service={s.pg_service}"
+    console.print(f"[dim]db: {db}[/dim]")
+
+
 @app.command()
 def migrate():
     """Apply pending database migrations."""

@@ -28,7 +28,7 @@ class Settings(BaseSettings):
     listings_dir: Path = Path(user_data_dir(_APP_NAME)) / "listings"
 
     # PostgreSQL connection via pg_service.conf (local) or Entra token (Azure)
-    pg_service: str = "job-search-buddy-remote"
+    pg_service: str = "job-search-buddy-azure"
     postgres_host: Optional[str] = None  # Set to enable Azure Entra token auth
     postgres_database: Optional[str] = None
     postgres_user: Optional[str] = None  # Managed identity name (not client ID)
@@ -56,18 +56,19 @@ class Settings(BaseSettings):
 
         Local mode: returns pg_service reference.
         """
-        if self.postgres_host:
+        if self.postgres_host or "azure" in self.pg_service:
             from azure.identity import DefaultAzureCredential
 
-            credential = DefaultAzureCredential()
-            token = credential.get_token(
+            token = DefaultAzureCredential().get_token(
                 "https://ossrdbms-aad.database.windows.net/.default"
             )
-            return (
-                f"postgresql://{self.postgres_user}:{token.token}"
-                f"@{self.postgres_host}:5432/{self.postgres_database}"
-                f"?sslmode=require"
-            )
+            if self.postgres_host:
+                return (
+                    f"postgresql://{self.postgres_user}:{token.token}"
+                    f"@{self.postgres_host}:5432/{self.postgres_database}"
+                    f"?sslmode=require"
+                )
+            return f"service={self.pg_service} password={token.token}"
         return f"service={self.pg_service}"
 
     @field_validator("data_dir", "listings_dir", mode="after")
