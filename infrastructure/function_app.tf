@@ -34,6 +34,24 @@ resource "azurerm_role_assignment" "app_identity_storage_blob_owner" {
   principal_id         = azurerm_user_assigned_identity.app_identity.principal_id
 }
 
+resource "azurerm_role_assignment" "app_identity_storage_queue_contributor" {
+  scope                = azurerm_storage_account.function_storage.id
+  role_definition_name = "Storage Queue Data Contributor"
+  principal_id         = azurerm_user_assigned_identity.app_identity.principal_id
+}
+
+resource "azurerm_role_assignment" "app_identity_storage_table_contributor" {
+  scope                = azurerm_storage_account.function_storage.id
+  role_definition_name = "Storage Table Data Contributor"
+  principal_id         = azurerm_user_assigned_identity.app_identity.principal_id
+}
+
+resource "azurerm_role_assignment" "app_identity_storage_account_contributor" {
+  scope                = azurerm_storage_account.function_storage.id
+  role_definition_name = "Storage Account Contributor"
+  principal_id         = azurerm_user_assigned_identity.app_identity.principal_id
+}
+
 # --------------------------------------------------------------------
 # App Service Plan (Flex Consumption)
 # --------------------------------------------------------------------
@@ -78,10 +96,13 @@ resource "azurerm_function_app_flex_consumption" "mcp" {
     # Managed identity
     AZURE_CLIENT_ID = azurerm_user_assigned_identity.app_identity.client_id
 
-    # Storage (managed identity auth — overrides auto-injected connection string settings)
-    AzureWebJobsStorage__credential     = "managedidentity"
-    AzureWebJobsStorage__clientId       = azurerm_user_assigned_identity.app_identity.client_id
-    AzureWebJobsStorage__blobServiceUri = azurerm_storage_account.function_storage.primary_blob_endpoint
+    # Storage (managed identity auth — all three URIs required when shared keys disabled)
+    AzureWebJobsStorage                  = ""  # Suppress auto-injected connection string (provider bug #29149)
+    AzureWebJobsStorage__credential      = "managedidentity"
+    AzureWebJobsStorage__clientId        = azurerm_user_assigned_identity.app_identity.client_id
+    AzureWebJobsStorage__blobServiceUri  = azurerm_storage_account.function_storage.primary_blob_endpoint
+    AzureWebJobsStorage__queueServiceUri = azurerm_storage_account.function_storage.primary_queue_endpoint
+    AzureWebJobsStorage__tableServiceUri = azurerm_storage_account.function_storage.primary_table_endpoint
 
     # Application Insights (Entra auth)
     APPLICATIONINSIGHTS_CONNECTION_STRING     = azurerm_application_insights.app_insights.connection_string
