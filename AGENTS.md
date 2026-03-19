@@ -80,19 +80,6 @@ jsb --help                       # CLI help
 jsb-mcp                          # Run MCP server
 ```
 
-## Development Workflow: TDD
-
-Use test-driven development for all bug fixes and non-trivial changes:
-
-1. **Write a failing test first** that demonstrates the bug or specifies the behavior
-2. **Run the test, confirm it fails** for the right reason
-3. **Write the minimum code** to make the test pass
-4. **Run the full suite** to confirm no regressions
-
-This applies to bug fixes (write a test that reproduces the bug before fixing it)
-and new store/sync features (specify the interface in tests before implementing).
-Skip TDD only for trivial changes (typos, config, display-only code).
-
 ## CLI Commands
 
 ```
@@ -129,6 +116,9 @@ Override defaults with env vars (prefix `JOBBUDDY_`) or a `.env` file:
 |----------------------------|--------------------------------------|--------------------------------------------|
 | `data_dir`                 | `JOBBUDDY_DATA_DIR`                  | platformdirs `user_data_dir/data`          |
 | `pg_service`               | `JOBBUDDY_PG_SERVICE`                | `job-search-buddy-remote`                  |
+| `postgres_host`            | `JOBBUDDY_POSTGRES_HOST`             | `None` *(set to enable Azure Entra auth)*  |
+| `postgres_database`        | `JOBBUDDY_POSTGRES_DATABASE`         | `None`                                     |
+| `postgres_user`            | `JOBBUDDY_POSTGRES_USER`             | `None` *(managed identity name)*           |
 | `listings_dir`             | `JOBBUDDY_LISTINGS_DIR`              | platformdirs `user_data_dir/listings`      |
 | `openai_api_key`           | `JOBBUDDY_OPENAI_API_KEY`            | `None` *(required for strip/embed/search)* |
 | `openai_base_url`          | `JOBBUDDY_OPENAI_BASE_URL`           | `None` *(omit for api.openai.com)*         |
@@ -147,7 +137,9 @@ The sync pipeline uses a **DB-as-queue** pattern with four phases:
 4. **Embed** — batch embedding generation via OpenAI-compatible API
 
 `jsb sync` runs all four phases by default. Strip and embed require
-`JOBBUDDY_OPENAI_API_KEY` — sync fails fast at startup if it's missing.
+OpenAI credentials — either `JOBBUDDY_OPENAI_API_KEY` (local) or
+`JOBBUDDY_OPENAI_AZURE_API_VERSION` with managed identity (Azure).
+Sync fails fast at startup if neither is configured.
 Use `jsb sync fetch enrich` to run without OpenAI credentials.
 
 Preconditions (phase names, OpenAI key, company resolution) are validated

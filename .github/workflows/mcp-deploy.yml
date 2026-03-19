@@ -1,0 +1,43 @@
+name: Deploy MCP Server
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/jobbuddy/**"
+      - "host.json"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/mcp-deploy.yml"
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: astral-sh/setup-uv@v6
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Build deployment package
+        run: ./scripts/build-function-app.sh --target ${{ runner.temp }}/deploy
+
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - uses: Azure/functions-action@v1
+        with:
+          app-name: ${{ vars.FUNCTIONAPP_NAME }}
+          package: ${{ runner.temp }}/deploy
+          sku: flexconsumption

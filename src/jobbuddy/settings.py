@@ -27,8 +27,11 @@ class Settings(BaseSettings):
     data_dir: Path = Path(user_data_dir(_APP_NAME)) / "data"
     listings_dir: Path = Path(user_data_dir(_APP_NAME)) / "listings"
 
-    # PostgreSQL connection via pg_service.conf
+    # PostgreSQL connection via pg_service.conf (local) or Entra token (Azure)
     pg_service: str = "job-search-buddy-remote"
+    postgres_host: Optional[str] = None  # Set to enable Azure Entra token auth
+    postgres_database: Optional[str] = None
+    postgres_user: Optional[str] = None  # Managed identity name (not client ID)
 
     # OpenAI API (for strip, embed, and semantic search)
     openai_api_key: Optional[str] = None
@@ -41,11 +44,30 @@ class Settings(BaseSettings):
     @property
     def has_openai(self) -> bool:
         """Whether OpenAI credentials are configured (enables strip/embed/search)."""
-        return bool(self.openai_api_key)
+        return bool(self.openai_api_key or self.openai_azure_api_version)
 
     @property
     def pg_conninfo(self) -> str:
-        """Connection info string for psycopg."""
+        """Connection info string for psycopg.
+
+        Azure mode (postgres_host set): builds a connection URI with a fresh
+        Entra token on every call. DefaultAzureCredential caches tokens internally
+        and auto-refreshes before expiry, so calling get_token() is cheap.
+
+        Local mode: returns pg_service reference.
+        """
+        if self.postgres_host:
+            from azure.identity import DefaultAzureCredential
+
+            credential = DefaultAzureCredential()
+            token = credential.get_token(
+                "https://ossrdbms-aad.database.windows.net/.default"
+            )
+            return (
+                f"postgresql://{self.postgres_user}:{token.token}"
+                f"@{self.postgres_host}:5432/{self.postgres_database}"
+                f"?sslmode=require"
+            )
         return f"service={self.pg_service}"
 
     @field_validator("data_dir", "listings_dir", mode="after")

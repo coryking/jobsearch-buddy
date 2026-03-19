@@ -6,6 +6,8 @@ audit compliance.
 """
 
 import json
+import logging
+import os
 from typing import Annotated
 
 from fastmcp import FastMCP
@@ -532,12 +534,86 @@ def get_supported_domains() -> str:
 
 
 # ---------------------------------------------------------------------------
+# Azure auth setup
+# ---------------------------------------------------------------------------
+
+log = logging.getLogger(__name__)
+
+
+def build_azure_auth():
+    """Build AzureProvider with Redis-backed state for Azure Functions deployment.
+
+    Reads ENTRA_OAUTH_* env vars for OAuth config and uses managed identity
+    (AZURE_CLIENT_ID) to authenticate to Azure Managed Redis for state storage.
+    """
+    from azure.identity import DefaultAzureCredential
+    from fastmcp.server.auth.providers.azure import AzureProvider
+    from key_value.aio.stores.redis import RedisStore
+    from redis.asyncio import Redis
+
+    oauth_client_id = os.environ["ENTRA_OAUTH_CLIENT_ID"]
+    oauth_client_secret = os.environ["ENTRA_OAUTH_CLIENT_SECRET"]
+    oauth_tenant_id = os.environ["ENTRA_OAUTH_TENANT_ID"]
+    oauth_identifier_uri = os.environ.get("ENTRA_OAUTH_IDENTIFIER_URI")
+    base_url = os.environ.get("BASE_URL", "http://localhost:8000")
+
+    redis_host = os.environ.get("REDIS_HOST", "")
+    redis_port = int(os.environ.get("REDIS_PORT", "10000"))
+    managed_identity_client_id = os.environ.get("AZURE_CLIENT_ID", "")
+
+    if not redis_host:
+        raise RuntimeError("REDIS_HOST not set — cannot initialize OAuth state store")
+    if not managed_identity_client_id:
+        raise RuntimeError("AZURE_CLIENT_ID not set — cannot authenticate to Redis")
+
+    log.info("Acquiring Entra token for Redis")
+    credential = DefaultAzureCredential()
+    token = credential.get_token("https://redis.azure.com/.default")
+
+    client = Redis(
+        host=redis_host,
+        port=redis_port,
+        ssl=True,
+        username=managed_identity_client_id,
+        password=token.token,
+        decode_responses=True,
+    )
+
+    redis_store = RedisStore(
+        client=client,
+        default_collection="mcp_oauth_state",
+    )
+
+    auth = AzureProvider(
+        client_id=oauth_client_id,
+        client_secret=oauth_client_secret,
+        tenant_id=oauth_tenant_id,
+        required_scopes=["user_impersonation"],
+        base_url=base_url,
+        identifier_uri=oauth_identifier_uri or None,
+        client_storage=redis_store,
+    )
+
+    log.info("AzureProvider initialized with RedisStore (host=%s)", redis_host)
+    return auth
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
 
 def main():
-    mcp.run()
+    if os.environ.get("ENTRA_OAUTH_CLIENT_ID"):
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s %(name)s %(levelname)s %(message)s",
+        )
+        auth = build_azure_auth()
+        mcp.auth = auth
+        mcp.run(transport="streamable-http", stateless_http=True)
+    else:
+        mcp.run()
 
 
 if __name__ == "__main__":

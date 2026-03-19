@@ -1,0 +1,12 @@
+{
+  "version": "2.0",
+  "customHandler": {
+    "description": {
+      "defaultExecutablePath": "python",
+      "arguments": ["-m", "jobbuddy.mcp_server"]
+    },
+    "http": {
+      "DefaultAuthorizationLevel": "anonymous"
+    }
+  }
+}

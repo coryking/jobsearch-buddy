@@ -1,0 +1,11 @@
+.git*
+.venv/
+tests/
+docs/
+eval/
+infrastructure/
+__pycache__/
+*.pyc
+.env
+CLAUDE*.md
+AGENTS.md
