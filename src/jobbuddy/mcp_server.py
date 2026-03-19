@@ -349,6 +349,7 @@ def search_jobs(
         if not has_data:
             return "No cached job data. Run `jsb sync` in the terminal to populate the cache."
     except Exception:
+        logging.exception("Database connection failed")
         return "Cannot connect to database. Check pg_service.conf configuration."
 
     # Require at least a title or semantic query

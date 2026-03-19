@@ -74,7 +74,7 @@ resource "azurerm_postgresql_flexible_server_database" "db" {
 resource "azurerm_postgresql_flexible_server_configuration" "allowed_extensions" {
   name      = "azure.extensions"
   server_id = azurerm_postgresql_flexible_server.postgres.id
-  value     = "VECTOR,UUID-OSSP"
+  value     = "VECTOR,UUID-OSSP,PG_TRGM,BTREE_GIN,BTREE_GIST"
 }
 
 # Firewall Rules
@@ -137,6 +137,35 @@ module "postgres_app_principal" {
 
   depends_on = [
     azurerm_postgresql_flexible_server_active_directory_administrator.pg_ad_admin
+  ]
+}
+
+# Grant table privileges to the managed identity on the app database.
+# The postgres-entra-principal module creates the role but doesn't grant
+# access to any tables — it runs against the 'postgres' database.
+resource "null_resource" "grant_app_db_privileges" {
+  triggers = {
+    principal_name = azurerm_user_assigned_identity.app_identity.name
+    database       = var.database_name
+    server_fqdn    = azurerm_postgresql_flexible_server.postgres.fqdn
+  }
+
+  provisioner "local-exec" {
+    environment = {
+      PGPASSWORD = data.external.azure_db_token.result.token
+    }
+
+    command = <<-EOT
+      psql -h ${azurerm_postgresql_flexible_server.postgres.fqdn} \
+        -U ${var.postgres_admin_principal_name} \
+        -d ${var.database_name} \
+        -c "GRANT USAGE ON SCHEMA public TO \"${azurerm_user_assigned_identity.app_identity.name}\"; GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO \"${azurerm_user_assigned_identity.app_identity.name}\"; ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO \"${azurerm_user_assigned_identity.app_identity.name}\";"
+    EOT
+  }
+
+  depends_on = [
+    module.postgres_app_principal,
+    azurerm_postgresql_flexible_server_database.db
   ]
 }
 

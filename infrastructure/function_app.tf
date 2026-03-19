@@ -141,6 +141,7 @@ resource "azurerm_function_app_flex_consumption" "mcp" {
   lifecycle {
     ignore_changes = [
       app_settings["WEBSITE_RUN_FROM_PACKAGE"],
+      site_config[0].application_insights_connection_string,
     ]
   }
 }
