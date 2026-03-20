@@ -4,6 +4,7 @@ No database, no pgvector. Embeds source texts and queries via the OpenAI API,
 prints a cosine similarity matrix.
 """
 
+import json
 import sys
 from pathlib import Path
 from typing import Optional
@@ -12,7 +13,11 @@ import numpy as np
 import typer
 from rich.table import Table
 
+from rich.console import Console
+
 from jobbuddy.cli import app, console
+
+stderr = Console(stderr=True)
 
 
 @app.command(name="embed-test")
@@ -24,6 +29,9 @@ def embed_test(
     stdin: bool = typer.Option(
         False, "--stdin", help="Read one source text from stdin"
     ),
+    json_output: bool = typer.Option(
+        False, "--json", help="Output JSON (array of {query, source, score} records)"
+    ),
 ):
     """Test embedding similarity between source texts and queries.
 
@@ -33,6 +41,7 @@ def embed_test(
     Examples:
         echo "Walgreens cashier..." | jsb embed-test --stdin "retail jobs" "pharmacy jobs"
         jsb embed-test -f with-context.txt -f without-context.txt "retail jobs near me"
+        jsb embed-test --json -f a.txt -f b.txt "query" | jq '.[] | select(.score > 0.4)'
     """
     from jobbuddy.embeddings import embed_texts
 
@@ -63,15 +72,27 @@ def embed_test(
 
     # Embed everything in one batch
     all_texts = [text for _, text in sources] + list(queries)
-    console.print(f"[dim]Embedding {len(sources)} source(s) + {len(queries)} query/queries...[/dim]")
+    stderr.print(f"[dim]Embedding {len(sources)} source(s) + {len(queries)} query/queries...[/dim]")
     vectors, tokens = embed_texts(all_texts)
-    console.print(f"[dim]{tokens} tokens[/dim]")
+    stderr.print(f"[dim]{tokens} tokens[/dim]")
 
     source_vecs = np.array(vectors[:len(sources)])
     query_vecs = np.array(vectors[len(sources):])
 
     # Cosine similarity matrix (vectors are L2-normalized by OpenAI)
     similarities = query_vecs @ source_vecs.T
+
+    if json_output:
+        records = []
+        for i, query in enumerate(queries):
+            for j, (label, _) in enumerate(sources):
+                records.append({
+                    "query": query,
+                    "source": label,
+                    "score": float(similarities[i, j]),
+                })
+        print(json.dumps(records, indent=2))
+        return
 
     # Build table
     table = Table(show_header=True, header_style="bold")
