@@ -200,16 +200,21 @@ class JobStore:
                         ats_metadata = COALESCE(excluded.ats_metadata, jobs.ats_metadata),
                         last_seen = excluded.last_seen,
                         listing_status = 'active',
-                        content_hash = excluded.content_hash
+                        content_hash = md5(
+                            coalesce(jobs.description_stripped, '')
+                            || excluded.title
+                            || coalesce(excluded.location, '')
+                            || coalesce(excluded.department, '')
+                        )::uuid
                        WHERE (jobs.title, jobs.location, jobs.url, jobs.published_at,
                               jobs.department, jobs.team, jobs.salary, jobs.description,
-                              jobs.ats_metadata, jobs.content_hash, jobs.listing_status)
+                              jobs.ats_metadata, jobs.listing_status)
                              IS DISTINCT FROM
                              (excluded.title, excluded.location, excluded.url, excluded.published_at,
                               excluded.department, excluded.team, excluded.salary,
                               COALESCE(excluded.description, jobs.description),
                               COALESCE(excluded.ats_metadata, jobs.ats_metadata),
-                              excluded.content_hash, 'active')""",
+                              'active')""",
                     upsert_params,
                     returning=False,
                 )

@@ -396,6 +396,23 @@ class TestEmbeddings:
         ).fetchone()["cnt"]
         assert count == 0
 
+    def test_reupsert_after_embed_does_not_trigger_reembed(self, store):
+        """Re-upserting the same jobs (fetch phase) after embedding must not invalidate embeddings.
+
+        Regression test: the fetch upsert was computing content_hash with
+        description_stripped=None, overwriting the hash that included the
+        stripped description. This caused a hash mismatch with job_embeddings.
+        """
+        ids, job_hashes, company_hash = self._insert_jobs_with_stripped(store, "Build AI.")
+        vec = self._make_embedding()
+        store.store_embedding(ids[0], job_hashes[0], company_hash, vec)
+        assert store.count_jobs_needing_embeddings() == 0
+
+        # Simulate fetch phase re-upserting the same job data
+        store.upsert_jobs("acme", [make_job("1", description="Build AI.")])
+        assert store.count_jobs_needing_embeddings() == 0, \
+            "Re-upserting unchanged job data should not invalidate existing embeddings"
+
     def test_delete_embedding(self, store):
         """delete_embedding removes from job_embeddings table."""
         ids, job_hashes, company_hash = self._insert_jobs_with_stripped(store, "Build AI.")
