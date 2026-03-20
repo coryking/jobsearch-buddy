@@ -30,6 +30,8 @@ class EmbedWorkItem(TypedDict):
     """One job ready to embed — returned by JobStore.list_jobs_needing_embeddings()."""
 
     id: int
+    job_hash: str
+    company_hash: str
     company_slug: str
     job_id: str
     title: str

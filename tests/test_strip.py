@@ -86,9 +86,19 @@ class TestEmbedTextStripped:
         pk = store.conn.execute("SELECT id FROM jobs WHERE job_id = '1'").fetchone()["id"]
 
         store.conn.execute("UPDATE jobs SET description_stripped = 'raw description' WHERE id = %s", (pk,))
+        # Recompute content_hash with stripped
+        store.conn.execute("""
+            UPDATE jobs SET content_hash = md5(
+                coalesce(description_stripped, '') || title || coalesce(location, '') || coalesce(department, '')
+            )::uuid WHERE id = %s
+        """, (pk,))
 
+        row = store.conn.execute("SELECT content_hash FROM jobs WHERE id = %s", (pk,)).fetchone()
+        company_hash = str(store.conn.execute(
+            "SELECT content_hash FROM companies WHERE slug = 'acme'"
+        ).fetchone()["content_hash"])
         vec = [0.1] * 1536
-        store.store_embedding(pk, vec)
+        store.store_embedding(pk, str(row["content_hash"]), company_hash, vec)
         assert store.count_jobs_needing_embeddings() == 0
 
         store.update_stripped_description(pk, "stripped description")

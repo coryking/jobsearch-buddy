@@ -103,8 +103,8 @@ class JobStore:
             if k not in ("slug", "name", "ats", "board")
         }
         self.conn.execute(
-            """INSERT INTO companies (slug, name, ats, board, config)
-               VALUES (%s, %s, %s, %s, %s)
+            """INSERT INTO companies (slug, name, ats, board, config, content_hash)
+               VALUES (%s, %s, %s, %s, %s, %s)
                ON CONFLICT (slug) DO UPDATE SET
                 name = excluded.name,
                 ats = COALESCE(excluded.ats, companies.ats),
@@ -112,8 +112,10 @@ class JobStore:
                 config = CASE
                     WHEN excluded.ats IS NOT NULL THEN excluded.config
                     ELSE companies.config
-                END""",
-            (company.slug, company.name, company.ats, company.board, Json(extra)),
+                END,
+                content_hash = excluded.content_hash""",
+            (company.slug, company.name, company.ats, company.board, Json(extra),
+             str(company.content_hash)),
         )
 
     # -------------------------------------------------------------------
@@ -175,6 +177,7 @@ class JobStore:
                     j.description or None,
                     json.dumps(j.ats_metadata) if j.ats_metadata else None,
                     now,
+                    str(j.content_hash(None)),
                 )
                 for j in jobs
             ]
@@ -183,8 +186,8 @@ class JobStore:
                     """INSERT INTO jobs
                        (company_slug, job_id, title, location, url, published_at,
                         department, team, salary, description, ats_metadata, last_seen,
-                        listing_status)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'active')
+                        listing_status, content_hash)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'active', %s)
                        ON CONFLICT(company_slug, job_id) DO UPDATE SET
                         title = excluded.title,
                         location = excluded.location,
@@ -196,7 +199,17 @@ class JobStore:
                         description = COALESCE(excluded.description, jobs.description),
                         ats_metadata = COALESCE(excluded.ats_metadata, jobs.ats_metadata),
                         last_seen = excluded.last_seen,
-                        listing_status = 'active'""",
+                        listing_status = 'active',
+                        content_hash = excluded.content_hash
+                       WHERE (jobs.title, jobs.location, jobs.url, jobs.published_at,
+                              jobs.department, jobs.team, jobs.salary, jobs.description,
+                              jobs.ats_metadata, jobs.content_hash, jobs.listing_status)
+                             IS DISTINCT FROM
+                             (excluded.title, excluded.location, excluded.url, excluded.published_at,
+                              excluded.department, excluded.team, excluded.salary,
+                              COALESCE(excluded.description, jobs.description),
+                              COALESCE(excluded.ats_metadata, jobs.ats_metadata),
+                              excluded.content_hash, 'active')""",
                     upsert_params,
                     returning=False,
                 )
@@ -324,34 +337,40 @@ class JobStore:
         """Set the stripped description for a job.
 
         Empty/whitespace-only strings are stored as NULL so the job gets
-        re-stripped on the next pass. Also nullifies any existing embedding
-        so the job gets re-embedded with the new stripped text.
+        re-stripped on the next pass. Recomputes content_hash so the embed
+        phase detects the change via hash mismatch.
         """
         value = stripped.strip() if stripped else None
         if not value:
             value = None
-        with self.conn.transaction():
-            self.conn.execute(
-                "UPDATE jobs SET description_stripped = %s WHERE id = %s",
-                (value, job_pk),
-            )
-            self.conn.execute(
-                "UPDATE jobs SET embedding = NULL WHERE id = %s", (job_pk,)
-            )
+        self.conn.execute(
+            """UPDATE jobs SET
+                description_stripped = %s,
+                content_hash = md5(
+                    coalesce(%s, '') || title || coalesce(location, '') || coalesce(department, '')
+                )::uuid
+               WHERE id = %s""",
+            (value, value, job_pk),
+        )
 
     def clear_stripped_descriptions(self) -> int:
         """Set description_stripped to NULL for all jobs. Returns count affected.
 
-        Embeddings for affected jobs are also cleared.
+        Deletes embeddings for affected jobs and recomputes content_hash.
         """
         with self.conn.transaction():
             self.conn.execute("""
-                UPDATE jobs SET embedding = NULL
+                DELETE FROM job_embeddings
+                WHERE job_id IN (SELECT id FROM jobs WHERE description_stripped IS NOT NULL)
+            """)
+            cur = self.conn.execute("""
+                UPDATE jobs SET
+                    description_stripped = NULL,
+                    content_hash = md5(
+                        '' || title || coalesce(location, '') || coalesce(department, '')
+                    )::uuid
                 WHERE description_stripped IS NOT NULL
             """)
-            cur = self.conn.execute(
-                "UPDATE jobs SET description_stripped = NULL WHERE description_stripped IS NOT NULL"
-            )
             return cur.rowcount
 
     def get_job_by_ids(self, job_ids: list[int]) -> list[dict]:
@@ -390,30 +409,49 @@ class JobStore:
     # Embeddings
     # -------------------------------------------------------------------
 
-    def store_embedding(self, job_id: int, embedding: list[float]) -> None:
-        """Store embedding vector on the jobs row."""
-        self.conn.execute(
-            "UPDATE jobs SET embedding = %s WHERE id = %s",
-            (embedding, job_id),
-        )
+    def store_embedding(self, job_id: int, job_hash: str, company_hash: str,
+                        embedding: list[float]) -> None:
+        """Store a single embedding in job_embeddings (chunk_index=0)."""
+        self.store_embeddings([(job_id, job_hash, company_hash, embedding)])
+
+    def store_embeddings(self, items: list[tuple[int, str, str, list[float]]]) -> None:
+        """Batch store embeddings in job_embeddings.
+
+        Each item is (job_id, job_hash, company_hash, vector).
+        Deletes old chunks per job_id first, then inserts new ones.
+        """
+        if not items:
+            return
+        job_ids = [i[0] for i in items]
+        with self.conn.transaction():
+            self.conn.execute(
+                "DELETE FROM job_embeddings WHERE job_id = ANY(%s)", (job_ids,)
+            )
+            with self.conn.cursor() as cur:
+                cur.executemany(
+                    """INSERT INTO job_embeddings (job_id, chunk_index, job_hash, company_hash, embedding)
+                       VALUES (%s, 0, %s, %s, %s)""",
+                    [(jid, jh, ch, vec) for jid, jh, ch, vec in items],
+                    returning=False,
+                )
 
     def delete_embedding(self, job_id: int) -> None:
-        """Clear embedding for a job."""
+        """Delete all embeddings for a job."""
         self.conn.execute(
-            "UPDATE jobs SET embedding = NULL WHERE id = %s", (job_id,)
+            "DELETE FROM job_embeddings WHERE job_id = %s", (job_id,)
         )
 
     def search_similar(self, query_embedding: list[float], k: int = 25) -> list[dict]:
         """KNN search via pgvector, returns job dicts with distance score."""
         rows = self.conn.execute("""
-            SELECT embedding <=> %s::vector AS distance,
+            SELECT e.embedding <=> %s::vector AS distance,
                    j.*, s.last_sync, c.name AS company_name
-            FROM jobs j
+            FROM job_embeddings e
+            JOIN jobs j ON e.job_id = j.id
             LEFT JOIN sync_status s ON j.company_slug = s.company_slug
             LEFT JOIN companies c ON j.company_slug = c.slug
-            WHERE j.embedding IS NOT NULL
-              AND j.listing_status = 'active'
-            ORDER BY j.embedding <=> %s::vector
+            WHERE j.listing_status = 'active'
+            ORDER BY e.embedding <=> %s::vector
             LIMIT %s
         """, (query_embedding, query_embedding, k)).fetchall()
         return [dict(r) for r in rows]
@@ -431,7 +469,6 @@ class JobStore:
         """KNN search with filters on company/title/location."""
         conditions = [
             "j.listing_status = 'active'",
-            "j.embedding IS NOT NULL",
         ]
         params: list = [query_embedding]
 
@@ -461,49 +498,61 @@ class JobStore:
         where = " AND ".join(conditions)
 
         sql = f"""
-            SELECT j.embedding <=> %s::vector AS distance,
+            SELECT e.embedding <=> %s::vector AS distance,
                    j.*, s.last_sync, c.name AS company_name
-            FROM jobs j
+            FROM job_embeddings e
+            JOIN jobs j ON e.job_id = j.id
             LEFT JOIN sync_status s ON j.company_slug = s.company_slug
             LEFT JOIN companies c ON j.company_slug = c.slug
             WHERE {where}
-            ORDER BY j.embedding <=> %s::vector
+            ORDER BY e.embedding <=> %s::vector
             LIMIT %s
         """
 
         rows = self.conn.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
 
-    def _embedding_conditions(self, slugs: list[str] | None = None) -> tuple[str, list]:
-        """WHERE clause for jobs needing embeddings."""
-        conditions = [
-            "description_stripped IS NOT NULL",
-            "listing_status = 'active'",
-            "embedding IS NULL",
-        ]
+    def _embedding_base_query(self, slugs: list[str] | None = None) -> tuple[str, str, list]:
+        """Base FROM/WHERE for jobs needing embeddings (hash mismatch or missing)."""
+        extra_conditions = []
         params: list = []
         if slugs:
-            conditions.append("company_slug = ANY(%s)")
+            extra_conditions.append("j.company_slug = ANY(%s)")
             params.append(slugs)
-        return " AND ".join(conditions), params
+        extra = (" AND " + " AND ".join(extra_conditions)) if extra_conditions else ""
+
+        from_clause = """
+            jobs j
+            JOIN companies c ON j.company_slug = c.slug
+            LEFT JOIN job_embeddings e ON e.job_id = j.id AND e.chunk_index = 0
+        """
+        where_clause = f"""
+            j.listing_status = 'active'
+            AND j.description_stripped IS NOT NULL
+            AND (e.id IS NULL OR e.job_hash IS DISTINCT FROM j.content_hash
+                 OR e.company_hash IS DISTINCT FROM c.content_hash)
+            {extra}
+        """
+        return from_clause, where_clause, params
 
     def count_jobs_needing_embeddings(self, slugs: list[str] | None = None) -> int:
-        """Count jobs with stripped descriptions but no embedding."""
-        where, params = self._embedding_conditions(slugs)
+        """Count jobs needing embeddings (missing or hash mismatch)."""
+        from_clause, where_clause, params = self._embedding_base_query(slugs)
         row = self.conn.execute(
-            f"SELECT COUNT(*) AS cnt FROM jobs WHERE {where}", params
+            f"SELECT COUNT(*) AS cnt FROM {from_clause} WHERE {where_clause}", params
         ).fetchone()
         return row["cnt"]
 
     def list_jobs_needing_embeddings(self, slugs: list[str] | None = None, limit: int = 0) -> list[EmbedWorkItem]:
-        """Jobs with stripped descriptions but no embedding."""
-        where, params = self._embedding_conditions(slugs)
+        """Jobs needing embeddings (missing or hash mismatch)."""
+        from_clause, where_clause, params = self._embedding_base_query(slugs)
 
         sql = f"""
-            SELECT id, company_slug, job_id, title,
-                   department, location, description_stripped
-            FROM jobs
-            WHERE {where}
+            SELECT j.id, j.content_hash AS job_hash, c.content_hash AS company_hash,
+                   j.company_slug, j.job_id, j.title, j.department, j.location,
+                   j.description_stripped
+            FROM {from_clause}
+            WHERE {where_clause}
         """
         if limit > 0:
             sql += " LIMIT %s"

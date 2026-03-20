@@ -15,6 +15,7 @@ class SearchResult:
 class VectorSearch:
     def __init__(self, conninfo: str | None = None):
         self.store = JobStore(conninfo)
+        self.store.conn.execute("SET hnsw.iterative_scan = relaxed_order")
 
     def search(
         self,

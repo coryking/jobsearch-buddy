@@ -97,6 +97,7 @@ def seed_jobs(conninfo: str, slug: str, jobs: list[Job]) -> None:
 def clean_tables(conninfo: str) -> None:
     """Delete all rows from test tables (FK-safe ordering)."""
     conn = psycopg.connect(conninfo, autocommit=True)
+    conn.execute("DELETE FROM job_embeddings")
     conn.execute("DELETE FROM jobs")
     conn.execute("DELETE FROM sync_status")
     conn.execute("DELETE FROM activity_log")
@@ -139,6 +140,7 @@ def ensure_pg_schema():
 def clean_test_data():
     """Clean child tables between tests. Companies persist from session setup."""
     conn = psycopg.connect(TEST_CONNINFO, autocommit=True)
+    conn.execute("DELETE FROM job_embeddings")
     conn.execute("DELETE FROM jobs")
     conn.execute("DELETE FROM sync_status")
     conn.execute("DELETE FROM activity_log")

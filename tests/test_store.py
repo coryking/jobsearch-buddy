@@ -34,14 +34,15 @@ class TestSchema:
         """).fetchall()
         assert len(rows) >= 1
 
-    def test_embedding_column_exists(self, store):
-        """jobs table has a vector(1536) embedding column."""
-        row = store.conn.execute("""
-            SELECT column_name, udt_name FROM information_schema.columns
-            WHERE table_name = 'jobs' AND column_name = 'embedding'
-        """).fetchone()
-        assert row is not None
-        assert row["udt_name"] == "vector"
+    def test_job_embeddings_table_exists(self, store):
+        """job_embeddings table exists with expected columns."""
+        rows = store.conn.execute("""
+            SELECT column_name FROM information_schema.columns
+            WHERE table_name = 'job_embeddings'
+            ORDER BY ordinal_position
+        """).fetchall()
+        cols = {r["column_name"] for r in rows}
+        assert {"id", "job_id", "chunk_index", "job_hash", "company_hash", "embedding"} <= cols
 
     def test_context_manager(self, pg_conninfo):
         """JobStore works as a context manager."""
@@ -248,9 +249,9 @@ class TestSyncBookkeeping:
 class TestEmbeddings:
 
     def _insert_jobs_with_stripped(self, store, *stripped_descs):
-        """Insert jobs with description_stripped set."""
+        """Insert jobs with description_stripped set. Returns (ids, job_hashes, company_hash)."""
         jobs = [
-            make_job(str(i + 1), description=f"full desc {i}", description_stripped=desc)
+            make_job(str(i + 1), description=f"full desc {i}")
             for i, desc in enumerate(stripped_descs)
         ]
         store.upsert_jobs("acme", jobs)
@@ -259,13 +260,25 @@ class TestEmbeddings:
                 "UPDATE jobs SET description_stripped = %s WHERE job_id = %s",
                 (desc, str(i + 1)),
             )
+        # Recompute content_hash with stripped description
+        store.conn.execute("""
+            UPDATE jobs SET content_hash = md5(
+                coalesce(description_stripped, '') || title || coalesce(location, '') || coalesce(department, '')
+            )::uuid
+            WHERE description_stripped IS NOT NULL
+        """)
         ids = []
+        job_hashes = []
         for i in range(len(stripped_descs)):
             row = store.conn.execute(
-                "SELECT id FROM jobs WHERE job_id = %s", (str(i + 1),)
+                "SELECT id, content_hash FROM jobs WHERE job_id = %s", (str(i + 1),)
             ).fetchone()
             ids.append(row["id"])
-        return ids
+            job_hashes.append(str(row["content_hash"]))
+        company_hash = str(store.conn.execute(
+            "SELECT content_hash FROM companies WHERE slug = 'acme'"
+        ).fetchone()["content_hash"])
+        return ids, job_hashes, company_hash
 
     def _make_embedding(self, dims=1536, val=0.1):
         """Create an embedding as a list of floats."""
@@ -273,7 +286,6 @@ class TestEmbeddings:
 
     def test_jobs_needing_embeddings_count(self, store):
         """Jobs with description_stripped need embeddings; those without don't."""
-        self._insert_jobs_with_stripped(store, "Build AI.", "Lead teams.")
         store.upsert_jobs("acme", [
             make_job("1", description="Build AI."),
             make_job("2", description="Lead teams."),
@@ -290,6 +302,14 @@ class TestEmbeddings:
         assert len(jobs) == 2
         assert all("id" in j and "job_id" in j for j in jobs)
 
+    def test_list_returns_hash_fields(self, store):
+        """list_jobs_needing_embeddings returns job_hash and company_hash."""
+        self._insert_jobs_with_stripped(store, "Build AI.")
+        jobs = store.list_jobs_needing_embeddings()
+        assert len(jobs) == 1
+        assert "job_hash" in jobs[0]
+        assert "company_hash" in jobs[0]
+
     def test_count_and_list_consistency(self, store):
         """Count and list modes return consistent results."""
         self._insert_jobs_with_stripped(store, "Build AI.", "Lead teams.")
@@ -297,80 +317,104 @@ class TestEmbeddings:
         jobs = store.list_jobs_needing_embeddings()
         assert count == len(jobs)
 
-    def test_store_embedding(self, store):
-        """store_embedding sets the embedding column."""
-        ids = self._insert_jobs_with_stripped(store, "Build AI.")
-        job_id = ids[0]
-        vec = self._make_embedding()
-
-        store.store_embedding(job_id, vec)
-
-        row = store.conn.execute(
-            "SELECT embedding FROM jobs WHERE id = %s", (job_id,)
-        ).fetchone()
-        assert row["embedding"] is not None
-
     def test_store_embedding_makes_job_not_needing(self, store):
         """After storing an embedding, the job no longer needs one."""
-        ids = self._insert_jobs_with_stripped(store, "Build AI.")
-        job_id = ids[0]
+        ids, job_hashes, company_hash = self._insert_jobs_with_stripped(store, "Build AI.")
         assert store.count_jobs_needing_embeddings() == 1
 
         vec = self._make_embedding()
-        store.store_embedding(job_id, vec)
+        store.store_embedding(ids[0], job_hashes[0], company_hash, vec)
         assert store.count_jobs_needing_embeddings() == 0
 
-    def test_update_stripped_description_deletes_embedding(self, store):
-        """Updating stripped description cascades: clears the stale embedding."""
-        ids = self._insert_jobs_with_stripped(store, "version 1")
-        job_id = ids[0]
+    def test_store_embeddings_batch(self, store):
+        """store_embeddings stores multiple embeddings in one call."""
+        ids, job_hashes, company_hash = self._insert_jobs_with_stripped(
+            store, "Build AI.", "Lead teams."
+        )
+        assert store.count_jobs_needing_embeddings() == 2
+
+        vec = self._make_embedding()
+        store.store_embeddings([
+            (ids[0], job_hashes[0], company_hash, vec),
+            (ids[1], job_hashes[1], company_hash, vec),
+        ])
+        assert store.count_jobs_needing_embeddings() == 0
+
+    def test_update_stripped_description_triggers_reembed(self, store):
+        """Updating stripped description changes content_hash, causing hash mismatch."""
+        ids, job_hashes, company_hash = self._insert_jobs_with_stripped(store, "version 1")
         vec = self._make_embedding()
 
-        store.store_embedding(job_id, vec)
+        store.store_embedding(ids[0], job_hashes[0], company_hash, vec)
         assert store.count_jobs_needing_embeddings() == 0
 
-        store.update_stripped_description(job_id, "version 2")
+        store.update_stripped_description(ids[0], "version 2")
         assert store.count_jobs_needing_embeddings() == 1
 
-        row = store.conn.execute(
-            "SELECT embedding FROM jobs WHERE id = %s", (job_id,)
-        ).fetchone()
-        assert row["embedding"] is None
+    def test_job_hash_change_triggers_reembed(self, store):
+        """Changing a job's content_hash while embedding has old hash → needs re-embed."""
+        ids, job_hashes, company_hash = self._insert_jobs_with_stripped(store, "desc A")
+        vec = self._make_embedding()
+        store.store_embedding(ids[0], job_hashes[0], company_hash, vec)
+        assert store.count_jobs_needing_embeddings() == 0
+
+        # Simulate title change that updates content_hash
+        store.conn.execute("""
+            UPDATE jobs SET title = 'New Title',
+                content_hash = md5(
+                    coalesce(description_stripped, '') || 'New Title' || coalesce(location, '') || coalesce(department, '')
+                )::uuid
+            WHERE id = %s
+        """, (ids[0],))
+        assert store.count_jobs_needing_embeddings() == 1
+
+    def test_company_hash_change_triggers_reembed(self, store):
+        """Changing company's content_hash while embedding has old hash → needs re-embed."""
+        ids, job_hashes, company_hash = self._insert_jobs_with_stripped(store, "desc A")
+        vec = self._make_embedding()
+        store.store_embedding(ids[0], job_hashes[0], company_hash, vec)
+        assert store.count_jobs_needing_embeddings() == 0
+
+        # Update company name → new content_hash
+        store.conn.execute(
+            "UPDATE companies SET name = 'New Name', content_hash = md5('New Name')::uuid WHERE slug = 'acme'"
+        )
+        assert store.count_jobs_needing_embeddings() == 1
 
     def test_clear_stripped_descriptions_deletes_embeddings(self, store):
         """Clearing all stripped descriptions also clears all embeddings."""
-        ids = self._insert_jobs_with_stripped(store, "Build AI.", "Lead teams.")
+        ids, job_hashes, company_hash = self._insert_jobs_with_stripped(store, "Build AI.", "Lead teams.")
         vec = self._make_embedding()
-        for job_id in ids:
-            store.store_embedding(job_id, vec)
+        for i in range(len(ids)):
+            store.store_embedding(ids[i], job_hashes[i], company_hash, vec)
 
         assert store.count_jobs_needing_embeddings() == 0
         store.clear_stripped_descriptions()
 
         count = store.conn.execute(
-            "SELECT COUNT(*) AS cnt FROM jobs WHERE embedding IS NOT NULL"
+            "SELECT COUNT(*) AS cnt FROM job_embeddings"
         ).fetchone()["cnt"]
         assert count == 0
 
     def test_delete_embedding(self, store):
-        """delete_embedding clears the embedding column."""
-        ids = self._insert_jobs_with_stripped(store, "Build AI.")
-        job_id = ids[0]
+        """delete_embedding removes from job_embeddings table."""
+        ids, job_hashes, company_hash = self._insert_jobs_with_stripped(store, "Build AI.")
         vec = self._make_embedding()
-
-        store.store_embedding(job_id, vec)
-        store.delete_embedding(job_id)
+        store.store_embedding(ids[0], job_hashes[0], company_hash, vec)
+        store.delete_embedding(ids[0])
         assert store.count_jobs_needing_embeddings() == 1
 
     def test_search_similar(self, store):
         """search_similar returns jobs ranked by cosine distance."""
-        ids = self._insert_jobs_with_stripped(store, "AI engineer role", "Marketing manager role")
+        ids, job_hashes, company_hash = self._insert_jobs_with_stripped(
+            store, "AI engineer role", "Marketing manager role"
+        )
 
         vec1 = [1.0] + [0.0] * 1535
         vec2 = [0.0, 1.0] + [0.0] * 1534
 
-        store.store_embedding(ids[0], vec1)
-        store.store_embedding(ids[1], vec2)
+        store.store_embedding(ids[0], job_hashes[0], company_hash, vec1)
+        store.store_embedding(ids[1], job_hashes[1], company_hash, vec2)
 
         query_vec = [1.0] + [0.0] * 1535
 
@@ -400,8 +444,16 @@ class TestEmbeddings:
 
         vec = [0.1] * 1536
         for jid_str in ["1", "2"]:
-            row = store.conn.execute("SELECT id FROM jobs WHERE job_id = %s", (jid_str,)).fetchone()
-            store.store_embedding(row["id"], vec)
+            row = store.conn.execute(
+                "SELECT id, content_hash FROM jobs WHERE job_id = %s", (jid_str,)
+            ).fetchone()
+            company_slug = store.conn.execute(
+                "SELECT company_slug FROM jobs WHERE job_id = %s", (jid_str,)
+            ).fetchone()["company_slug"]
+            ch = str(store.conn.execute(
+                "SELECT content_hash FROM companies WHERE slug = %s", (company_slug,)
+            ).fetchone()["content_hash"])
+            store.store_embedding(row["id"], str(row["content_hash"]), ch, vec)
 
         results = store.search_similar_filtered(vec, company="acme", k=10)
         assert len(results) == 1
@@ -409,13 +461,15 @@ class TestEmbeddings:
 
     def test_search_similar_filtered_by_title(self, store):
         """search_similar_filtered respects title filter."""
-        ids = self._insert_jobs_with_stripped(store, "AI engineer desc", "Marketing mgr desc")
+        ids, job_hashes, company_hash = self._insert_jobs_with_stripped(
+            store, "AI engineer desc", "Marketing mgr desc"
+        )
         store.conn.execute("UPDATE jobs SET title = 'AI Engineer' WHERE job_id = '1'")
         store.conn.execute("UPDATE jobs SET title = 'Marketing Manager' WHERE job_id = '2'")
 
         vec = [0.1] * 1536
-        for job_id in ids:
-            store.store_embedding(job_id, vec)
+        for i in range(len(ids)):
+            store.store_embedding(ids[i], job_hashes[i], company_hash, vec)
 
         results = store.search_similar_filtered(vec, title="engineer", k=10)
         assert len(results) == 1
@@ -423,13 +477,13 @@ class TestEmbeddings:
 
     def test_search_similar_filtered_by_location(self, store):
         """search_similar_filtered respects location filter."""
-        ids = self._insert_jobs_with_stripped(store, "desc A", "desc B")
+        ids, job_hashes, company_hash = self._insert_jobs_with_stripped(store, "desc A", "desc B")
         store.conn.execute("UPDATE jobs SET location = 'Seattle, WA' WHERE job_id = '1'")
         store.conn.execute("UPDATE jobs SET location = 'Remote' WHERE job_id = '2'")
 
         vec = [0.1] * 1536
-        for job_id in ids:
-            store.store_embedding(job_id, vec)
+        for i in range(len(ids)):
+            store.store_embedding(ids[i], job_hashes[i], company_hash, vec)
 
         results = store.search_similar_filtered(vec, location="remote", k=10)
         assert len(results) == 1
@@ -437,9 +491,9 @@ class TestEmbeddings:
 
     def test_search_similar_filtered_excludes_removed(self, store):
         """search_similar_filtered excludes removed jobs."""
-        ids = self._insert_jobs_with_stripped(store, "desc A")
+        ids, job_hashes, company_hash = self._insert_jobs_with_stripped(store, "desc A")
         vec = [0.1] * 1536
-        store.store_embedding(ids[0], vec)
+        store.store_embedding(ids[0], job_hashes[0], company_hash, vec)
 
         store.upsert_jobs("acme", [])
 
@@ -448,9 +502,9 @@ class TestEmbeddings:
 
     def test_search_similar_filtered_returns_correct_columns(self, store):
         """search_similar_filtered returns correct columns."""
-        ids = self._insert_jobs_with_stripped(store, "desc A")
+        ids, job_hashes, company_hash = self._insert_jobs_with_stripped(store, "desc A")
         vec = [0.1] * 1536
-        store.store_embedding(ids[0], vec)
+        store.store_embedding(ids[0], job_hashes[0], company_hash, vec)
 
         results = store.search_similar_filtered(vec, k=10)
         assert len(results) == 1
@@ -473,7 +527,7 @@ class TestEmbeddings:
 
     def test_update_stripped_description_rejects_empty(self, store):
         """update_stripped_description stores NULL instead of empty string."""
-        ids = self._insert_jobs_with_stripped(store, "real content")
+        ids, _, _ = self._insert_jobs_with_stripped(store, "real content")
         job_id = ids[0]
 
         store.update_stripped_description(job_id, "")
@@ -484,7 +538,7 @@ class TestEmbeddings:
 
     def test_update_stripped_description_rejects_whitespace_only(self, store):
         """update_stripped_description stores NULL for whitespace-only strings."""
-        ids = self._insert_jobs_with_stripped(store, "real content")
+        ids, _, _ = self._insert_jobs_with_stripped(store, "real content")
         job_id = ids[0]
 
         store.update_stripped_description(job_id, "   \n\t  ")
@@ -495,15 +549,31 @@ class TestEmbeddings:
 
     def test_list_needing_embeddings_limit_skips_already_embedded(self, store):
         """LIMIT applies to jobs that actually need embeddings."""
-        ids = self._insert_jobs_with_stripped(
+        ids, job_hashes, company_hash = self._insert_jobs_with_stripped(
             store, "desc A", "desc B", "desc C", "desc D", "desc E"
         )
 
         vec = self._make_embedding()
-        store.store_embedding(ids[0], vec)
-        store.store_embedding(ids[1], vec)
+        store.store_embedding(ids[0], job_hashes[0], company_hash, vec)
+        store.store_embedding(ids[1], job_hashes[1], company_hash, vec)
 
         assert store.count_jobs_needing_embeddings() == 3
 
         jobs = store.list_jobs_needing_embeddings(limit=3)
         assert len(jobs) == 3
+
+    def test_constraint_trigger_rejects_inconsistent_hashes(self, store):
+        """Deferred constraint trigger rejects mismatched hashes for same job_id."""
+        ids, job_hashes, company_hash = self._insert_jobs_with_stripped(store, "desc A")
+        vec = self._make_embedding()
+        # Insert chunk_index=0
+        store.store_embedding(ids[0], job_hashes[0], company_hash, vec)
+
+        # Try inserting chunk_index=1 with a different job_hash
+        with pytest.raises(psycopg.errors.RaiseException):
+            with store.conn.transaction():
+                store.conn.execute(
+                    """INSERT INTO job_embeddings (job_id, chunk_index, job_hash, company_hash, embedding)
+                       VALUES (%s, 1, %s, %s, %s)""",
+                    (ids[0], "00000000-0000-0000-0000-000000000000", company_hash, vec),
+                )

@@ -39,13 +39,24 @@ def vs(pg_conninfo):
         store.conn.execute(
             "UPDATE jobs SET description_stripped = description WHERE job_id = %s", (jid,)
         )
+    # Recompute content_hash with stripped description
+    store.conn.execute("""
+        UPDATE jobs SET content_hash = md5(
+            coalesce(description_stripped, '') || title || coalesce(location, '') || coalesce(department, '')
+        )::uuid
+        WHERE description_stripped IS NOT NULL
+    """)
+
+    company_hash = str(store.conn.execute(
+        "SELECT content_hash FROM companies WHERE slug = 'acme'"
+    ).fetchone()["content_hash"])
 
     for job_id_str in ["1", "2", "3"]:
         row = store.conn.execute(
-            "SELECT id FROM jobs WHERE job_id = %s", (job_id_str,)
+            "SELECT id, content_hash FROM jobs WHERE job_id = %s", (job_id_str,)
         ).fetchone()
         vec = _fake_vec(DIMS, seed=int(job_id_str)).tolist()
-        store.store_embedding(row["id"], vec)
+        store.store_embedding(row["id"], str(row["content_hash"]), company_hash, vec)
 
     yield search
     search.close()
@@ -105,9 +116,17 @@ class TestVectorSearchFiltered:
         vs.store.conn.execute(
             "UPDATE jobs SET description_stripped = description WHERE job_id = '10'"
         )
-        row = vs.store.conn.execute("SELECT id FROM jobs WHERE job_id = '10'").fetchone()
+        vs.store.conn.execute("""
+            UPDATE jobs SET content_hash = md5(
+                coalesce(description_stripped, '') || title || coalesce(location, '') || coalesce(department, '')
+            )::uuid WHERE job_id = '10'
+        """)
+        row = vs.store.conn.execute("SELECT id, content_hash FROM jobs WHERE job_id = '10'").fetchone()
+        company_hash = str(vs.store.conn.execute(
+            "SELECT content_hash FROM companies WHERE slug = 'beta'"
+        ).fetchone()["content_hash"])
         vec = _fake_vec(DIMS, seed=1).tolist()
-        vs.store.store_embedding(row["id"], vec)
+        vs.store.store_embedding(row["id"], str(row["content_hash"]), company_hash, vec)
 
         query_vec = _fake_vec(DIMS, seed=1).tolist()
         with patch("jobbuddy.search.embed_query", return_value=query_vec):

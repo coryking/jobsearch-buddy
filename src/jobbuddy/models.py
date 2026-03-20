@@ -1,9 +1,11 @@
 """Normalized job model and text utilities."""
 
 import csv
+import hashlib
 import io
 import json
 import re
+import uuid
 from collections import Counter
 from datetime import date
 from html.parser import HTMLParser
@@ -45,6 +47,24 @@ class Job(BaseModel):
     description: str | None = None
     ats_metadata: dict | None = Field(default=None, exclude=True)
 
+    def content_hash(self, description_stripped: str | None = None) -> uuid.UUID:
+        """Content hash for cache invalidation — matches SQL md5(...)::uuid.
+
+        Covers exactly the fields that feed embed_text(): title, location,
+        department, description_stripped. Company name is covered by
+        Company.content_hash separately.
+
+        Takes description_stripped as a parameter because it's stored separately
+        in the DB, not on the model instance.
+        """
+        parts = (
+            (description_stripped or "")
+            + self.title
+            + (self.location or "")
+            + (self.department or "")
+        )
+        return uuid.UUID(hashlib.md5(parts.encode()).hexdigest())
+
     def embed_text(self, company_name: str, *, description_stripped: str | None = None) -> str | None:
         """Build semantically rich text for embedding. Returns None if no description.
 
@@ -72,6 +92,11 @@ class Company(BaseModel):
     name: str
     ats: str | None = None
     board: str | None = None
+
+    @property
+    def content_hash(self) -> uuid.UUID:
+        """Content hash for cache invalidation — matches SQL md5(name)::uuid."""
+        return uuid.UUID(hashlib.md5(self.name.encode()).hexdigest())
 
     @field_validator("slug", mode="before")
     @classmethod
