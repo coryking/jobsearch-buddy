@@ -2,6 +2,9 @@
 
 Priority (highest to lowest):
   explicit kwargs > env vars (JOBBUDDY_*) > defaults
+
+Settings are inert data — no network calls, no side effects. Token fetching
+for Azure Entra auth happens at connection time in pg_connect().
 """
 
 from __future__ import annotations
@@ -47,28 +50,22 @@ class Settings(BaseSettings):
         return bool(self.openai_api_key or self.openai_azure_api_version)
 
     @property
+    def needs_azure_token(self) -> bool:
+        """Whether this config requires an Azure Entra token for DB auth."""
+        return bool(self.postgres_host) or "azure" in self.pg_service
+
+    @property
     def pg_conninfo(self) -> str:
-        """Connection info string for psycopg.
+        """Base connection info string (no credentials).
 
-        Azure mode (postgres_host set): builds a connection URI with a fresh
-        Entra token on every call. DefaultAzureCredential caches tokens internally
-        and auto-refreshes before expiry, so calling get_token() is cheap.
-
-        Local mode: returns pg_service reference.
+        Returns the pg_service reference or host-based URI template.
+        For Azure auth, use pg_connect() which adds the Entra token.
         """
-        if self.postgres_host or "azure" in self.pg_service:
-            from azure.identity import DefaultAzureCredential
-
-            token = DefaultAzureCredential().get_token(
-                "https://ossrdbms-aad.database.windows.net/.default"
+        if self.postgres_host:
+            return (
+                f"postgresql://{self.postgres_user}@{self.postgres_host}"
+                f":5432/{self.postgres_database}?sslmode=require"
             )
-            if self.postgres_host:
-                return (
-                    f"postgresql://{self.postgres_user}:{token.token}"
-                    f"@{self.postgres_host}:5432/{self.postgres_database}"
-                    f"?sslmode=require"
-                )
-            return f"service={self.pg_service} password={token.token}"
         return f"service={self.pg_service}"
 
     @field_validator("data_dir", "listings_dir", mode="after")
@@ -88,3 +85,32 @@ def get_settings() -> Settings:
     if _settings is None:
         _settings = Settings()
     return _settings
+
+
+def _get_azure_token() -> str:
+    """Fetch an Azure Entra token for PostgreSQL. Cached internally by DefaultAzureCredential."""
+    from azure.identity import DefaultAzureCredential
+
+    return DefaultAzureCredential().get_token(
+        "https://ossrdbms-aad.database.windows.net/.default"
+    ).token
+
+
+def pg_conninfo_with_token(settings: Settings | None = None) -> str:
+    """Build a connection string, adding an Azure Entra token if needed.
+
+    This is the only place token fetching happens. Called at connection time
+    by pg_connect() and store._connect().
+    """
+    s = settings or get_settings()
+    if not s.needs_azure_token:
+        return s.pg_conninfo
+
+    token = _get_azure_token()
+    if s.postgres_host:
+        return (
+            f"postgresql://{s.postgres_user}:{token}"
+            f"@{s.postgres_host}:5432/{s.postgres_database}"
+            f"?sslmode=require"
+        )
+    return f"service={s.pg_service} password={token}"

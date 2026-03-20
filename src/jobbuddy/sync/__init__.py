@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 
 from jobbuddy.models import Company
 from jobbuddy.registry import list_companies, lookup_by_name
-from jobbuddy.settings import Settings, get_settings
+from jobbuddy.settings import Settings, get_settings, pg_conninfo_with_token
 from jobbuddy.store import JobStore
 from jobbuddy.sync.display import SyncDisplayState
 from jobbuddy.sync.types import SyncResult
@@ -101,7 +101,7 @@ def validate_sync_config(
 
     return SyncConfig(
         phases=resolved_phases,
-        conninfo=settings.pg_conninfo,
+        conninfo=pg_conninfo_with_token(settings),
         targets=targets,
         company_slugs=company_slugs,
         stale_hours=stale_hours,
@@ -152,7 +152,7 @@ def sync_jobs(
     registry = list_companies()
 
     if conninfo is None:
-        conninfo = get_settings().pg_conninfo
+        conninfo = pg_conninfo_with_token()
 
     # Fetch phase: build targets and run
     results: list[SyncResult] = []

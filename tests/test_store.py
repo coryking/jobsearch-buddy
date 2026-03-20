@@ -76,14 +76,14 @@ class TestUpsertAndQuery:
         assert rows[0]["title"] == "PM Updated"
         assert rows[0]["location"] == "NYC"
 
-    def test_upsert_marks_disappeared_jobs(self, store):
+    def test_upsert_marks_removed_jobs(self, store):
         store.upsert_jobs("acme", [make_job("1"), make_job("2")])
         assert len(store.query_jobs()) == 2
         store.upsert_jobs("acme", [make_job("1")])
         assert len(store.query_jobs()) == 1
-        assert len(store.query_jobs(include_disappeared=True)) == 2
+        assert len(store.query_jobs(include_removed=True)) == 2
 
-    def test_disappeared_job_reappears(self, store):
+    def test_removed_job_reappears(self, store):
         store.upsert_jobs("acme", [make_job("1"), make_job("2")])
         store.upsert_jobs("acme", [make_job("1")])
         assert len(store.query_jobs()) == 1
@@ -116,6 +116,41 @@ class TestUpsertAndQuery:
         row = store.conn.execute("SELECT id FROM jobs WHERE job_id = '1'").fetchone()
         assert row["id"] is not None
         assert isinstance(row["id"], int)
+
+    def test_repost_detection_logs(self, store, caplog):
+        """Re-posting a removed job logs an INFO message."""
+        import logging
+        store.upsert_jobs("acme", [make_job("1", "PM"), make_job("2", "SWE")])
+        store.upsert_jobs("acme", [make_job("1", "PM")])  # removes job 2
+        assert len(store.query_jobs()) == 1
+
+        with caplog.at_level(logging.INFO, logger="jobbuddy.store"):
+            store.upsert_jobs("acme", [make_job("1", "PM"), make_job("2", "SWE")])
+
+        repost_msgs = [r for r in caplog.records if "repost" in r.message.lower()]
+        assert len(repost_msgs) == 1
+        assert "2" in repost_msgs[0].message
+
+    def test_removed_job_has_removed_at_set(self, store):
+        """Removing a job sets removed_at via trigger."""
+        store.upsert_jobs("acme", [make_job("1"), make_job("2")])
+        store.upsert_jobs("acme", [make_job("1")])  # removes job 2
+        row = store.conn.execute(
+            "SELECT listing_status, removed_at FROM jobs WHERE job_id = '2'"
+        ).fetchone()
+        assert row["listing_status"] == "removed"
+        assert row["removed_at"] is not None
+
+    def test_reappeared_job_clears_removed_at(self, store):
+        """Re-appearing job clears removed_at via trigger."""
+        store.upsert_jobs("acme", [make_job("1"), make_job("2")])
+        store.upsert_jobs("acme", [make_job("1")])  # removes job 2
+        store.upsert_jobs("acme", [make_job("1"), make_job("2")])  # reappears
+        row = store.conn.execute(
+            "SELECT listing_status, removed_at FROM jobs WHERE job_id = '2'"
+        ).fetchone()
+        assert row["listing_status"] == "active"
+        assert row["removed_at"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -406,8 +441,8 @@ class TestEmbeddings:
         assert len(results) == 1
         assert results[0]["location"] == "Remote"
 
-    def test_search_similar_filtered_excludes_disappeared(self, store):
-        """search_similar_filtered excludes disappeared jobs."""
+    def test_search_similar_filtered_excludes_removed(self, store):
+        """search_similar_filtered excludes removed jobs."""
         ids = self._insert_jobs_with_stripped(store, "desc A")
         vec = [0.1] * 1536
         store.store_embedding(ids[0], vec)

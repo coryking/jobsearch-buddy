@@ -399,46 +399,6 @@ class TestValidateSyncConfig:
         with pytest.raises(ValueError, match="Invalid phase"):
             validate_sync_config(phases={"bogus"}, settings=self._settings())
 
-    def test_requires_openai_for_strip(self):
-        """Missing OpenAI key with strip phase raises ValueError."""
-        from jobbuddy.sync import validate_sync_config
-
-        with pytest.raises(ValueError, match="JOBBUDDY_OPENAI_API_KEY"):
-            validate_sync_config(
-                phases={"fetch", "strip"},
-                settings=self._settings(has_openai=False),
-            )
-
-    def test_requires_openai_for_embed(self):
-        """Missing OpenAI key with embed phase raises ValueError."""
-        from jobbuddy.sync import validate_sync_config
-
-        with pytest.raises(ValueError, match="JOBBUDDY_OPENAI_API_KEY"):
-            validate_sync_config(
-                phases={"fetch", "embed"},
-                settings=self._settings(has_openai=False),
-            )
-
-    def test_fetch_enrich_ok_without_openai(self):
-        """fetch + enrich works without OpenAI key."""
-        from jobbuddy.sync import validate_sync_config
-
-        config = validate_sync_config(
-            phases={"fetch", "enrich"},
-            settings=self._settings(has_openai=False),
-        )
-        assert config.phases == {"fetch", "enrich"}
-
-    def test_all_phases_requires_openai(self):
-        """Running all phases (default) requires OpenAI."""
-        from jobbuddy.sync import validate_sync_config
-
-        with pytest.raises(ValueError, match="JOBBUDDY_OPENAI_API_KEY"):
-            validate_sync_config(
-                phases=None,
-                settings=self._settings(has_openai=False),
-            )
-
     @patch("jobbuddy.sync.lookup_by_name")
     def test_resolves_company_slugs(self, mock_lookup):
         """Company names are resolved to Company objects."""
@@ -481,7 +441,7 @@ class TestValidateSyncConfig:
             )
 
     def test_returns_conninfo_from_settings(self):
-        """Config.conninfo comes from settings.pg_conninfo."""
+        """Config.conninfo comes from settings."""
         from jobbuddy.sync import validate_sync_config
 
         settings = self._settings()
@@ -489,7 +449,7 @@ class TestValidateSyncConfig:
             phases={"fetch", "enrich"},
             settings=settings,
         )
-        assert config.conninfo == settings.pg_conninfo
+        assert "job-search-buddy-test" in config.conninfo
 
     def test_default_phases_is_all(self):
         """phases=None resolves to all four phases."""

@@ -38,7 +38,7 @@ class TestStoreStripping:
         assert len(needing) == 1
         assert needing[0]["job_id"] == "2"
 
-    def test_get_jobs_needing_stripping_excludes_disappeared(self, store):
+    def test_get_jobs_needing_stripping_excludes_removed(self, store):
         store.upsert_jobs("acme", [
             make_job("1", description="desc"),
             make_job("2", description="desc"),

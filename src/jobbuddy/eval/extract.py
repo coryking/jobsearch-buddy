@@ -39,7 +39,7 @@ def extract(
             """SELECT id, company_slug, job_id, title, description
                FROM jobs
                WHERE description IS NOT NULL
-                 AND disappeared_at IS NULL
+                 AND listing_status = 'active'
                ORDER BY company_slug, title"""
         ).fetchall()
     finally:

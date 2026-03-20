@@ -23,11 +23,11 @@ def migrate():
     from psycopg.rows import dict_row
 
     from jobbuddy.migrations import apply_migrations
-    from jobbuddy.settings import get_settings
+    from jobbuddy.settings import pg_conninfo_with_token
 
     from jobbuddy.store import JobStore
 
-    conn = psycopg.connect(get_settings().pg_conninfo, autocommit=True)
+    conn = psycopg.connect(pg_conninfo_with_token(), autocommit=True)
     conn.row_factory = dict_row
     try:
         applied = apply_migrations(conn)

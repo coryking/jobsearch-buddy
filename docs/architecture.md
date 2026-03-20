@@ -35,7 +35,8 @@ jobs             -- SERIAL PK (surrogate), UNIQUE(company_slug, job_id)
                  --   title, location, url, published_at, salary, team,
                  --   department, description, description_stripped,
                  --   ats_metadata (JSONB), embedding vector(1536),
-                 --   last_seen, disappeared_at
+                 --   last_seen, listing_status (enum: active/removed),
+                 --   removed_at
 sync_status      -- per-company last sync time and error state
 
 -- HNSW index for vector similarity search
@@ -48,9 +49,11 @@ HNSW index enables filtered vector search without oversampling.
 
 ### Soft-Delete
 
-When a job disappears from a company's feed, it gets `disappeared_at` instead of
-deletion. Jobs that reappear get `disappeared_at = NULL`. `query_jobs()` excludes
-disappeared jobs by default.
+When a job disappears from a company's feed, its `listing_status` is set to
+`'removed'`. A database trigger auto-manages `removed_at` — setting it on
+removal and clearing it on reactivation. Jobs that reappear get
+`listing_status = 'active'` and `removed_at = NULL`. `query_jobs()` excludes
+removed jobs by default. Re-postings (removed → active) are logged at INFO.
 
 ## Vector Search
 

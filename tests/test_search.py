@@ -76,8 +76,8 @@ class TestVectorSearch:
         scores = [r.score for r in results]
         assert scores == sorted(scores, reverse=True)
 
-    def test_search_excludes_disappeared(self, vs):
-        """Disappeared jobs don't appear in results."""
+    def test_search_excludes_removed(self, vs):
+        """Removed jobs don't appear in results."""
         vs.store.upsert_jobs("acme", [])
         query_vec = _fake_vec(DIMS, seed=1).tolist()
         with patch("jobbuddy.search.embed_query", return_value=query_vec):

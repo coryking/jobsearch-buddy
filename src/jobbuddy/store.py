@@ -61,8 +61,8 @@ class JobStore:
 
     def _connect(self, conninfo: str | None) -> psycopg.Connection:
         if conninfo is None:
-            from jobbuddy.settings import get_settings
-            conninfo = get_settings().pg_conninfo
+            from jobbuddy.settings import pg_conninfo_with_token
+            conninfo = pg_conninfo_with_token()
 
         conn = psycopg.connect(conninfo, autocommit=True)
         register_vector(conn)
@@ -139,13 +139,25 @@ class JobStore:
             }
             new_ids = {j.id for j in jobs}
 
+            # Detect re-posts: removed jobs about to be reactivated
+            returning_ids = new_ids & current_ids
+            if returning_ids:
+                reposts = self.conn.execute(
+                    """SELECT job_id, title FROM jobs
+                       WHERE company_slug = %s AND job_id = ANY(%s)
+                         AND listing_status = 'removed'""",
+                    (slug, list(returning_ids)),
+                ).fetchall()
+                for r in reposts:
+                    log.info("Repost detected: %s job_id=%s (%s)", slug, r["job_id"], r["title"])
+
             gone = current_ids - new_ids
             if gone:
                 with self.conn.cursor() as cur:
                     cur.executemany(
-                        """UPDATE jobs SET disappeared_at = %s
-                           WHERE company_slug = %s AND job_id = %s AND disappeared_at IS NULL""",
-                        [(now, slug, jid) for jid in gone],
+                        """UPDATE jobs SET listing_status = 'removed'
+                           WHERE company_slug = %s AND job_id = %s AND listing_status = 'active'""",
+                        [(slug, jid) for jid in gone],
                         returning=False,
                     )
 
@@ -170,8 +182,9 @@ class JobStore:
                 cur.executemany(
                     """INSERT INTO jobs
                        (company_slug, job_id, title, location, url, published_at,
-                        department, team, salary, description, ats_metadata, last_seen, disappeared_at)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NULL)
+                        department, team, salary, description, ats_metadata, last_seen,
+                        listing_status)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'active')
                        ON CONFLICT(company_slug, job_id) DO UPDATE SET
                         title = excluded.title,
                         location = excluded.location,
@@ -183,7 +196,7 @@ class JobStore:
                         description = COALESCE(excluded.description, jobs.description),
                         ats_metadata = COALESCE(excluded.ats_metadata, jobs.ats_metadata),
                         last_seen = excluded.last_seen,
-                        disappeared_at = NULL""",
+                        listing_status = 'active'""",
                     upsert_params,
                     returning=False,
                 )
@@ -206,14 +219,14 @@ class JobStore:
         title: str | None = None,
         location: str | None = None,
         posted_after: str | None = None,
-        include_disappeared: bool = False,
+        include_removed: bool = False,
         limit: int = 100,
     ) -> list[dict]:
         conditions = []
         params: list = []
 
-        if not include_disappeared:
-            conditions.append("j.disappeared_at IS NULL")
+        if not include_removed:
+            conditions.append("j.listing_status = 'active'")
 
         if company:
             conditions.append("j.company_slug = %s")
@@ -257,7 +270,7 @@ class JobStore:
         """Return active jobs with NULL description for a company."""
         rows = self.conn.execute(
             """SELECT job_id, title, ats_metadata FROM jobs
-               WHERE company_slug = %s AND description IS NULL AND disappeared_at IS NULL""",
+               WHERE company_slug = %s AND description IS NULL AND listing_status = 'active'""",
             (slug,),
         ).fetchall()
         return [dict(row) for row in rows]
@@ -279,7 +292,7 @@ class JobStore:
         conditions = [
             "description IS NOT NULL",
             "description_stripped IS NULL",
-            "disappeared_at IS NULL",
+            "listing_status = 'active'",
         ]
         params: list = []
         if slugs:
@@ -399,7 +412,7 @@ class JobStore:
             LEFT JOIN sync_status s ON j.company_slug = s.company_slug
             LEFT JOIN companies c ON j.company_slug = c.slug
             WHERE j.embedding IS NOT NULL
-              AND j.disappeared_at IS NULL
+              AND j.listing_status = 'active'
             ORDER BY j.embedding <=> %s::vector
             LIMIT %s
         """, (query_embedding, query_embedding, k)).fetchall()
@@ -417,7 +430,7 @@ class JobStore:
     ) -> list[dict]:
         """KNN search with filters on company/title/location."""
         conditions = [
-            "j.disappeared_at IS NULL",
+            "j.listing_status = 'active'",
             "j.embedding IS NOT NULL",
         ]
         params: list = [query_embedding]
@@ -465,7 +478,7 @@ class JobStore:
         """WHERE clause for jobs needing embeddings."""
         conditions = [
             "description_stripped IS NOT NULL",
-            "disappeared_at IS NULL",
+            "listing_status = 'active'",
             "embedding IS NULL",
         ]
         params: list = []
@@ -567,11 +580,11 @@ class JobStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
-    def job_count(self, include_disappeared: bool = False) -> int:
+    def job_count(self, include_removed: bool = False) -> int:
         """Total number of cached jobs."""
         sql = "SELECT COUNT(*) as cnt FROM jobs"
-        if not include_disappeared:
-            sql += " WHERE disappeared_at IS NULL"
+        if not include_removed:
+            sql += " WHERE listing_status = 'active'"
         row = self.conn.execute(sql).fetchone()
         return row["cnt"] if row else 0
 
