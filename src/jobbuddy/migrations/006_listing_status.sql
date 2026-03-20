@@ -6,9 +6,11 @@ CREATE TYPE listing_status AS ENUM ('active', 'removed');
 -- 2. Add the column (nullable for now, backfill next)
 ALTER TABLE jobs ADD COLUMN listing_status listing_status;
 
--- 3. Backfill from disappeared_at
-UPDATE jobs SET listing_status = 'active' WHERE disappeared_at IS NULL;
-UPDATE jobs SET listing_status = 'removed' WHERE disappeared_at IS NOT NULL;
+-- 3. Backfill from disappeared_at (single pass)
+UPDATE jobs SET listing_status = CASE
+    WHEN disappeared_at IS NULL THEN 'active'::listing_status
+    ELSE 'removed'::listing_status
+END;
 
 -- 4. NOT NULL + default after backfill
 ALTER TABLE jobs ALTER COLUMN listing_status SET NOT NULL;
