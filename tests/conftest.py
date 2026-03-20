@@ -111,12 +111,23 @@ def clean_tables(conninfo: str) -> None:
 
 @pytest.fixture(scope="session", autouse=True)
 def ensure_pg_schema():
-    """Apply migrations once per test session."""
+    """Apply migrations and seed test companies once per session.
+
+    Companies are seeded once and persist across all tests. Per-test cleanup
+    only touches child tables (jobs, sync_status, activity_log), avoiding
+    ~12 extra DB round-trips per test for company insert/delete.
+    """
     from jobbuddy.migrations import apply_migrations
 
     conn = psycopg.connect(TEST_CONNINFO, autocommit=True)
     apply_migrations(conn)
     conn.close()
+
+    clean_tables(TEST_CONNINFO)
+    s = JobStore(TEST_CONNINFO)
+    for company in TEST_COMPANIES:
+        s.save_company(company)
+    s.close()
 
 
 # ---------------------------------------------------------------------------
@@ -125,18 +136,13 @@ def ensure_pg_schema():
 
 
 @pytest.fixture(autouse=True)
-def test_companies():
-    """Seed standard test companies before every test, clean up after.
-
-    Autouse ensures every test has company rows available for FK constraints.
-    """
-    clean_tables(TEST_CONNINFO)
-    s = JobStore(TEST_CONNINFO)
-    for company in TEST_COMPANIES:
-        s.save_company(company)
-    s.close()
-    yield TEST_COMPANIES
-    clean_tables(TEST_CONNINFO)
+def clean_test_data():
+    """Clean child tables between tests. Companies persist from session setup."""
+    conn = psycopg.connect(TEST_CONNINFO, autocommit=True)
+    conn.execute("DELETE FROM jobs")
+    conn.execute("DELETE FROM sync_status")
+    conn.execute("DELETE FROM activity_log")
+    conn.close()
 
 
 @pytest.fixture

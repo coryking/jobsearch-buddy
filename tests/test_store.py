@@ -48,12 +48,6 @@ class TestSchema:
         with JobStore(pg_conninfo) as s:
             s.upsert_jobs("acme", [make_job("1")])
             assert s.job_count() == 1
-        # clean up
-        conn = psycopg.connect(pg_conninfo)
-        conn.execute("DELETE FROM jobs")
-        conn.execute("DELETE FROM sync_status")
-        conn.commit()
-        conn.close()
 
 
 # ---------------------------------------------------------------------------
