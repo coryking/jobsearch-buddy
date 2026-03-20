@@ -1,7 +1,8 @@
 -- Initial schema: jobs, sync_status, indexes, pgvector HNSW
 -- Safe to run against existing databases (IF NOT EXISTS everywhere)
-
-CREATE EXTENSION IF NOT EXISTS vector;
+--
+-- Prerequisite: pgvector extension must be installed by a superuser before
+-- running migrations (CREATE EXTENSION vector requires superuser).
 
 CREATE TABLE IF NOT EXISTS sync_status (
     company_slug    TEXT PRIMARY KEY,
