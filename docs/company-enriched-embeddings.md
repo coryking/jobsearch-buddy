@@ -345,6 +345,53 @@ structured filters + keyword matching) as the recommended production
 architecture. This pipeline focuses on the vector component; faceted
 filtering is a separate feature that complements it.
 
+## Validating Embedding Text (embed-test)
+
+The embedding text generator's output can't be designed by intuition alone.
+Embedding models are fixed vector mappings — there's no reasoning, no
+inference. Whether "no degree required" lands near "temporary work for a
+high school graduate" in 1536-dimensional space is an empirical question,
+not a logical one.
+
+`jsb embed-test` is a pure similarity test harness — no database, no
+pgvector. It embeds source texts and queries via the embedding API and
+prints a cosine similarity matrix.
+
+```bash
+# Test a candidate embedding text against queries
+echo "Walgreens cashier in Reno..." | jsb embed-test --stdin \
+  "part-time retail jobs near me" \
+  "pharmacy jobs in Nevada"
+
+# Compare with/without company context
+jsb embed-test \
+  -f walgreens-with-context.txt \
+  -f walgreens-without-context.txt \
+  "stable employer with benefits" \
+  "retail jobs at big companies"
+```
+
+This answers the question: does adding company context to the embedding
+text actually move the similarity scores in useful directions? If "stable
+employer with benefits" scores 0.22 against a bare JD and 0.45 with company
+context, the context is earning its keep. If the scores barely move, the
+company context isn't helping for that query class.
+
+The embedding text generator prompt (Agent 2) needs to be validated
+empirically this way — not designed from intuition about what words mean.
+
+### Key design insight: role-relevant context selection
+
+Early testing revealed that Agent 2 can't blindly concatenate the company
+profile with the JD. Walgreens' $13B technology investment and AI patent
+portfolio are relevant to a Walgreens software engineer posting. They're
+irrelevant to a cashier posting. What IS relevant for the cashier: large
+national retail pharmacy chain, 8,000+ locations, stable employer.
+
+The embedding text generator must select company context that's relevant to
+the specific role. This is a judgment call the LLM makes — which parts of
+the company profile matter for THIS job.
+
 ## What This Does NOT Do
 
 - **Faceted search.** No structured filter columns, no "WHERE industry =

@@ -1,0 +1,89 @@
+"""embed-test command: pure embedding similarity test harness.
+
+No database, no pgvector. Embeds source texts and queries via the OpenAI API,
+prints a cosine similarity matrix.
+"""
+
+import sys
+from pathlib import Path
+from typing import Optional
+
+import numpy as np
+import typer
+from rich.table import Table
+
+from jobbuddy.cli import app, console
+
+
+@app.command(name="embed-test")
+def embed_test(
+    queries: list[str] = typer.Argument(help="Query strings to test against source texts"),
+    file: Optional[list[Path]] = typer.Option(
+        None, "-f", "--file", help="Source text files (reads content as embedding input)"
+    ),
+    stdin: bool = typer.Option(
+        False, "--stdin", help="Read one source text from stdin"
+    ),
+):
+    """Test embedding similarity between source texts and queries.
+
+    Embeds source texts and queries, prints a cosine similarity matrix.
+    No database involved — pure embedding comparison.
+
+    Examples:
+        echo "Walgreens cashier..." | jsb embed-test --stdin "retail jobs" "pharmacy jobs"
+        jsb embed-test -f with-context.txt -f without-context.txt "retail jobs near me"
+    """
+    from jobbuddy.embeddings import embed_texts
+
+    # Collect source texts
+    sources: list[tuple[str, str]] = []  # (label, text)
+
+    if stdin:
+        text = sys.stdin.read().strip()
+        if not text:
+            console.print("[red]No input on stdin[/red]")
+            raise typer.Exit(1)
+        sources.append(("stdin", text))
+
+    if file:
+        for path in file:
+            if not path.exists():
+                console.print(f"[red]File not found: {path}[/red]")
+                raise typer.Exit(1)
+            sources.append((path.stem, path.read_text().strip()))
+
+    if not sources:
+        console.print("[red]Provide at least one source via --file or --stdin[/red]")
+        raise typer.Exit(1)
+
+    if not queries:
+        console.print("[red]Provide at least one query argument[/red]")
+        raise typer.Exit(1)
+
+    # Embed everything in one batch
+    all_texts = [text for _, text in sources] + list(queries)
+    console.print(f"[dim]Embedding {len(sources)} source(s) + {len(queries)} query/queries...[/dim]")
+    vectors, tokens = embed_texts(all_texts)
+    console.print(f"[dim]{tokens} tokens[/dim]")
+
+    source_vecs = np.array(vectors[:len(sources)])
+    query_vecs = np.array(vectors[len(sources):])
+
+    # Cosine similarity matrix (vectors are L2-normalized by OpenAI)
+    similarities = query_vecs @ source_vecs.T
+
+    # Build table
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("Query", style="cyan", no_wrap=False, max_width=50)
+    for label, _ in sources:
+        table.add_column(label, justify="right", style="green")
+
+    for i, query in enumerate(queries):
+        row = [query]
+        for j in range(len(sources)):
+            score = similarities[i, j]
+            row.append(f"{score:.4f}")
+        table.add_row(*row)
+
+    console.print(table)

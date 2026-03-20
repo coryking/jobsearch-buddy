@@ -91,6 +91,7 @@ jsb companies                               # List registered companies
 jsb save <company> <job_ids...> [-o DIR]    # Save listings as markdown
 jsb lookup <url>                            # Fetch single job details
 jsb log <url> [-a ACTION] [-p PERSON] [-n NOTES] [-d DATE]  # Log application
+jsb embed-test [-f FILE...] [--stdin] QUERIES...            # Pure embedding similarity test (no DB)
 ```
 
 ## Supported ATS Platforms
