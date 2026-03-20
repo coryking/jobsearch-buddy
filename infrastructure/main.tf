@@ -50,7 +50,7 @@ resource "azurerm_postgresql_flexible_server" "postgres" {
   location            = azurerm_resource_group.rg.location
 
   sku_name = "B_Standard_B1ms"
-  version  = "16"
+  version  = "18"
 
   storage_mb = 32768
 
