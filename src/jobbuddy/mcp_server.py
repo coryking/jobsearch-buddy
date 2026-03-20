@@ -606,6 +606,15 @@ def build_azure_auth():
 
 def main():
     if os.environ.get("ENTRA_OAUTH_CLIENT_ID"):
+        # Configure Azure Monitor telemetry before other setup so logging is captured
+        conn_str = os.environ.get("APPLICATIONINSIGHTS_CONNECTION_STRING")
+        if conn_str:
+            from azure.monitor.opentelemetry import configure_azure_monitor
+            configure_azure_monitor(
+                connection_string=conn_str,
+                disable_offline_storage=True,
+            )
+
         logging.basicConfig(
             level=logging.INFO,
             format="%(asctime)s %(name)s %(levelname)s %(message)s",

@@ -10,5 +10,15 @@
       "DefaultAuthorizationLevel": "anonymous"
     },
     "port": "8000"
+  },
+  "logging": {
+    "applicationInsights": {
+      "samplingSettings": {
+        "isEnabled": false
+      }
+    },
+    "logLevel": {
+      "default": "Warning"
+    }
   }
 }

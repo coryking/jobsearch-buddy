@@ -74,7 +74,31 @@ resource "azurerm_postgresql_flexible_server_database" "db" {
 resource "azurerm_postgresql_flexible_server_configuration" "allowed_extensions" {
   name      = "azure.extensions"
   server_id = azurerm_postgresql_flexible_server.postgres.id
-  value     = "VECTOR,UUID-OSSP,PG_TRGM,BTREE_GIN,BTREE_GIST"
+  value     = "VECTOR,UUID-OSSP,PG_TRGM,BTREE_GIN,BTREE_GIST,PG_STAT_STATEMENTS"
+}
+
+resource "azurerm_postgresql_flexible_server_configuration" "shared_preload_libraries" {
+  name      = "shared_preload_libraries"
+  server_id = azurerm_postgresql_flexible_server.postgres.id
+  value     = "pg_stat_statements"
+}
+
+resource "azurerm_postgresql_flexible_server_configuration" "log_min_duration" {
+  name      = "log_min_duration_statement"
+  server_id = azurerm_postgresql_flexible_server.postgres.id
+  value     = "1000"
+}
+
+resource "azurerm_postgresql_flexible_server_configuration" "track_io_timing" {
+  name      = "track_io_timing"
+  server_id = azurerm_postgresql_flexible_server.postgres.id
+  value     = "on"
+}
+
+resource "azurerm_postgresql_flexible_server_configuration" "pg_stat_statements_track" {
+  name      = "pg_stat_statements.track"
+  server_id = azurerm_postgresql_flexible_server.postgres.id
+  value     = "top"
 }
 
 # Firewall Rules
