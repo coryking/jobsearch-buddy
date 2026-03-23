@@ -1,4 +1,4 @@
-"""Job operations commands: save, lookup."""
+"""Job operations commands: save, lookup, add-company."""
 
 import json
 from pathlib import Path
@@ -12,9 +12,9 @@ from jobbuddy.core import (
     result_to_dict,
     save_job_listing,
 )
-from jobbuddy.fetchers import get_fetcher
+from jobbuddy.fetchers import SUPPORTED_ATS_TYPES, get_fetcher
 from jobbuddy.models import Company, slugify
-from jobbuddy.registry import list_companies, lookup_by_name
+from jobbuddy.registry import list_companies, lookup_by_name, register_company
 
 
 def _resolve_company(name: str) -> Company:
@@ -26,6 +26,23 @@ def _resolve_company(name: str) -> Company:
         console.print(f"Available: {', '.join(companies.keys())}")
         raise SystemExit(1)
     return company
+
+
+@app.command("add-company")
+def add_company(
+    name: str = typer.Argument(help="Company display name (e.g. 'SeekOut')"),
+    ats: str = typer.Option(..., "--ats", "-a", help=f"ATS type: {', '.join(sorted(SUPPORTED_ATS_TYPES))}"),
+    board: str | None = typer.Option(None, "--board", "-b", help="Board slug (defaults to slugified name)"),
+):
+    """Register a new company in the job board registry."""
+    if ats not in SUPPORTED_ATS_TYPES:
+        console.print(f"[red]Unknown ATS '{ats}'. Valid types: {', '.join(sorted(SUPPORTED_ATS_TYPES))}[/red]")
+        raise SystemExit(1)
+    if lookup_by_name(name):
+        console.print(f"[yellow]'{name}' is already registered.[/yellow]")
+        raise SystemExit(1)
+    company = register_company(name, ats=ats, board=board)
+    console.print(f"[green]Added:[/green] {company.name} (slug={company.slug}, ats={company.ats}, board={company.board})")
 
 
 @app.command()
