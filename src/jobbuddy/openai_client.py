@@ -25,11 +25,12 @@ def create_openai_client(**kwargs) -> OpenAI:
 
     if s.openai_azure_api_version and not s.openai_api_key:
         # Managed identity mode (Azure Functions)
-        from azure.identity import DefaultAzureCredential, get_bearer_token_provider
+        from azure.identity import get_bearer_token_provider
 
-        credential = DefaultAzureCredential()
+        from jobbuddy.settings import get_azure_credential
+
         token_provider = get_bearer_token_provider(
-            credential, "https://cognitiveservices.azure.com/.default"
+            get_azure_credential(), "https://cognitiveservices.azure.com/.default"
         )
         return AzureOpenAI(
             azure_endpoint=s.openai_base_url,  # type: ignore[arg-type]

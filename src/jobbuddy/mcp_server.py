@@ -341,17 +341,6 @@ def search_jobs(
     Returns the company registry if the company name isn't found."""
     from jobbuddy.search import VectorSearch
 
-    try:
-        from jobbuddy.store import JobStore
-        test_store = JobStore()
-        has_data = test_store.cache_exists()
-        test_store.close()
-        if not has_data:
-            return "No cached job data. Run `jsb sync` in the terminal to populate the cache."
-    except Exception:
-        logging.exception("Database connection failed")
-        return "Cannot connect to database. Check pg_service.conf configuration."
-
     # Require at least a title or semantic query
     if not title_filter and not query:
         return (
@@ -547,10 +536,11 @@ def build_azure_auth():
     Reads ENTRA_OAUTH_* env vars for OAuth config and uses managed identity
     (AZURE_CLIENT_ID) to authenticate to Azure Managed Redis for state storage.
     """
-    from azure.identity import DefaultAzureCredential
     from fastmcp.server.auth.providers.azure import AzureProvider
     from key_value.aio.stores.redis import RedisStore
     from redis.asyncio import Redis
+
+    from jobbuddy.settings import get_azure_token
 
     oauth_client_id = os.environ["ENTRA_OAUTH_CLIENT_ID"]
     oauth_client_secret = os.environ["ENTRA_OAUTH_CLIENT_SECRET"]
@@ -568,15 +558,14 @@ def build_azure_auth():
         raise RuntimeError("AZURE_CLIENT_ID not set — cannot authenticate to Redis")
 
     log.info("Acquiring Entra token for Redis")
-    credential = DefaultAzureCredential()
-    token = credential.get_token("https://redis.azure.com/.default")
+    token = get_azure_token("https://redis.azure.com/.default")
 
     client = Redis(
         host=redis_host,
         port=redis_port,
         ssl=True,
         username=managed_identity_client_id,
-        password=token.token,
+        password=token,
         decode_responses=True,
     )
 

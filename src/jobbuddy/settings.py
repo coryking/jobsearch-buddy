@@ -4,7 +4,7 @@ Priority (highest to lowest):
   explicit kwargs > env vars (JOBBUDDY_*) > defaults
 
 Settings are inert data — no network calls, no side effects. Token fetching
-for Azure Entra auth happens at connection time in pg_connect().
+for Azure Entra auth happens at connection time via get_azure_token().
 """
 
 from __future__ import annotations
@@ -59,7 +59,7 @@ class Settings(BaseSettings):
         """Base connection info string (no credentials).
 
         Returns the pg_service reference or host-based URI template.
-        For Azure auth, use pg_connect() which adds the Entra token.
+        For Azure auth, use pg_conninfo_with_token() which adds the Entra token.
         """
         if self.postgres_host:
             return (
@@ -87,26 +87,46 @@ def get_settings() -> Settings:
     return _settings
 
 
-def _get_azure_token() -> str:
-    """Fetch an Azure Entra token for PostgreSQL. Cached internally by DefaultAzureCredential."""
-    from azure.identity import DefaultAzureCredential
+# ---------------------------------------------------------------------------
+# Azure Entra credential + token helpers
+# ---------------------------------------------------------------------------
 
-    return DefaultAzureCredential().get_token(
-        "https://ossrdbms-aad.database.windows.net/.default"
-    ).token
+_azure_credential = None
+
+
+def get_azure_credential():
+    """Return a singleton DefaultAzureCredential.
+
+    One instance shared across all Azure auth (DB, OpenAI, Redis, etc.)
+    so MSAL's in-memory token cache persists for the process lifetime.
+    Tokens are valid ~60 min; MSAL auto-refreshes within 5 min of expiry.
+    """
+    global _azure_credential
+    if _azure_credential is None:
+        from azure.identity import DefaultAzureCredential
+        _azure_credential = DefaultAzureCredential()
+    return _azure_credential
+
+
+def get_azure_token(scope: str) -> str:
+    """Fetch an Azure Entra token for the given resource scope.
+
+    Uses the singleton credential so repeated calls for the same scope
+    return a cached token until near expiry.
+    """
+    return get_azure_credential().get_token(scope).token
 
 
 def pg_conninfo_with_token(settings: Settings | None = None) -> str:
     """Build a connection string, adding an Azure Entra token if needed.
 
-    This is the only place token fetching happens. Called at connection time
-    by pg_connect() and store._connect().
+    Called at connection time by store._connect().
     """
     s = settings or get_settings()
     if not s.needs_azure_token:
         return s.pg_conninfo
 
-    token = _get_azure_token()
+    token = get_azure_token("https://ossrdbms-aad.database.windows.net/.default")
     if s.postgres_host:
         return (
             f"postgresql://{s.postgres_user}:{token}"
