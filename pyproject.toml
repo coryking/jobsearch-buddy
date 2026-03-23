@@ -1,7 +1,7 @@
 [project]
 name = "jobsearch-buddy"
 version = "0.1.0"
-description = "Job search tool with ATS scraping, SQLite cache, vector search, and MCP server"
+description = "Job search tool with ATS scraping, PostgreSQL/pgvector cache, vector search, and cloud-hosted MCP server"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
