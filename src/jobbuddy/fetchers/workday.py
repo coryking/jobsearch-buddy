@@ -1,13 +1,36 @@
 """Workday ATS fetcher."""
 
 import logging
+import re
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import date, timedelta
 
 from jobbuddy.fetchers.base import ATSFetcher, JobList, ProgressCallback, RetryCallback
 from jobbuddy.models import Job, strip_html
 
 log = logging.getLogger(__name__)
+
+
+def _parse_posted_on(value: str | None) -> date | None:
+    """Parse Workday postedOn field, which may be ISO date or relative like 'Posted Today'."""
+    if not value:
+        return None
+    # Try ISO date first (some instances return "2026-03-20")
+    try:
+        return date.fromisoformat(value[:10])
+    except ValueError:
+        pass
+    # Relative dates: "Posted Today", "Posted Yesterday", "Posted 3 Days Ago", "Posted 30+ Days Ago"
+    v = value.lower().strip()
+    if "today" in v:
+        return date.today()
+    if "yesterday" in v:
+        return date.today() - timedelta(days=1)
+    m = re.search(r"(\d+)\+?\s*days?\s*ago", v)
+    if m:
+        return date.today() - timedelta(days=int(m.group(1)))
+    return None
 
 
 def _wd_base(wd_company: str, wd_instance: int) -> str:
@@ -48,7 +71,7 @@ class WorkdayFetcher(ATSFetcher):
                 location=p.get("locationsText", ""),
                 url=f"{base}/{self.board}{ext_path}",
                 apply_url=f"{base}/{self.board}{ext_path}",
-                published_at=p.get("postedOn"),
+                published_at=_parse_posted_on(p.get("postedOn")),
                 department=None,
                 team=None,
                 ats_metadata={"ext_path": ext_path} if ext_path else None,
