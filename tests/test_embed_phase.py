@@ -220,6 +220,50 @@ class TestEmbedPhase:
         assert mock_embed.call_count <= 10
 
     @patch("jobbuddy.sync.embed.embed_texts")
+    def test_poison_pill_does_not_punish_batchmates(self, mock_embed, pg_conninfo):
+        """One bad record in a batch must not prevent its healthy batchmates
+        from being embedded. Reviewer-requested regression test.
+
+        Old behavior: `_process_batch` failed with one bad job in the batch
+        → every job in the batch got `failures[] += 1` → after MAX_RETRIES
+        of recurring unordered batches, all batchmates got skipped alongside
+        the poison. On a small dataset this silently lost healthy embeddings.
+
+        New behavior: bisection isolates the poison pill; healthy jobs get
+        embedded in the half that doesn't contain the bad record, and only
+        the culprit accumulates retry count.
+        """
+        _seed_embed_ready(pg_conninfo, "acme", [
+            (str(i), f"job text {i}") for i in range(5)
+        ])
+
+        def selective_fail(texts: list[str]):
+            # "poison" appears only in job 0's stripped text
+            if any("acme-0" in t for t in texts):
+                raise Exception("poison pill")
+            return _fake_embed(texts)
+
+        mock_embed.side_effect = selective_fail
+
+        display = PhaseState("Embed")
+        EmbedPhase(pg_conninfo, display=display).run()
+
+        # All four healthy jobs should end up embedded; only the poison pill
+        # gets skipped after MAX_RETRIES.
+        store = JobStore(pg_conninfo)
+        embedded_ids = {
+            r["job_id"] for r in store.conn.execute(
+                """SELECT j.job_id FROM job_embeddings e
+                   JOIN jobs j ON e.job_id = j.id"""
+            ).fetchall()
+        }
+        store.close()
+        assert embedded_ids == {"1", "2", "3", "4"}, (
+            f"poison pill took batchmates down with it: embedded={embedded_ids}"
+        )
+        assert display.status == "idle"
+
+    @patch("jobbuddy.sync.embed.embed_texts")
     def test_transient_failure_then_recovery(self, mock_embed, pg_conninfo):
         """A single transient failure doesn't prevent successful embedding on retry."""
         _seed_embed_ready(pg_conninfo, "acme", [

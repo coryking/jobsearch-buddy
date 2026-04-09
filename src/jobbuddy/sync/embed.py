@@ -4,19 +4,33 @@ Embed is intentionally single-threaded. `embed_texts()` paces itself with
 the `x-ratelimit-remaining-tokens` header (see embeddings.py), which is
 enough to saturate the provider TPM quota from one worker. Running wider
 was the source of a prefetch/dedupe race that re-embedded jobs several
-times per run: the producer loop would re-poll while a worker was mid-API
-call, build a batch with a different tuple shape, and the in-memory
-dedupe set keyed on that tuple wouldn't catch the overlap.
+times per run.
 
-The fix is to not prefetch at all. This phase runs a plain synchronous
-loop — poll, embed, write, repeat — so a job is eligible for exactly as
-long as it takes for its write to commit. No work queue, no thread pool,
-no dispatched set, no over-fetch trick.
+Mechanism of the old bug (for the next person tempted to re-parallelize):
+
+  1. `JobStore.list_jobs_needing_embeddings()` has no `ORDER BY`. Under
+     `LIMIT N`, Postgres is free to return any N matching rows in any
+     order, and does.
+  2. `WorkerPhase.run()` over-fetched (`poll_limit = batch_size + len(dispatched)`)
+     so polls taken while a worker was mid-API-call returned a DIFFERENT
+     row set than the batch currently in flight.
+  3. The in-memory dedupe set was keyed on the whole-batch tuple
+     `tuple(job_ids)`. Different row set → different tuple → not in
+     dispatched → re-queued. Every overlapping job got embedded a second
+     time (or third, or fourth).
+
+Tuple-keyed dedup was doomed the moment the underlying query was
+unordered. This phase runs a plain synchronous loop — poll, embed, write,
+repeat — so committed rows leave the `WHERE` clause before the next poll
+and the whole race class stops existing.
 
 Trade-off: no intra-phase parallelism. Re-introduce a dispatcher only if
 you switch to a provider that can't hit its TPM budget from a single
-worker, and be careful to key dedup on individual job ids, not batch
-tuples (that's what broke before).
+worker, and:
+  - Key dedup on individual job ids, not batch tuples
+  - Add `ORDER BY j.id` to `list_jobs_needing_embeddings` for determinism
+  - Don't trust the in-memory dedup set alone — let the DB query be the
+    source of truth about what still needs work
 """
 
 from __future__ import annotations
@@ -158,22 +172,7 @@ class EmbedPhase:
 
                 self.display.active_workers = 1
                 try:
-                    self._process_batch(batch)
-                except Exception as e:
-                    self.display.record_error()
-                    log.warning(
-                        "Embed batch failed (%d jobs): %s: %s",
-                        len(batch), type(e).__name__, e,
-                    )
-                    for job in batch:
-                        failures[job["id"]] += 1
-                        if failures[job["id"]] >= self.MAX_RETRIES:
-                            log.error(
-                                "Giving up on embed for %s/%s after %d failures",
-                                job["company_slug"], job["job_id"],
-                                failures[job["id"]],
-                            )
-                            skipped.add(job["id"])
+                    self._process_and_isolate(batch, failures, skipped)
                 finally:
                     self.display.active_workers = 0
 
@@ -199,6 +198,51 @@ class EmbedPhase:
     # -----------------------------------------------------------------
     # Batch processing
     # -----------------------------------------------------------------
+
+    def _process_and_isolate(
+        self,
+        batch: EmbedBatch,
+        failures: dict[int, int],
+        skipped: set[int],
+    ) -> None:
+        """Process a batch, bisecting on failure to isolate poison pills.
+
+        Only size-1 leaves charge `failures[]`. When a multi-item batch
+        fails, we split it in half and recurse — healthy jobs get embedded
+        in the half that doesn't contain the bad record, and only the
+        actual culprit accumulates retry count toward MAX_RETRIES.
+
+        Under a fully-transient failure (network down, provider outage),
+        every leaf fails and every job gets charged once per outer poll
+        iteration, which is the same behavior as a flat batch-level
+        failure would give. Worst case: ~2N API calls for an N-item
+        batch where every job is bad.
+        """
+        try:
+            self._process_batch(batch)
+            return
+        except Exception as e:
+            self.display.record_error()
+            log.warning(
+                "Embed batch failed (%d jobs): %s: %s",
+                len(batch), type(e).__name__, e,
+            )
+
+        if len(batch) == 1:
+            job = batch[0]
+            jid = job["id"]
+            failures[jid] += 1
+            if failures[jid] >= self.MAX_RETRIES:
+                log.error(
+                    "Giving up on embed for %s/%s after %d failures",
+                    job["company_slug"], job["job_id"], failures[jid],
+                )
+                skipped.add(jid)
+            return
+
+        mid = len(batch) // 2
+        self._process_and_isolate(batch[:mid], failures, skipped)
+        self._process_and_isolate(batch[mid:], failures, skipped)
 
     def _process_batch(self, batch: EmbedBatch) -> None:
         """Embed one batch and write results synchronously.
