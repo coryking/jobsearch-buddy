@@ -150,12 +150,19 @@ up front by `validate_sync_config()` before any I/O. The orchestrator
 All phases update `PhaseState` objects directly for display. The fetch phase
 uses the same pattern as enrich/strip/embed — no event queue.
 
-Each phase (enrich, strip, embed) extends the `WorkerPhase` ABC (`sync/base.py`),
+`EnrichPhase` and `StripPhase` extend the `WorkerPhase` ABC (`sync/base.py`),
 which provides: DB polling for work items, `ThreadPoolExecutor` parallelism,
-per-thread DB connections, graceful shutdown via `threading.Event`, and display
-state updates. Phases poll the database for unprocessed items, process them in
-worker threads, and write results back. This decouples phases — each can run
-independently via phase selection (`jsb sync strip`, `jsb sync embed`).
+per-thread DB connections via a single-threaded `WriteQueue`, graceful shutdown
+via `threading.Event`, and display state updates. Phases poll the database
+for unprocessed items, process them in worker threads, and write results back.
+This decouples phases — each can run independently via phase selection
+(`jsb sync strip`, `jsb sync embed`).
+
+`EmbedPhase` does NOT extend `WorkerPhase`. It runs a synchronous, single-threaded
+poll → embed → write loop. `embed_texts()` saturates the TPM quota from one
+worker via header-based pacing, so the parallel machinery wasn't helping —
+and its prefetch-ahead dedup set (keyed on batch tuples) was the source of a
+race that re-embedded each job 3–4× per sync. See `sync/embed.py` for details.
 
 **Rate limiting:** Embedding pacing uses `x-ratelimit-remaining-tokens` response
 headers. If your provider returns these headers, pacing activates automatically.
