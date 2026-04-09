@@ -91,17 +91,27 @@ serialization natively via psycopg.
 
 ### DB-as-Queue Pattern
 
-Phases 2-4 extend the `WorkerPhase` ABC (`sync/base.py`). Each phase polls the
-database for unprocessed work items, processes them in a `ThreadPoolExecutor`,
-and writes results back. This decouples phases from each other — the database
-is the coordination mechanism, not in-memory queues or callbacks.
+`EnrichPhase` and `StripPhase` extend the `WorkerPhase` ABC (`sync/base.py`).
+Each polls the database for unprocessed work items, processes them in a
+`ThreadPoolExecutor`, and writes results back through a single-threaded
+`WriteQueue`. The database is the coordination mechanism — no in-memory
+queues between phases.
 
 `WorkerPhase` provides:
 - `count_remaining()` / `poll_work(batch_size)` / `process_item(item)` — abstract methods subclasses implement
 - `ThreadPoolExecutor` with configurable `max_workers`
-- Per-thread DB connections via `threading.local()` and `_get_thread_store()`
+- Single-threaded `WriteQueue` for all DB writes
 - Graceful shutdown via `threading.Event`
 - `PhaseState` display updates on advance/error
+
+**`EmbedPhase` is the exception.** It does *not* extend `WorkerPhase`; it
+runs a plain synchronous poll → embed → write loop on a single thread.
+`embed_texts()` (in `embeddings.py`) paces itself with the provider's
+`x-ratelimit-remaining-tokens` header, which saturates the TPM quota from
+one worker, so the parallel machinery wasn't buying anything — and its
+prefetch-ahead dedup set (keyed on batch tuples) was the source of a race
+that re-embedded each job several times per sync. See the docstring in
+`sync/embed.py` for details.
 
 ### Display
 
