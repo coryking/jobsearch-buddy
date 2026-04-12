@@ -132,7 +132,10 @@ resource "azurerm_function_app_flex_consumption" "mcp" {
     JOBBUDDY_POSTGRES_USER     = azurerm_user_assigned_identity.app_identity.name
 
     # OpenAI (Azure AI Foundry via managed identity — no API key)
-    JOBBUDDY_OPENAI_BASE_URL          = "https://westus3.api.cognitive.microsoft.com/"
+    # Must be the custom-subdomain endpoint, not the regional generic endpoint.
+    # Managed-identity (bearer-token) auth is rejected by *.api.cognitive.microsoft.com
+    # with "Please provide a custom subdomain for token authentication".
+    JOBBUDDY_OPENAI_BASE_URL          = data.azurerm_cognitive_account.openai.endpoint
     JOBBUDDY_OPENAI_AZURE_API_VERSION = "2024-12-01-preview"
     JOBBUDDY_STRIP_MODEL              = "gpt-5-nano"
     JOBBUDDY_EMBEDDING_MODEL          = "text-embedding-3-small"
