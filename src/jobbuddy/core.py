@@ -37,6 +37,18 @@ def parse_duration_to_date(value: str) -> str:
     return (date.today() - delta).isoformat()
 
 
+def resolve_exclude_companies(exclude_csv: str) -> list[str]:
+    """Parse comma-separated company names/slugs into resolved slug list."""
+    slugs = []
+    for name in exclude_csv.split(","):
+        name = name.strip()
+        if not name:
+            continue
+        resolved = lookup_by_name(name)
+        slugs.append(resolved.slug if resolved else name)
+    return slugs
+
+
 def fetch_from_url(url: str) -> FetchResult:
     """Parse a URL, resolve/register company, fetch job.
 

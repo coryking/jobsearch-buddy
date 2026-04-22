@@ -156,13 +156,8 @@ def search(
 
     exclude_slugs = None
     if exclude:
-        exclude_slugs = []
-        for name in exclude.split(","):
-            name = name.strip()
-            if not name:
-                continue
-            resolved = lookup_by_name(name)
-            exclude_slugs.append(resolved.slug if resolved else name)
+        from jobbuddy.core import resolve_exclude_companies
+        exclude_slugs = resolve_exclude_companies(exclude)
 
     try:
         store = JobStore()

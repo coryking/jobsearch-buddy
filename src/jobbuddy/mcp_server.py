@@ -362,13 +362,8 @@ def search_jobs(
     # Resolve exclude list
     exclude_slugs = None
     if exclude_companies:
-        exclude_slugs = []
-        for name in exclude_companies.split(","):
-            name = name.strip()
-            if not name:
-                continue
-            resolved = lookup_by_name(name)
-            exclude_slugs.append(resolved.slug if resolved else name)
+        from jobbuddy.core import resolve_exclude_companies
+        exclude_slugs = resolve_exclude_companies(exclude_companies)
 
     max_results = 100
 

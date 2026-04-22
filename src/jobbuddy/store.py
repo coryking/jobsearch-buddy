@@ -251,10 +251,8 @@ class JobStore:
         conditions, params = self._build_filter_conditions(
             company=company, exclude_companies=exclude_companies,
             title=title, location=location, posted_after=posted_after,
+            include_removed=include_removed,
         )
-
-        if include_removed:
-            conditions = [c for c in conditions if c != "j.listing_status = 'active'"]
 
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
 
@@ -297,7 +295,7 @@ class JobStore:
             params.append(limit)
 
         rows = self.conn.execute(sql, params).fetchall()
-        return [dict(row) for row in rows]
+        return [{k: v for k, v in dict(row).items() if k != "rn"} for row in rows]
 
     def get_jobs_needing_descriptions(self, slug: str) -> list[dict]:
         """Return active jobs with NULL description for a company."""
@@ -484,17 +482,21 @@ class JobStore:
         title: str | None = None,
         location: str | None = None,
         posted_after: str | None = None,
+        include_removed: bool = False,
     ) -> tuple[list[str], list]:
         """Build WHERE conditions and params for job search filters."""
-        conditions = ["j.listing_status = 'active'"]
+        conditions: list[str] = []
         params: list = []
+
+        if not include_removed:
+            conditions.append("j.listing_status = 'active'")
 
         if company:
             conditions.append("j.company_slug = %s")
             params.append(company)
 
         if exclude_companies:
-            conditions.append("j.company_slug != ALL(%s)")
+            conditions.append("NOT (j.company_slug = ANY(%s))")
             params.append(exclude_companies)
 
         if posted_after:
@@ -576,7 +578,7 @@ class JobStore:
         vec_params.extend([self.DIVERSITY_FLOOR_MULTIPLIER, k])
 
         rows = self.conn.execute(sql, vec_params).fetchall()
-        return [dict(r) for r in rows]
+        return [{k: v for k, v in dict(r).items() if k != "rn"} for r in rows]
 
     def _embedding_base_query(self, slugs: list[str] | None = None) -> tuple[str, str, list]:
         """Base FROM/WHERE for jobs needing embeddings (hash mismatch or missing)."""
