@@ -346,8 +346,29 @@ def _parse_talentbrew(url: str) -> ParsedURL | None:
 # https://careers.gulfstream.com/job/{slug}/{numericId}/
 
 def _parse_successfactors(url: str) -> ParsedURL | None:
-    from jobbuddy.fetchers.successfactors import parse_successfactors_url
-    return parse_successfactors_url(url)
+    parsed = urlparse(url)
+    host = parsed.hostname or ""
+
+    m = re.search(r"/job/[^/]+/(\d+)", parsed.path)
+    if not m:
+        return None
+
+    job_id = m.group(1)
+
+    from jobbuddy.registry import load_registry
+
+    for slug, company in load_registry().items():
+        if company.ats != "successfactors":
+            continue
+        extras = company.model_extra or {}
+        careers_url = extras.get("careers_url", "")
+        if not careers_url:
+            continue
+        careers_host = urlparse(careers_url).hostname or ""
+        if careers_host == host:
+            return ParsedURL(ats="successfactors", board=slug, job_id=job_id)
+
+    return None
 
 
 # ---------------------------------------------------------------------------

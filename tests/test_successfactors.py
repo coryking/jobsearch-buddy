@@ -345,7 +345,7 @@ class TestFetchDescription:
 
 
 class TestURLParsing:
-    @patch("jobbuddy.fetchers.successfactors.load_registry")
+    @patch("jobbuddy.registry.load_registry")
     def test_parse_paccar_url(self, mock_registry):
         """Parse a PACCAR SuccessFactors job URL."""
         from jobbuddy.models import Company
@@ -366,7 +366,7 @@ class TestURLParsing:
         assert result.board == "paccar"
         assert result.job_id == "1260533301"
 
-    @patch("jobbuddy.fetchers.successfactors.load_registry")
+    @patch("jobbuddy.registry.load_registry")
     def test_parse_gulfstream_url(self, mock_registry):
         """Parse a Gulfstream SuccessFactors job URL."""
         from jobbuddy.models import Company
@@ -387,7 +387,7 @@ class TestURLParsing:
         assert result.board == "gulfstream"
         assert result.job_id == "1367050300"
 
-    @patch("jobbuddy.fetchers.successfactors.load_registry")
+    @patch("jobbuddy.registry.load_registry")
     def test_no_match_for_unknown_host(self, mock_registry):
         """Returns None for a host not in the registry."""
         from jobbuddy.models import Company

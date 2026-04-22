@@ -169,12 +169,12 @@ class SuccessFactorsFetcher(ATSFetcher):
     ) -> JobList:
         self._require_config()
 
-        # Fetch page 1 to learn total
-        resp = self._retry_request(
-            lambda: self.client.get(self._search_url(1)),
-            on_retry=on_retry,
-        )
-        resp.raise_for_status()
+        def _fetch_page1():
+            resp = self.client.get(self._search_url(1))
+            resp.raise_for_status()
+            return resp
+
+        resp = self._retry_request(_fetch_page1, on_retry=on_retry)
         jobs, total = self._parse_search_html(resp.text)
         if on_progress:
             on_progress(len(jobs), total)
@@ -188,11 +188,11 @@ class SuccessFactorsFetcher(ATSFetcher):
         lock = threading.Lock()
 
         def _fetch_page(page: int) -> list[Job]:
-            page_resp = self._retry_request(
-                lambda p=page: self.client.get(self._search_url(p)),
-                on_retry=on_retry,
-            )
-            page_resp.raise_for_status()
+            def _do_fetch():
+                resp = self.client.get(self._search_url(page))
+                resp.raise_for_status()
+                return resp
+            page_resp = self._retry_request(_do_fetch, on_retry=on_retry)
             page_jobs, _ = self._parse_search_html(page_resp.text)
             return page_jobs
 
@@ -221,15 +221,34 @@ class SuccessFactorsFetcher(ATSFetcher):
         raise ValueError(f"Job ID {job_id} not found on {self.name}.")
 
     def _extract_description(self, html: str) -> str | None:
-        """Extract job description from a detail page's jobdescription div."""
-        match = re.search(
-            r'<div class="jobdescription">(.*?)</div>',
-            html,
-            re.DOTALL,
-        )
-        if not match:
+        """Extract job description from a detail page's jobdescription div.
+
+        Handles nested <div> tags by counting open/close pairs to find the
+        balanced closing tag, rather than stopping at the first </div>.
+        """
+        marker = '<div class="jobdescription">'
+        start = html.find(marker)
+        if start == -1:
             return None
-        return strip_html(match.group(1))
+        inner_start = start + len(marker)
+
+        depth = 1
+        pos = inner_start
+        while depth > 0 and pos < len(html):
+            next_open = html.find("<div", pos)
+            next_close = html.find("</div>", pos)
+            if next_close == -1:
+                break
+            if next_open != -1 and next_open < next_close:
+                depth += 1
+                pos = next_open + 4
+            else:
+                depth -= 1
+                if depth == 0:
+                    return strip_html(html[inner_start:next_close])
+                pos = next_close + 6
+
+        return strip_html(html[inner_start:])
 
     def fetch_description(self, job_id: str, metadata: dict | None = None) -> str | None:
         """Fetch description from the job detail page."""
@@ -248,47 +267,10 @@ class SuccessFactorsFetcher(ATSFetcher):
             log.warning("No URL found for job %s, cannot fetch description", job_id)
             return None
 
-        resp = self._retry_request(lambda: self.client.get(url))
-        resp.raise_for_status()
+        def _fetch_detail():
+            resp = self.client.get(url)
+            resp.raise_for_status()
+            return resp
+
+        resp = self._retry_request(_fetch_detail)
         return self._extract_description(resp.text)
-
-
-# ---------------------------------------------------------------------------
-# URL parser (called from url.py)
-# ---------------------------------------------------------------------------
-
-
-def load_registry():
-    """Load company registry. Separated for test patching."""
-    from jobbuddy.registry import load_registry as reg_load
-    return reg_load()
-
-
-def parse_successfactors_url(url: str) -> "ParsedURL | None":
-    """Parse a SuccessFactors job URL using reverse-lookup against the registry."""
-    from urllib.parse import urlparse
-
-    from jobbuddy.url import ParsedURL
-
-    # Match /job/{slug}/{numericId} in path
-    m = re.search(r"/job/[^/]+/(\d+)", url)
-    if not m:
-        return None
-
-    job_id = m.group(1)
-    parsed = urlparse(url)
-    host = parsed.hostname or ""
-
-    # Reverse-lookup: find the successfactors company whose careers_url matches this host
-    for slug, company in load_registry().items():
-        if company.ats != "successfactors":
-            continue
-        extras = company.model_extra or {}
-        careers_url = extras.get("careers_url", "")
-        if not careers_url:
-            continue
-        careers_host = urlparse(careers_url).hostname or ""
-        if careers_host == host:
-            return ParsedURL(ats="successfactors", board=slug, job_id=job_id)
-
-    return None
