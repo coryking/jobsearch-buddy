@@ -174,15 +174,6 @@ class TestSearchDiversity:
         assert "good" in companies
         assert companies.count("acme") < len(results)
 
-    def test_diversity_round_robin_keyword(self, multi_company_vs):
-        """Keyword search distributes results across companies."""
-        results = multi_company_vs.search(title="Engineer", limit=15)
-        companies = [r.job["company_slug"] for r in results]
-        assert "acme" in companies
-        assert "beta" in companies
-        assert "good" in companies
-        assert companies.count("acme") < len(results)
-
     def test_exclude_companies_vector(self, multi_company_vs):
         """Excluded companies don't appear in vector search results."""
         query_vec = _fake_vec(DIMS, seed=100).tolist()
@@ -194,16 +185,6 @@ class TestSearchDiversity:
         assert "acme" not in companies
         assert len(results) > 0
 
-    def test_exclude_companies_keyword(self, multi_company_vs):
-        """Excluded companies don't appear in keyword search results."""
-        results = multi_company_vs.search(
-            title="Engineer", exclude_companies=["acme", "beta"], limit=15
-        )
-        companies = {r.job["company_slug"] for r in results}
-        assert "acme" not in companies
-        assert "beta" not in companies
-        assert "good" in companies
-
     def test_no_rn_in_results(self, multi_company_vs):
         """The internal rn column doesn't leak into result dicts."""
         query_vec = _fake_vec(DIMS, seed=100).tolist()
@@ -212,25 +193,29 @@ class TestSearchDiversity:
         for r in results:
             assert "rn" not in r.job
 
-        results_kw = multi_company_vs.search(title="Engineer", limit=5)
-        for r in results_kw:
-            assert "rn" not in r.job
 
-    def test_single_company_skips_diversity(self, multi_company_vs):
-        """Single-company keyword search returns all from that company."""
-        results = multi_company_vs.search(
-            title="Engineer", company="acme", limit=100
-        )
-        companies = {r.job["company_slug"] for r in results}
-        assert companies == {"acme"}
-        assert len(results) == 10
+class TestHybridSearch:
+    """Tests for hybrid FTS + vector search with RRF fusion."""
 
+    def test_hybrid_boosts_keyword_match(self, vs):
+        """A query matching FTS + vector returns the right job ranked first."""
+        query_vec = _fake_vec(DIMS, seed=1).tolist()
+        with patch("jobbuddy.search.embed_query", return_value=query_vec):
+            results = vs.search(query="AI product manager")
+        assert len(results) > 0
+        assert results[0].score is not None
+        assert results[0].job["title"] == "AI Product Manager"
 
-class TestVectorSearchFiltered:
-    """Tests for combined semantic + keyword filtering."""
+    def test_hybrid_vector_only_fallback(self, vs):
+        """When FTS matches zero rows, vector search still returns results."""
+        query_vec = _fake_vec(DIMS, seed=2).tolist()
+        with patch("jobbuddy.search.embed_query", return_value=query_vec):
+            results = vs.search(query="xyzzy nonexistent gibberish")
+        assert len(results) > 0
+        assert all(r.score is not None for r in results)
 
-    def test_search_with_query_and_company_filter(self, vs):
-        """Semantic search filtered by company."""
+    def test_hybrid_with_company_filter(self, vs):
+        """Company filter applies to both FTS and vector legs."""
         vs.store.upsert_jobs("beta", [
             make_job("10", "AI Engineer", "Seattle", description="AI systems."),
         ])
@@ -251,24 +236,42 @@ class TestVectorSearchFiltered:
 
         query_vec = _fake_vec(DIMS, seed=1).tolist()
         with patch("jobbuddy.search.embed_query", return_value=query_vec):
-            results = vs.search(query="AI", company="beta")
+            results = vs.search(query="AI engineer", company="beta")
         assert len(results) == 1
         assert results[0].job["company_slug"] == "beta"
 
-    def test_search_without_query_falls_back_to_keyword(self, vs):
-        """Without query, search uses keyword filters via query_jobs."""
-        results = vs.search(title="Software Engineer")
-        assert len(results) == 1
-        assert results[0].job["title"] == "Software Engineer"
-        assert results[0].score is None
+    def test_hybrid_with_location_filter(self, vs):
+        """Location filter works with hybrid search."""
+        query_vec = _fake_vec(DIMS, seed=1).tolist()
+        with patch("jobbuddy.search.embed_query", return_value=query_vec):
+            results = vs.search(query="product", location="Seattle")
+        for r in results:
+            assert "Seattle" in r.job["location"]
 
-    def test_search_without_query_filters_location(self, vs):
-        """Without query, location filter works."""
-        results = vs.search(location="Remote")
-        assert len(results) == 1
-        assert results[0].job["title"] == "Software Engineer"
+    def test_hybrid_with_exclude_companies(self, vs):
+        """Excluded companies don't appear in hybrid results."""
+        query_vec = _fake_vec(DIMS, seed=1).tolist()
+        with patch("jobbuddy.search.embed_query", return_value=query_vec):
+            results = vs.search(query="engineer", exclude_companies=["acme"])
+        for r in results:
+            assert r.job["company_slug"] != "acme"
 
-    def test_search_without_query_all_jobs(self, vs):
-        """Without query or filters, returns all jobs."""
+    def test_hybrid_no_rn_in_results(self, vs):
+        """Internal ranking columns don't leak into result dicts."""
+        query_vec = _fake_vec(DIMS, seed=1).tolist()
+        with patch("jobbuddy.search.embed_query", return_value=query_vec):
+            results = vs.search(query="engineer", limit=3)
+        for r in results:
+            assert "rn" not in r.job
+            assert "rank_ix" not in r.job
+            assert "rrf_score" not in r.job
+
+    def test_search_without_query_returns_all(self, vs):
+        """Without query, returns all active jobs (no search criteria)."""
         results = vs.search(limit=100)
         assert len(results) == 3
+
+    def test_title_param_removed(self, vs):
+        """The title parameter no longer exists on search()."""
+        with pytest.raises(TypeError):
+            vs.search(title="Software Engineer")

@@ -504,12 +504,8 @@ class JobStore:
             params.append(posted_after)
 
         if title:
-            conditions.append(
-                "(to_tsvector('english', coalesce(j.title, '')) @@ websearch_to_tsquery('english', %s)"
-                " OR "
-                "to_tsvector('english', coalesce(j.description_stripped, '')) @@ websearch_to_tsquery('english', %s))"
-            )
-            params.extend([title, title])
+            conditions.append("j.fts_vector @@ websearch_to_tsquery('english', %s)")
+            params.append(title)
 
         if location:
             terms = [t.strip() for t in location.split(",") if t.strip()]
@@ -520,66 +516,105 @@ class JobStore:
 
         return conditions, params
 
-    DIVERSITY_FLOOR_MULTIPLIER = 1.20
     DIVERSITY_POOL_SIZE = 500
 
-    def search_similar_filtered(
+    RRF_K = 50
+    FTS_CANDIDATE_POOL = 200
+    FTS_POOL_SIZE = 60
+    VECTOR_POOL_SIZE = 60
+    FTS_WEIGHTS = "{0.1, 0.2, 0.1, 1.0}"
+
+    def hybrid_search(
         self,
+        query_text: str,
         query_embedding: list[float],
         *,
         company: str | None = None,
         exclude_companies: list[str] | None = None,
-        title: str | None = None,
         location: str | None = None,
         posted_after: str | None = None,
         k: int = 25,
     ) -> list[dict]:
-        """KNN search with filters, relevance floor, and round-robin diversity.
+        """Hybrid FTS + vector search with RRF fusion and round-robin diversity.
 
-        Fetches a pool of candidates, applies a dynamic relevance floor
-        (best_distance * 1.20), then round-robins across companies so no
-        single employer dominates results.
+        Runs FTS and vector search as parallel CTEs, merges via Reciprocal
+        Rank Fusion, then applies round-robin diversity across companies.
+        Gracefully degrades: if FTS matches zero rows, vector-only results
+        are returned; if no embeddings exist, FTS-only results are returned.
         """
         conditions, params = self._build_filter_conditions(
             company=company, exclude_companies=exclude_companies,
-            title=title, location=location, posted_after=posted_after,
+            location=location, posted_after=posted_after,
         )
-
-        pool_size = max(self.DIVERSITY_POOL_SIZE, k * 5)
-        vec_params = [query_embedding] + params + [query_embedding, pool_size]
         where = " AND ".join(conditions)
 
+        fts_params = params + [query_text, self.FTS_CANDIDATE_POOL, query_text, self.FTS_POOL_SIZE]
+        vec_params = [query_embedding] + params + [query_embedding, self.VECTOR_POOL_SIZE]
+
         sql = f"""
-            WITH base AS (
-                SELECT e.embedding <=> %s::vector AS distance,
-                       j.*, s.last_sync, c.name AS company_name
+            WITH fts_candidates AS (
+                SELECT j.id, j.fts_vector
+                FROM jobs j
+                WHERE {where}
+                  AND j.fts_vector @@ websearch_to_tsquery('english', %s)
+                LIMIT %s
+            ),
+            fts AS (
+                SELECT id,
+                       row_number() OVER (
+                           ORDER BY ts_rank_cd(
+                               '{self.FTS_WEIGHTS}'::float4[],
+                               fts_vector,
+                               websearch_to_tsquery('english', %s),
+                               32
+                           ) DESC
+                       ) AS rank_ix
+                FROM fts_candidates
+                ORDER BY rank_ix
+                LIMIT %s
+            ),
+            semantic AS (
+                SELECT e.job_id AS id,
+                       row_number() OVER (
+                           ORDER BY e.embedding <=> %s::vector
+                       ) AS rank_ix
                 FROM job_embeddings e
                 JOIN jobs j ON e.job_id = j.id
-                LEFT JOIN sync_status s ON j.company_slug = s.company_slug
-                LEFT JOIN companies c ON j.company_slug = c.slug
                 WHERE {where}
                 ORDER BY e.embedding <=> %s::vector
                 LIMIT %s
             ),
-            floored AS (
-                SELECT * FROM base
-                WHERE distance <= (SELECT min(distance) * %s FROM base)
+            merged AS (
+                SELECT coalesce(f.id, s.id) AS id,
+                       coalesce(1.0 / ({self.RRF_K} + f.rank_ix), 0.0)
+                     + coalesce(1.0 / ({self.RRF_K} + s.rank_ix), 0.0) AS rrf_score
+                FROM fts f
+                FULL OUTER JOIN semantic s ON f.id = s.id
+            ),
+            scored AS (
+                SELECT j.*, ss.last_sync, c.name AS company_name,
+                       m.rrf_score
+                FROM merged m
+                JOIN jobs j ON m.id = j.id
+                LEFT JOIN sync_status ss ON j.company_slug = ss.company_slug
+                LEFT JOIN companies c ON j.company_slug = c.slug
             ),
             ranked AS (
                 SELECT *,
                        ROW_NUMBER() OVER (
-                           PARTITION BY company_slug ORDER BY distance
+                           PARTITION BY company_slug ORDER BY rrf_score DESC
                        ) AS rn
-                FROM floored
+                FROM scored
             )
             SELECT * FROM ranked
-            ORDER BY rn, distance
+            ORDER BY rn, rrf_score DESC
             LIMIT %s
         """
-        vec_params.extend([self.DIVERSITY_FLOOR_MULTIPLIER, k])
+        all_params = fts_params + vec_params + [k]
 
-        rows = self.conn.execute(sql, vec_params).fetchall()
-        return [{k: v for k, v in dict(r).items() if k != "rn"} for r in rows]
+        rows = self.conn.execute(sql, all_params).fetchall()
+        internal_cols = {"rn", "rank_ix"}
+        return [{k: v for k, v in dict(r).items() if k not in internal_cols} for r in rows]
 
     def _embedding_base_query(self, slugs: list[str] | None = None) -> tuple[str, str, list]:
         """Base FROM/WHERE for jobs needing embeddings (hash mismatch or missing)."""
