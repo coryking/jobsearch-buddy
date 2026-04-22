@@ -125,10 +125,12 @@ class PhenomFetcher(ATSFetcher):
         self._require_config()
         url = self._widgets_url()
 
-        # Fetch page 0 to learn total
-        resp = self.client.post(url, json=self._refine_search_body(0))
-        resp.raise_for_status()
-        data = resp.json()
+        def _fetch_page0():
+            resp = self.client.post(url, json=self._refine_search_body(0))
+            resp.raise_for_status()
+            return resp.json()
+
+        data = self._retry_request(_fetch_page0, on_retry=on_retry)
 
         refine = data.get("refineSearch", {})
         total = refine.get("totalHits", 0)
@@ -138,22 +140,21 @@ class PhenomFetcher(ATSFetcher):
         if on_progress:
             on_progress(len(jobs), total)
 
-        # Use actual page size from first response for offset calculation —
-        # the API may return fewer items than the requested `size`.
-        page_size = len(raw_jobs) or PAGE_SIZE
-        remaining_offsets = list(range(page_size, total, page_size))
+        remaining_offsets = list(range(PAGE_SIZE, total, PAGE_SIZE))
         if not remaining_offsets:
             return jobs
 
         lock = threading.Lock()
 
         def _fetch_page(offset: int) -> list[Job]:
-            page_resp = self.client.post(url, json=self._refine_search_body(offset))
-            page_resp.raise_for_status()
-            page_data = page_resp.json()
-            page_refine = page_data.get("refineSearch", {})
-            page_jobs = page_refine.get("data", {}).get("jobs", [])
-            return [self._parse_listing(j) for j in page_jobs]
+            def _do_fetch():
+                page_resp = self.client.post(url, json=self._refine_search_body(offset))
+                page_resp.raise_for_status()
+                page_data = page_resp.json()
+                page_refine = page_data.get("refineSearch", {})
+                page_jobs = page_refine.get("data", {}).get("jobs", [])
+                return [self._parse_listing(j) for j in page_jobs]
+            return self._retry_request(_do_fetch, on_retry=on_retry)
 
         with ThreadPoolExecutor(max_workers=5) as executor:
             futures = {executor.submit(_fetch_page, off): off for off in remaining_offsets}
