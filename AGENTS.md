@@ -14,10 +14,10 @@ the user.
 ## What This Project Is
 
 A command-line tool and MCP server for job searching: scrapes ATS job boards
-(Greenhouse, Ashby, Lever, Workday, Rippling, Paylocity, Workable, Eightfold,
-Oracle HCM), caches listings in PostgreSQL, and exposes them via a FastMCP server
-for use with Claude Desktop or any MCP-compatible client. Semantic search uses
-OpenAI-compatible embeddings with pgvector HNSW indexes.
+(see Supported ATS Platforms below), caches listings in PostgreSQL, and exposes
+them via a FastMCP server for use with Claude Desktop or any MCP-compatible
+client. Semantic search uses OpenAI-compatible embeddings with pgvector HNSW
+indexes.
 
 This is a practical tool, not enterprise software. Bias toward shipping.
 80% today beats 99% tomorrow.
@@ -53,22 +53,10 @@ src/jobbuddy/
 │   ├── enrich.py       # EnrichPhase — description enrichment for stub fetchers
 │   ├── strip.py        # StripPhase — LLM-based boilerplate removal (OpenAI-compatible)
 │   └── embed.py        # EmbedPhase — OpenAI-compatible batch embedding generation
-└── fetchers/           # Per-ATS-platform scrapers (strategy pattern)
+└── fetchers/           # Per-ATS scrapers — one file per platform (see Supported ATS Platforms)
     ├── base.py         # ATSFetcher ABC
-    ├── greenhouse.py
-    ├── ashby.py
-    ├── lever.py
-    ├── workday.py
-    ├── eightfold.py
-    ├── eightfold_v2.py
-    ├── oracle_hcm.py
-    ├── rippling.py
-    ├── paylocity.py
-    ├── phenom.py
-    ├── successfactors.py
-    ├── workable.py
-    ├── jibe.py
-    └── jobsync.py
+    ├── __init__.py     # Fetcher registry + factory
+    └── {platform}.py   # One module per ATS (greenhouse.py, workday.py, etc.)
 
 tests/
 ├── test_store.py       # JobStore: schema, upsert, embeddings, migrations
@@ -123,6 +111,7 @@ jsb embed-test [-f FILE...] [--stdin] [--json] QUERIES...   # Pure embedding sim
 | SuccessFactors | `{careers_domain}/job/{slug}/{id}/`                       |
 | Jibe        | `{careers_domain}/jobs/{id}` (iCIMS Attract layer)           |
 | JobSync     | `{careers_domain}/jobs/{slug}/{guid}` (Solr search layer)    |
+| SmartRecruiters | `jobs.smartrecruiters.com/{company}/{id}-{slug}`         |
 
 ## Configuration
 
