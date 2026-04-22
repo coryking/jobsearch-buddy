@@ -340,6 +340,17 @@ def _parse_talentbrew(url: str) -> ParsedURL | None:
 
 
 # ---------------------------------------------------------------------------
+# SuccessFactors (SAP)
+# ---------------------------------------------------------------------------
+# https://jobs.paccar.com/job/{slug}/{numericId}/
+# https://careers.gulfstream.com/job/{slug}/{numericId}/
+
+def _parse_successfactors(url: str) -> ParsedURL | None:
+    from jobbuddy.fetchers.successfactors import parse_successfactors_url
+    return parse_successfactors_url(url)
+
+
+# ---------------------------------------------------------------------------
 # Dispatcher
 # ---------------------------------------------------------------------------
 
@@ -355,6 +366,7 @@ _PARSERS = [
     _parse_paylocity,
     _parse_avature,
     _parse_talentbrew,
+    _parse_successfactors,
 ]
 
 
