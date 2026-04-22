@@ -3,10 +3,8 @@
 from datetime import date
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from jobbuddy.fetchers.successfactors import SuccessFactorsFetcher
-from jobbuddy.url import parse_url, ParsedURL
+from jobbuddy.url import parse_url
 
 
 # ---------------------------------------------------------------------------
