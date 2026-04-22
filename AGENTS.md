@@ -56,7 +56,11 @@ src/jobbuddy/
     ├── oracle_hcm.py
     ├── rippling.py
     ├── paylocity.py
-    └── workable.py
+    ├── phenom.py
+    ├── successfactors.py
+    ├── workable.py
+    ├── jibe.py
+    └── jobsync.py
 
 tests/
 ├── test_store.py       # JobStore: schema, upsert, embeddings, migrations
@@ -107,6 +111,10 @@ jsb embed-test [-f FILE...] [--stdin] [--json] QUERIES...   # Pure embedding sim
 | Paylocity   | `recruiting.paylocity.com/Recruiting/Jobs/...`               |
 | Eightfold   | various (e.g. Microsoft)                                     |
 | Oracle HCM  | `{tenant}.fa.{region}.oraclecloud.com/.../sites/{site}/job/{id}` |
+| Phenom      | `{careers_domain}/{country}/{lang}/job/{id}`                 |
+| SuccessFactors | `{careers_domain}/job/{slug}/{id}/`                       |
+| Jibe        | `{careers_domain}/jobs/{id}` (iCIMS Attract layer)           |
+| JobSync     | `{careers_domain}/jobs/{slug}/{guid}` (Solr search layer)    |
 
 ## Configuration
 
