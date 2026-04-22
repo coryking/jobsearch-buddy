@@ -3,6 +3,14 @@
 This is the canonical project context for AI agents working in this repository.
 CLAUDE.md points here. Read this before working on code.
 
+**The user is the human who installed the MCP server, not the LLM calling it.**
+When analyzing usage, designing parameters, writing descriptions, or prioritizing
+work — start from what the human was trying to do and whether they got a good
+outcome. It's easy to look at how the LLM called us and ask "how can we make
+this easier?" with an implicit "for the LLM." That optimizes the intermediary,
+not the outcome. The LLM is infrastructure; the human searching for jobs is
+the user.
+
 ## What This Project Is
 
 A command-line tool and MCP server for job searching: scrapes ATS job boards
