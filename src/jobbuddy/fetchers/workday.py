@@ -64,7 +64,7 @@ class WorkdayFetcher(ATSFetcher):
 
         def _parse_posting(p: dict) -> Job:
             ext_path = p.get("externalPath", "")
-            job_id = p.get("bulletFields", [""])[0] if p.get("bulletFields") else ext_path
+            job_id = p.get("bulletFields", [""])[-1] if p.get("bulletFields") else ext_path
             return Job(
                 id=job_id,
                 title=p.get("title", ""),
