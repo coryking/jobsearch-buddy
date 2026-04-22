@@ -521,7 +521,7 @@ class JobStore:
 
     RRF_K = 50
     SEMANTIC_POOL_SIZE = 200
-    FTS_BOOST = 0.015
+    FTS_RANK_WEIGHT = 0.02
 
     def _ensure_query_embedding(self, query_text: str) -> None:
         """Guarantee query_text has an embedding row. Calls OpenAI on miss."""
@@ -552,9 +552,10 @@ class JobStore:
     ) -> list[dict]:
         """Hybrid vector + FTS search with RRF fusion and round-robin diversity.
 
-        Vector search (HNSW) picks the top candidates, FTS provides a binary
-        keyword-match boost via RRF. The query embedding is joined from the
-        query_embeddings table — the vector never leaves the database.
+        Vector search (HNSW) picks the top candidates, then ts_rank_cd
+        scores those candidates using the weighted fts_vector column
+        (title=A, description=B). Jobs with query terms in the title get
+        a substantial boost; jobs with no keyword match at all sink.
         """
         self._ensure_query_embedding(query_text)
         settings = _get_settings()
@@ -584,19 +585,23 @@ class JobStore:
                 ORDER BY e.embedding <=> (SELECT embedding FROM qvec)
                 LIMIT %s
             ),
-            fts_matches AS (
-                SELECT s.id
+            fts_scored AS (
+                SELECT s.id,
+                       ts_rank_cd(
+                           j.fts_vector,
+                           websearch_to_tsquery('english', %s),
+                           32
+                       ) AS fts_rank
                 FROM semantic s
                 JOIN jobs j ON s.id = j.id
-                WHERE j.fts_vector @@ websearch_to_tsquery('english', %s)
             ),
             merged AS (
                 SELECT s.id,
                        1.0 / ({self.RRF_K} + s.rank_ix)
-                     + CASE WHEN f.id IS NOT NULL THEN {self.FTS_BOOST} ELSE 0.0 END
+                     + f.fts_rank * {self.FTS_RANK_WEIGHT}
                        AS rrf_score
                 FROM semantic s
-                LEFT JOIN fts_matches f ON s.id = f.id
+                JOIN fts_scored f ON s.id = f.id
             ),
             scored AS (
                 SELECT j.*, ss.last_sync, c.name AS company_name,
