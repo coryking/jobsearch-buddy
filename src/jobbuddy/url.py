@@ -407,6 +407,67 @@ def _parse_successfactors(url: str) -> ParsedURL | None:
 
 
 # ---------------------------------------------------------------------------
+# Jibe (iCIMS Attract/CRM)
+# ---------------------------------------------------------------------------
+# https://careers.spiritaero.com/jobs/16625
+# https://careers.spiritaero.com/jobs/16625?lang=en-us
+
+def _parse_jibe(url: str) -> ParsedURL | None:
+    parsed = urlparse(url)
+    host = parsed.hostname or ""
+
+    m = re.search(r"/jobs/(\d+)", parsed.path)
+    if not m:
+        return None
+
+    job_id = m.group(1)
+
+    from jobbuddy.registry import load_registry
+
+    for slug, company in load_registry().items():
+        if company.ats != "jibe":
+            continue
+        extras = company.model_extra or {}
+        careers_url = extras.get("careers_url", "")
+        if not careers_url:
+            continue
+        careers_host = urlparse(careers_url).hostname or ""
+        if careers_host == host:
+            return ParsedURL(ats="jibe", board=slug, job_id=job_id)
+
+    return None
+
+
+# ---------------------------------------------------------------------------
+# JobSync (DirectEmployers/Solr)
+# ---------------------------------------------------------------------------
+# https://careers.alaskaair.com/jobs/passenger-service-agent/53BED5549DD84A0DACA2C0C1EB75E125/
+
+def _parse_jobsync(url: str) -> ParsedURL | None:
+    parsed = urlparse(url)
+    host = parsed.hostname or ""
+
+    # Match /jobs/{slug}/{32-char-hex-guid} with optional trailing slash
+    m = re.search(r"/jobs/[^/]+/([A-Fa-f0-9]{32})/?$", parsed.path)
+    if not m:
+        return None
+
+    guid = m.group(1).upper()
+
+    from jobbuddy.registry import load_registry
+
+    for slug, company in load_registry().items():
+        if company.ats != "jobsync":
+            continue
+        extras = company.model_extra or {}
+        origin_host = extras.get("origin_host", "")
+        if origin_host == host:
+            return ParsedURL(ats="jobsync", board=slug, job_id=guid)
+
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Dispatcher
 # ---------------------------------------------------------------------------
 
@@ -424,6 +485,8 @@ _PARSERS = [
     _parse_phenom,
     _parse_talentbrew,
     _parse_successfactors,
+    _parse_jibe,
+    _parse_jobsync,
 ]
 
 

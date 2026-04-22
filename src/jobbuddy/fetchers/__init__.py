@@ -6,6 +6,8 @@ from jobbuddy.fetchers.base import ATSFetcher
 from jobbuddy.fetchers.eightfold import EightfoldFetcher
 from jobbuddy.fetchers.eightfold_v2 import EightfoldV2Fetcher
 from jobbuddy.fetchers.greenhouse import GreenhouseFetcher
+from jobbuddy.fetchers.jibe import JibeFetcher
+from jobbuddy.fetchers.jobsync import JobSyncFetcher
 from jobbuddy.fetchers.lever import LeverFetcher
 from jobbuddy.fetchers.oracle_hcm import OracleHCMFetcher
 from jobbuddy.fetchers.paylocity import PaylocityFetcher
@@ -23,6 +25,8 @@ _REGISTRY: dict[str, type[ATSFetcher]] = {
     "eightfold": EightfoldFetcher,
     "eightfold_v2": EightfoldV2Fetcher,
     "greenhouse": GreenhouseFetcher,
+    "jibe": JibeFetcher,
+    "jobsync": JobSyncFetcher,
     "lever": LeverFetcher,
     "oracle_hcm": OracleHCMFetcher,
     "paylocity": PaylocityFetcher,
