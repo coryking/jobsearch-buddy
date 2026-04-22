@@ -468,6 +468,22 @@ def _parse_jobsync(url: str) -> ParsedURL | None:
 
 
 # ---------------------------------------------------------------------------
+# SmartRecruiters
+# ---------------------------------------------------------------------------
+# https://jobs.smartrecruiters.com/{companyIdentifier}/{postingId}-{slug}
+
+def _parse_smartrecruiters(url: str) -> ParsedURL | None:
+    m = re.search(
+        r"jobs\.smartrecruiters\.com/([^/]+)/(\d+)",
+        url,
+        re.IGNORECASE,
+    )
+    if m:
+        return ParsedURL(ats="smartrecruiters", board=m.group(1), job_id=m.group(2))
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Dispatcher
 # ---------------------------------------------------------------------------
 
@@ -487,6 +503,7 @@ _PARSERS = [
     _parse_successfactors,
     _parse_jibe,
     _parse_jobsync,
+    _parse_smartrecruiters,
 ]
 
 
