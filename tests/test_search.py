@@ -66,7 +66,7 @@ class TestVectorSearch:
     def test_search_returns_results(self, vs):
         """Search returns ranked SearchResult objects."""
         query_vec = _fake_vec(DIMS, seed=1).tolist()
-        with patch("jobbuddy.search.embed_query", return_value=query_vec):
+        with patch("jobbuddy.embeddings.embed_query", return_value=query_vec):
             results = vs.search(query="AI product strategy")
         assert len(results) > 0
         assert isinstance(results[0], SearchResult)
@@ -75,14 +75,14 @@ class TestVectorSearch:
 
     def test_search_respects_limit(self, vs):
         query_vec = _fake_vec(DIMS, seed=1).tolist()
-        with patch("jobbuddy.search.embed_query", return_value=query_vec):
+        with patch("jobbuddy.embeddings.embed_query", return_value=query_vec):
             results = vs.search(query="anything", limit=1)
         assert len(results) == 1
 
     def test_search_ranked_by_similarity(self, vs):
         """Results are sorted by descending similarity."""
         query_vec = _fake_vec(DIMS, seed=1).tolist()
-        with patch("jobbuddy.search.embed_query", return_value=query_vec):
+        with patch("jobbuddy.embeddings.embed_query", return_value=query_vec):
             results = vs.search(query="anything", limit=3)
         scores = [r.score for r in results]
         assert scores == sorted(scores, reverse=True)
@@ -91,7 +91,7 @@ class TestVectorSearch:
         """Removed jobs don't appear in results."""
         vs.store.upsert_jobs("acme", [])
         query_vec = _fake_vec(DIMS, seed=1).tolist()
-        with patch("jobbuddy.search.embed_query", return_value=query_vec):
+        with patch("jobbuddy.embeddings.embed_query", return_value=query_vec):
             results = vs.search(query="anything")
         assert len(results) == 0
 
@@ -99,7 +99,7 @@ class TestVectorSearch:
         """Search with no embeddings returns empty."""
         search = VectorSearch(pg_conninfo)
         query_vec = _fake_vec(DIMS, seed=0).tolist()
-        with patch("jobbuddy.search.embed_query", return_value=query_vec):
+        with patch("jobbuddy.embeddings.embed_query", return_value=query_vec):
             results = search.search(query="anything")
         assert results == []
         search.close()
@@ -166,7 +166,7 @@ class TestSearchDiversity:
     def test_diversity_round_robin_vector(self, multi_company_vs):
         """Vector search distributes results across companies, not dominated by acme."""
         query_vec = _fake_vec(DIMS, seed=100).tolist()
-        with patch("jobbuddy.search.embed_query", return_value=query_vec):
+        with patch("jobbuddy.embeddings.embed_query", return_value=query_vec):
             results = multi_company_vs.search(query="engineering", limit=15)
         companies = [r.job["company_slug"] for r in results]
         assert "acme" in companies
@@ -177,7 +177,7 @@ class TestSearchDiversity:
     def test_exclude_companies_vector(self, multi_company_vs):
         """Excluded companies don't appear in vector search results."""
         query_vec = _fake_vec(DIMS, seed=100).tolist()
-        with patch("jobbuddy.search.embed_query", return_value=query_vec):
+        with patch("jobbuddy.embeddings.embed_query", return_value=query_vec):
             results = multi_company_vs.search(
                 query="engineering", exclude_companies=["acme"], limit=15
             )
@@ -188,7 +188,7 @@ class TestSearchDiversity:
     def test_no_rn_in_results(self, multi_company_vs):
         """The internal rn column doesn't leak into result dicts."""
         query_vec = _fake_vec(DIMS, seed=100).tolist()
-        with patch("jobbuddy.search.embed_query", return_value=query_vec):
+        with patch("jobbuddy.embeddings.embed_query", return_value=query_vec):
             results = multi_company_vs.search(query="engineering", limit=5)
         for r in results:
             assert "rn" not in r.job
@@ -200,7 +200,7 @@ class TestHybridSearch:
     def test_hybrid_boosts_keyword_match(self, vs):
         """A query matching FTS + vector returns the right job ranked first."""
         query_vec = _fake_vec(DIMS, seed=1).tolist()
-        with patch("jobbuddy.search.embed_query", return_value=query_vec):
+        with patch("jobbuddy.embeddings.embed_query", return_value=query_vec):
             results = vs.search(query="AI product manager")
         assert len(results) > 0
         assert results[0].score is not None
@@ -209,7 +209,7 @@ class TestHybridSearch:
     def test_hybrid_vector_only_fallback(self, vs):
         """When FTS matches zero rows, vector search still returns results."""
         query_vec = _fake_vec(DIMS, seed=2).tolist()
-        with patch("jobbuddy.search.embed_query", return_value=query_vec):
+        with patch("jobbuddy.embeddings.embed_query", return_value=query_vec):
             results = vs.search(query="xyzzy nonexistent gibberish")
         assert len(results) > 0
         assert all(r.score is not None for r in results)
@@ -235,7 +235,7 @@ class TestHybridSearch:
         vs.store.store_embedding(row["id"], str(row["content_hash"]), company_hash, vec)
 
         query_vec = _fake_vec(DIMS, seed=1).tolist()
-        with patch("jobbuddy.search.embed_query", return_value=query_vec):
+        with patch("jobbuddy.embeddings.embed_query", return_value=query_vec):
             results = vs.search(query="AI engineer", company="beta")
         assert len(results) == 1
         assert results[0].job["company_slug"] == "beta"
@@ -243,7 +243,7 @@ class TestHybridSearch:
     def test_hybrid_with_location_filter(self, vs):
         """Location filter works with hybrid search."""
         query_vec = _fake_vec(DIMS, seed=1).tolist()
-        with patch("jobbuddy.search.embed_query", return_value=query_vec):
+        with patch("jobbuddy.embeddings.embed_query", return_value=query_vec):
             results = vs.search(query="product", location="Seattle")
         for r in results:
             assert "Seattle" in r.job["location"]
@@ -251,7 +251,7 @@ class TestHybridSearch:
     def test_hybrid_with_exclude_companies(self, vs):
         """Excluded companies don't appear in hybrid results."""
         query_vec = _fake_vec(DIMS, seed=1).tolist()
-        with patch("jobbuddy.search.embed_query", return_value=query_vec):
+        with patch("jobbuddy.embeddings.embed_query", return_value=query_vec):
             results = vs.search(query="engineer", exclude_companies=["acme"])
         for r in results:
             assert r.job["company_slug"] != "acme"
@@ -259,7 +259,7 @@ class TestHybridSearch:
     def test_hybrid_no_rn_in_results(self, vs):
         """Internal ranking columns don't leak into result dicts."""
         query_vec = _fake_vec(DIMS, seed=1).tolist()
-        with patch("jobbuddy.search.embed_query", return_value=query_vec):
+        with patch("jobbuddy.embeddings.embed_query", return_value=query_vec):
             results = vs.search(query="engineer", limit=3)
         for r in results:
             assert "rn" not in r.job

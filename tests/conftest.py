@@ -140,6 +140,7 @@ def ensure_pg_schema():
 def clean_test_data():
     """Clean child tables between tests. Companies persist from session setup."""
     conn = psycopg.connect(TEST_CONNINFO, autocommit=True)
+    conn.execute("DELETE FROM query_embeddings")
     conn.execute("DELETE FROM job_embeddings")
     conn.execute("DELETE FROM jobs")
     conn.execute("DELETE FROM sync_status")

@@ -2,7 +2,6 @@
 
 from dataclasses import dataclass
 
-from jobbuddy.embeddings import embed_query
 from jobbuddy.store import JobStore
 
 
@@ -28,10 +27,8 @@ class VectorSearch:
         limit: int = 25,
     ) -> list[SearchResult]:
         if query:
-            query_vec = embed_query(query)
             rows = self.store.hybrid_search(
                 query,
-                query_vec,
                 company=company,
                 exclude_companies=exclude_companies,
                 location=location,
