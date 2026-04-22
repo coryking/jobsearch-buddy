@@ -323,6 +323,41 @@ def _parse_avature(url: str) -> ParsedURL | None:
 
 
 # ---------------------------------------------------------------------------
+# Phenom People (BAE Systems, RTX, GE Aerospace, etc.)
+# ---------------------------------------------------------------------------
+# https://{careers_domain}/{country}/{locale}/job/{jobId}
+# https://{careers_domain}/{country}/{locale}/job/{jobId}/{slug}
+
+def _parse_phenom(url: str) -> ParsedURL | None:
+    parsed = urlparse(url)
+    path = parsed.path
+    host = parsed.hostname or ""
+
+    # Match /{country_code}/{locale}/job/{jobId} in path
+    m = re.search(r"/([a-z]{2,})/([a-z]{2})/job/([^/]+)", path, re.IGNORECASE)
+    if not m:
+        return None
+
+    job_id = m.group(3)
+
+    # Reverse-lookup: find the phenom company whose careers_url matches this host
+    from jobbuddy.registry import load_registry
+
+    for slug, company in load_registry().items():
+        if company.ats != "phenom":
+            continue
+        extras = company.model_extra or {}
+        careers_url = extras.get("careers_url", "")
+        if not careers_url:
+            continue
+        careers_host = urlparse(careers_url).hostname or ""
+        if careers_host == host:
+            return ParsedURL(ats="phenom", board=slug, job_id=job_id)
+
+    return None
+
+
+# ---------------------------------------------------------------------------
 # TalentBrew (Radancy)
 # ---------------------------------------------------------------------------
 # https://jobs.intuit.com/job/{location}/{title}/{tenant_id}/{job_id}
@@ -354,6 +389,7 @@ _PARSERS = [
     _parse_oracle_hcm,
     _parse_paylocity,
     _parse_avature,
+    _parse_phenom,
     _parse_talentbrew,
 ]
 

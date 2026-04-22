@@ -9,6 +9,7 @@ from jobbuddy.fetchers.greenhouse import GreenhouseFetcher
 from jobbuddy.fetchers.lever import LeverFetcher
 from jobbuddy.fetchers.oracle_hcm import OracleHCMFetcher
 from jobbuddy.fetchers.paylocity import PaylocityFetcher
+from jobbuddy.fetchers.phenom import PhenomFetcher
 from jobbuddy.fetchers.rippling import RipplingFetcher
 from jobbuddy.fetchers.talentbrew import TalentBrewFetcher
 from jobbuddy.fetchers.workable import WorkableFetcher
@@ -24,6 +25,7 @@ _REGISTRY: dict[str, type[ATSFetcher]] = {
     "lever": LeverFetcher,
     "oracle_hcm": OracleHCMFetcher,
     "paylocity": PaylocityFetcher,
+    "phenom": PhenomFetcher,
     "rippling": RipplingFetcher,
     "talentbrew": TalentBrewFetcher,
     "workable": WorkableFetcher,
