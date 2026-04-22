@@ -64,7 +64,7 @@ def companies_add(
 @app.command(name="list-jobs")
 def list_jobs(
     company: Optional[str] = typer.Argument(None, help="Company name or slug (omit for all cached jobs)"),
-    filter: Optional[str] = typer.Option(None, "--filter", "-f", help="Case-insensitive substring filter on job title"),
+    filter: Optional[str] = typer.Option(None, "--filter", "-f", help="Keyword search across title and description (full-text search with stemming)"),
     since: Optional[str] = typer.Option(None, "--since", "-s", help="Only show jobs posted within this period (e.g. 24h, 3d, 1w, 2w)"),
 ):
     """List open jobs from cache. Omit company for all cached jobs."""
@@ -135,7 +135,7 @@ def list_jobs(
 
 @app.command()
 def search(
-    title: Optional[str] = typer.Option(None, "--title", "-t", help="Title substring filter (comma-separated for OR)"),
+    title: Optional[str] = typer.Option(None, "--title", "-t", help="Keyword search across title and description (full-text search with stemming)"),
     location: Optional[str] = typer.Option(None, "--location", "-l", help="Location substring filter (comma-separated for OR)"),
     company: Optional[str] = typer.Option(None, "--company", "-c", help="Company name or slug"),
     exclude: Optional[str] = typer.Option(None, "--exclude", "-x", help="Comma-separated company names/slugs to exclude"),
