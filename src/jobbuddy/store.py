@@ -504,11 +504,12 @@ class JobStore:
             params.append(posted_after)
 
         if title:
-            terms = [t.strip() for t in title.split(",") if t.strip()]
-            if terms:
-                or_clauses = ["j.title ILIKE %s"] * len(terms)
-                conditions.append(f"({' OR '.join(or_clauses)})")
-                params.extend(f"%{t}%" for t in terms)
+            conditions.append(
+                "(to_tsvector('english', coalesce(j.title, '')) @@ websearch_to_tsquery('english', %s)"
+                " OR "
+                "to_tsvector('english', coalesce(j.description_stripped, '')) @@ websearch_to_tsquery('english', %s))"
+            )
+            params.extend([title, title])
 
         if location:
             terms = [t.strip() for t in location.split(",") if t.strip()]

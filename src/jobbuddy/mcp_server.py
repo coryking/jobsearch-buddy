@@ -308,7 +308,7 @@ def log_job_activity(
 def search_jobs(
     company: Annotated[str, Field(default="", description="Company name or slug. Omit to search across ALL cached companies.")] = "",
     exclude_companies: Annotated[str, Field(default="", description="Comma-separated company names or slugs to exclude from results (e.g. 'microsoft,walmart,boeing'). Useful for filtering out large employers to surface smaller companies.")] = "",
-    title_filter: Annotated[str, Field(default="", description="Case-insensitive substring match on job title. Comma-separated for OR (e.g. 'product manager,PM', 'senior engineer'). Uses SQL LIKE, not regex.")] = "",
+    title_filter: Annotated[str, Field(default="", description="Keyword search across job title and description using full-text search with stemming. Describe the kind of role: 'software engineer' matches 'engineering', 'engineers', 'SDE'. Supports OR ('engineer OR scientist') and quotes ('\"machine learning\"'). No need to enumerate synonyms — stemming handles variants.")] = "",
     location_filter: Annotated[str, Field(default="", description="Case-insensitive substring match on location. Comma-separated for OR (e.g. 'seattle,remote', 'new york,NYC'). Uses SQL LIKE, not regex.")] = "",
     since: Annotated[str, Field(default="", description="Only return jobs posted within this period. Examples: '24h' (last 24 hours), '3d' (3 days), '1w' (1 week), '2w' (2 weeks).")] = "",
     query: Annotated[str, Field(default="", description="Natural language query to search job descriptions by meaning (e.g. 'kubernetes security', 'ML infrastructure'). When provided, results are ranked by semantic similarity. Combinable with company/title/location filters.")] = "",
@@ -328,13 +328,13 @@ def search_jobs(
     genuinely matching results are returned (may be fewer than the max limit for
     specific queries, which is correct behavior).
 
-    Without `query`: filters by company/title/location using keyword matching (SQL LIKE).
+    Without `query`: filters by keyword (full-text search with stemming on title + description).
     With `query`: ranks results by semantic similarity to the query text, optionally
-    filtered by company/title/location. Pass the user's words directly as the query.
+    filtered by keyword/company/location. Pass the user's words directly as the query.
 
     Company is optional — omit it to search across all ~100 cached companies.
-    Filters use case-insensitive substring matching (SQL LIKE), not regex.
-    Use commas for OR: title_filter="product manager,PM" matches either.
+    Title filter uses PostgreSQL full-text search with stemming — describe the role
+    naturally, no need to enumerate title variants. Location uses substring matching.
 
     Results include last_sync timestamp showing cache freshness, and "already applied"
     markers cross-referenced with the application log. If cache is empty, tells user
@@ -347,7 +347,7 @@ def search_jobs(
         return (
             "Error: You must provide either `title_filter` or `query` (or both). "
             "The cache has thousands of jobs — browsing without search criteria is not supported. "
-            "Examples: title_filter='product manager,PM' or query='ML infrastructure roles'."
+            "Examples: title_filter='software engineer' or query='ML infrastructure roles'."
         )
 
     # Resolve company

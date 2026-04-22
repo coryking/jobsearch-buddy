@@ -13,7 +13,10 @@ routing hints, not API docs:
 - **Server `instructions`**: Intent language ("find me jobs at...", "I applied for...").
   Name specific companies. Bias the LLM toward trying the tool first.
 - **Tool docstrings**: Lead with *when to use*, not *what it does internally*.
-- **Field `description`s**: Format hints, examples, valid values. Dense, not verbose.
+- **Field `description`s**: What the human is trying to express through this
+  parameter, then format hints. Don't teach the LLM to work around tool
+  limitations (e.g., "comma-separated for OR" teaches synonym enumeration
+  instead of intent expression).
 
 ### Human-Readable Formatting
 

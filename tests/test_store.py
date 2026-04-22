@@ -179,10 +179,6 @@ class TestQueryFilters:
         rows = store.query_jobs(title="product manager")
         assert len(rows) == 2
 
-    def test_query_title_filter_comma_or(self, store):
-        rows = store.query_jobs(title="product manager,data scientist")
-        assert len(rows) == 3
-
     def test_query_location_filter(self, store):
         rows = store.query_jobs(location="seattle")
         assert len(rows) == 2
@@ -195,6 +191,63 @@ class TestQueryFilters:
     def test_query_limit(self, store):
         rows = store.query_jobs(limit=2)
         assert len(rows) == 2
+
+
+class TestFullTextSearch:
+    """Tests for PostgreSQL FTS replacing ILIKE title filter."""
+
+    @pytest.fixture(autouse=True)
+    def populate(self, store):
+        store.upsert_jobs("acme", [
+            make_job("1", "Software Engineer", "Seattle", description="Build backend services in Python."),
+            make_job("2", "Software Development Engineer", "Seattle", description="SDE role building distributed systems."),
+            make_job("3", "Senior Engineering Manager", "Remote", description="Lead a team of software engineers."),
+            make_job("4", "Product Manager", "Seattle", description="Drive product strategy for developer tools."),
+            make_job("5", "Data Scientist", "NYC", description="ML models for recommendation engine."),
+        ])
+        for jid in ["1", "2", "3", "4", "5"]:
+            store.conn.execute(
+                "UPDATE jobs SET description_stripped = description WHERE job_id = %s", (jid,)
+            )
+
+    def test_fts_stemming(self, store):
+        """'engineer' matches 'Engineering' and 'Engineers' via stemming."""
+        rows = store.query_jobs(title="engineer")
+        titles = {r["title"] for r in rows}
+        assert "Software Engineer" in titles
+        assert "Software Development Engineer" in titles
+        assert "Senior Engineering Manager" in titles
+
+    def test_fts_searches_description(self, store):
+        """FTS searches description_stripped, not just title."""
+        rows = store.query_jobs(title="python")
+        assert len(rows) >= 1
+        assert any(r["job_id"] == "1" for r in rows)
+
+    def test_fts_multi_word_query(self, store):
+        """Multi-word query matches jobs containing all terms."""
+        rows = store.query_jobs(title="software engineer")
+        titles = {r["title"] for r in rows}
+        assert "Software Engineer" in titles
+        assert "Software Development Engineer" in titles
+
+    def test_fts_websearch_or_syntax(self, store):
+        """websearch_to_tsquery OR syntax works."""
+        rows = store.query_jobs(title="engineer OR scientist")
+        titles = {r["title"] for r in rows}
+        assert "Software Engineer" in titles
+        assert "Data Scientist" in titles
+
+    def test_fts_no_match(self, store):
+        """FTS returns empty when no terms match."""
+        rows = store.query_jobs(title="blockchain")
+        assert len(rows) == 0
+
+    def test_location_still_ilike(self, store):
+        """Location filter still uses ILIKE substring matching."""
+        rows = store.query_jobs(location="seat")
+        assert len(rows) >= 1
+        assert all("Seattle" in (r["location"] or "") for r in rows)
 
 
 # ---------------------------------------------------------------------------
