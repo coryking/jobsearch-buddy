@@ -11,6 +11,7 @@ from jobbuddy.fetchers.oracle_hcm import OracleHCMFetcher
 from jobbuddy.fetchers.paylocity import PaylocityFetcher
 from jobbuddy.fetchers.phenom import PhenomFetcher
 from jobbuddy.fetchers.rippling import RipplingFetcher
+from jobbuddy.fetchers.successfactors import SuccessFactorsFetcher
 from jobbuddy.fetchers.talentbrew import TalentBrewFetcher
 from jobbuddy.fetchers.workable import WorkableFetcher
 from jobbuddy.fetchers.workday import WorkdayFetcher
@@ -27,6 +28,7 @@ _REGISTRY: dict[str, type[ATSFetcher]] = {
     "paylocity": PaylocityFetcher,
     "phenom": PhenomFetcher,
     "rippling": RipplingFetcher,
+    "successfactors": SuccessFactorsFetcher,
     "talentbrew": TalentBrewFetcher,
     "workable": WorkableFetcher,
     "workday": WorkdayFetcher,
