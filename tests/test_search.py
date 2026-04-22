@@ -105,6 +105,127 @@ class TestVectorSearch:
         search.close()
 
 
+class TestSearchDiversity:
+    """Tests for round-robin diversity and relevance floor."""
+
+    @pytest.fixture
+    def multi_company_vs(self, pg_conninfo):
+        """VectorSearch with jobs across 3 companies, volume-skewed."""
+        search = VectorSearch(pg_conninfo)
+        store = search.store
+
+        # acme: 10 jobs (dominant), beta: 3 jobs, good: 2 jobs
+        acme_jobs = [
+            make_job(str(i), f"Acme Engineer {i}", "Seattle",
+                     description=f"Acme engineering role {i}.")
+            for i in range(100, 110)
+        ]
+        beta_jobs = [
+            make_job(str(i), f"Beta Engineer {i}", "Seattle",
+                     description=f"Beta engineering role {i}.")
+            for i in range(200, 203)
+        ]
+        good_jobs = [
+            make_job(str(i), f"Good Engineer {i}", "Seattle",
+                     description=f"Good engineering role {i}.")
+            for i in range(300, 302)
+        ]
+
+        store.upsert_jobs("acme", acme_jobs)
+        store.upsert_jobs("beta", beta_jobs)
+        store.upsert_jobs("good", good_jobs)
+
+        store.conn.execute(
+            "UPDATE jobs SET description_stripped = description "
+            "WHERE description_stripped IS NULL AND description IS NOT NULL"
+        )
+        store.conn.execute("""
+            UPDATE jobs SET content_hash = md5(
+                coalesce(description_stripped, '') || title
+                || coalesce(location, '') || coalesce(department, '')
+            )::uuid WHERE description_stripped IS NOT NULL
+        """)
+
+        for slug in ["acme", "beta", "good"]:
+            company_hash = str(store.conn.execute(
+                "SELECT content_hash FROM companies WHERE slug = %s", (slug,)
+            ).fetchone()["content_hash"])
+            rows = store.conn.execute(
+                "SELECT id, job_id, content_hash FROM jobs WHERE company_slug = %s",
+                (slug,),
+            ).fetchall()
+            for row in rows:
+                vec = _fake_vec(DIMS, seed=int(row["job_id"])).tolist()
+                store.store_embedding(
+                    row["id"], str(row["content_hash"]), company_hash, vec
+                )
+
+        yield search
+        search.close()
+
+    def test_diversity_round_robin_vector(self, multi_company_vs):
+        """Vector search distributes results across companies, not dominated by acme."""
+        query_vec = _fake_vec(DIMS, seed=100).tolist()
+        with patch("jobbuddy.search.embed_query", return_value=query_vec):
+            results = multi_company_vs.search(query="engineering", limit=15)
+        companies = [r.job["company_slug"] for r in results]
+        assert "acme" in companies
+        assert "beta" in companies
+        assert "good" in companies
+        assert companies.count("acme") < len(results)
+
+    def test_diversity_round_robin_keyword(self, multi_company_vs):
+        """Keyword search distributes results across companies."""
+        results = multi_company_vs.search(title="Engineer", limit=15)
+        companies = [r.job["company_slug"] for r in results]
+        assert "acme" in companies
+        assert "beta" in companies
+        assert "good" in companies
+        assert companies.count("acme") < len(results)
+
+    def test_exclude_companies_vector(self, multi_company_vs):
+        """Excluded companies don't appear in vector search results."""
+        query_vec = _fake_vec(DIMS, seed=100).tolist()
+        with patch("jobbuddy.search.embed_query", return_value=query_vec):
+            results = multi_company_vs.search(
+                query="engineering", exclude_companies=["acme"], limit=15
+            )
+        companies = {r.job["company_slug"] for r in results}
+        assert "acme" not in companies
+        assert len(results) > 0
+
+    def test_exclude_companies_keyword(self, multi_company_vs):
+        """Excluded companies don't appear in keyword search results."""
+        results = multi_company_vs.search(
+            title="Engineer", exclude_companies=["acme", "beta"], limit=15
+        )
+        companies = {r.job["company_slug"] for r in results}
+        assert "acme" not in companies
+        assert "beta" not in companies
+        assert "good" in companies
+
+    def test_no_rn_in_results(self, multi_company_vs):
+        """The internal rn column doesn't leak into result dicts."""
+        query_vec = _fake_vec(DIMS, seed=100).tolist()
+        with patch("jobbuddy.search.embed_query", return_value=query_vec):
+            results = multi_company_vs.search(query="engineering", limit=5)
+        for r in results:
+            assert "rn" not in r.job
+
+        results_kw = multi_company_vs.search(title="Engineer", limit=5)
+        for r in results_kw:
+            assert "rn" not in r.job
+
+    def test_single_company_skips_diversity(self, multi_company_vs):
+        """Single-company keyword search returns all from that company."""
+        results = multi_company_vs.search(
+            title="Engineer", company="acme", limit=100
+        )
+        companies = {r.job["company_slug"] for r in results}
+        assert companies == {"acme"}
+        assert len(results) == 10
+
+
 class TestVectorSearchFiltered:
     """Tests for combined semantic + keyword filtering."""
 
