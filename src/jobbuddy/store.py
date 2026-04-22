@@ -521,6 +521,7 @@ class JobStore:
 
     RRF_K = 50
     SEMANTIC_POOL_SIZE = 200
+    FTS_BOOST = 0.015
 
     def _ensure_query_embedding(self, query_text: str) -> None:
         """Guarantee query_text has an embedding row. Calls OpenAI on miss."""
@@ -583,19 +584,19 @@ class JobStore:
                 ORDER BY e.embedding <=> (SELECT embedding FROM qvec)
                 LIMIT %s
             ),
-            fts AS (
-                SELECT s.id,
-                       row_number() OVER () AS rank_ix
+            fts_matches AS (
+                SELECT s.id
                 FROM semantic s
                 JOIN jobs j ON s.id = j.id
                 WHERE j.fts_vector @@ websearch_to_tsquery('english', %s)
             ),
             merged AS (
-                SELECT coalesce(f.id, s.id) AS id,
-                       coalesce(1.0 / ({self.RRF_K} + f.rank_ix), 0.0)
-                     + coalesce(1.0 / ({self.RRF_K} + s.rank_ix), 0.0) AS rrf_score
-                FROM fts f
-                FULL OUTER JOIN semantic s ON f.id = s.id
+                SELECT s.id,
+                       1.0 / ({self.RRF_K} + s.rank_ix)
+                     + CASE WHEN f.id IS NOT NULL THEN {self.FTS_BOOST} ELSE 0.0 END
+                       AS rrf_score
+                FROM semantic s
+                LEFT JOIN fts_matches f ON s.id = f.id
             ),
             scored AS (
                 SELECT j.*, ss.last_sync, c.name AS company_name,
