@@ -42,12 +42,14 @@ class PhenomFetcher(ATSFetcher):
         locale: str = "en_global",
         country: str = "global",
         page_id: str = "page1-migration",
+        selected_fields: dict | None = None,
     ):
         super().__init__(board, name)
         self.careers_url = careers_url.rstrip("/")
         self.locale = locale
         self.country = country
         self.page_id = page_id
+        self.selected_fields = selected_fields or {}
         if self.careers_url:
             self.client.headers["Origin"] = self.careers_url
             self.client.headers["Referer"] = f"{self.careers_url}/{self.country}/{self._locale_short()}/search-results"
@@ -70,7 +72,7 @@ class PhenomFetcher(ATSFetcher):
         return f"{self.careers_url}/{self.country}/{self._locale_short()}/job/{job_id}"
 
     def _refine_search_body(self, offset: int) -> dict:
-        return {
+        body = {
             "lang": self.locale,
             "deviceType": "desktop",
             "country": self.country,
@@ -90,6 +92,9 @@ class PhenomFetcher(ATSFetcher):
             "siteType": "external",
             "keywords": "",
         }
+        if self.selected_fields:
+            body["selected_fields"] = self.selected_fields
+        return body
 
     def _job_detail_body(self, job_id: str) -> dict:
         return {

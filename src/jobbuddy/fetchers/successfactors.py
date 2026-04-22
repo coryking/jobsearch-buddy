@@ -46,9 +46,11 @@ class SuccessFactorsFetcher(ATSFetcher):
         name: str | None = None,
         *,
         careers_url: str = "",
+        search_params: dict | None = None,
     ):
         super().__init__(board, name)
         self.careers_url = careers_url.rstrip("/")
+        self.search_params = search_params or {}
 
     def _require_config(self) -> None:
         if not self.careers_url:
@@ -58,10 +60,10 @@ class SuccessFactorsFetcher(ATSFetcher):
             )
 
     def _search_url(self, page: int) -> str:
-        return (
-            f"{self.careers_url}/search-jobs/results"
-            f"?CurrentPage={page}&RecordsPerPage={_RECORDS_PER_PAGE}"
-        )
+        params = f"CurrentPage={page}&RecordsPerPage={_RECORDS_PER_PAGE}"
+        for k, v in self.search_params.items():
+            params += f"&{k}={v}"
+        return f"{self.careers_url}/search-jobs/results?{params}"
 
     def _parse_search_html(self, html: str) -> tuple[list[Job], int]:
         """Parse search results HTML. Returns (jobs, total)."""
