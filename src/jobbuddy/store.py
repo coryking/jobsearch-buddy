@@ -516,10 +516,10 @@ class JobStore:
 
         return conditions, params
 
-    DIVERSITY_FLOOR_MULTIPLIER = 1.20
     DIVERSITY_POOL_SIZE = 500
 
     RRF_K = 50
+    FTS_CANDIDATE_POOL = 200
     FTS_POOL_SIZE = 60
     VECTOR_POOL_SIZE = 60
     FTS_WEIGHTS = "{0.1, 0.2, 0.1, 1.0}"
@@ -548,25 +548,28 @@ class JobStore:
         )
         where = " AND ".join(conditions)
 
-        fts_params = [query_text] + params + [query_text, self.FTS_POOL_SIZE]
+        fts_params = params + [query_text, self.FTS_CANDIDATE_POOL, query_text, self.FTS_POOL_SIZE]
         vec_params = [query_embedding] + params + [query_embedding, self.VECTOR_POOL_SIZE]
 
         sql = f"""
-            WITH fts AS (
-                SELECT j.id,
+            WITH fts_candidates AS (
+                SELECT j.id, j.fts_vector
+                FROM jobs j
+                WHERE {where}
+                  AND j.fts_vector @@ websearch_to_tsquery('english', %s)
+                LIMIT %s
+            ),
+            fts AS (
+                SELECT id,
                        row_number() OVER (
                            ORDER BY ts_rank_cd(
                                '{self.FTS_WEIGHTS}'::float4[],
-                               j.fts_vector,
+                               fts_vector,
                                websearch_to_tsquery('english', %s),
                                32
                            ) DESC
                        ) AS rank_ix
-                FROM jobs j
-                LEFT JOIN sync_status s ON j.company_slug = s.company_slug
-                LEFT JOIN companies c ON j.company_slug = c.slug
-                WHERE {where}
-                  AND j.fts_vector @@ websearch_to_tsquery('english', %s)
+                FROM fts_candidates
                 ORDER BY rank_ix
                 LIMIT %s
             ),
@@ -577,8 +580,6 @@ class JobStore:
                        ) AS rank_ix
                 FROM job_embeddings e
                 JOIN jobs j ON e.job_id = j.id
-                LEFT JOIN sync_status s ON j.company_slug = s.company_slug
-                LEFT JOIN companies c ON j.company_slug = c.slug
                 WHERE {where}
                 ORDER BY e.embedding <=> %s::vector
                 LIMIT %s
