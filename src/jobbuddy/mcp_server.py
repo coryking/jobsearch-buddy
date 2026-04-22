@@ -44,7 +44,6 @@ mcp = FastMCP(
         "or user pastes a job listing URL.\n\n"
         "Tool routing:\n"
         "- Search/browse jobs (any or all companies) → search_jobs (reads from local cache)\n"
-        "- Meaning-based / 'find me jobs like...' / vague descriptions → search_jobs with query param\n"
         "- Job details (one or many, by company+job_id) → get_job_post_details (cached, live fetch fallback)\n"
         "- Record application (URL or company+job_id) → log_job_application (live fetch)\n"
         "- Freeform activity (recruiter call, interview, referral, no job_id) → log_job_activity\n"
@@ -306,35 +305,30 @@ def log_job_activity(
 
 @mcp.tool
 def search_jobs(
+    query: Annotated[str, Field(description="Describe what you're looking for in natural language. Pass the user's words directly — 'startup ML engineer jobs in Seattle', 'remote product manager', 'security roles at fintech companies'. The search understands meaning (semantic) and keywords (full-text) simultaneously. Don't enumerate synonyms or title variants — just describe the role.")],
     company: Annotated[str, Field(default="", description="Company name or slug. Omit to search across ALL cached companies.")] = "",
     exclude_companies: Annotated[str, Field(default="", description="Comma-separated company names or slugs to exclude from results (e.g. 'microsoft,walmart,boeing'). Useful for filtering out large employers to surface smaller companies.")] = "",
-    title_filter: Annotated[str, Field(default="", description="Keyword search across job title and description using full-text search with stemming. Describe the kind of role: 'software engineer' matches 'engineering', 'engineers', 'SDE'. Supports OR ('engineer OR scientist') and quotes ('\"machine learning\"'). No need to enumerate synonyms — stemming handles variants.")] = "",
-    location_filter: Annotated[str, Field(default="", description="Case-insensitive substring match on location. Comma-separated for OR (e.g. 'seattle,remote', 'new york,NYC'). Uses SQL LIKE, not regex.")] = "",
+    location_filter: Annotated[str, Field(default="", description="Case-insensitive substring match on location. Comma-separated for OR (e.g. 'seattle,remote', 'new york,NYC').")] = "",
     since: Annotated[str, Field(default="", description="Only return jobs posted within this period. Examples: '24h' (last 24 hours), '3d' (3 days), '1w' (1 week), '2w' (2 weeks).")] = "",
-    query: Annotated[str, Field(default="", description="Natural language query to search job descriptions by meaning (e.g. 'kubernetes security', 'ML infrastructure'). When provided, results are ranked by semantic similarity. Combinable with company/title/location filters.")] = "",
 ) -> str:
     """Search cached job listings across one or all companies. Data comes from a local
     cache populated by `jsb sync` — results are instant, no live API calls.
-
-    REQUIRED: You must provide either `title_filter` or `query` (or both). Browsing
-    without any search criteria is not supported — the cache has thousands of jobs.
 
     Use when the user says "find jobs at", "any openings at", "show me roles at",
     "what PM jobs does [company] have", "find me jobs like...", describes a role vaguely,
     or any request to browse or search job listings.
 
+    Results are ranked by hybrid search — combining semantic similarity (understands
+    meaning) with full-text keyword matching (boosts exact title matches). A job titled
+    "Software Engineer" that's also semantically relevant ranks higher than either
+    signal alone. No need to search twice or enumerate title variants.
+
     Results are automatically diversified across employers — no single company dominates
-    even when it has thousands of matching listings. A relevance floor ensures only
-    genuinely matching results are returned (may be fewer than the max limit for
-    specific queries, which is correct behavior).
+    even when it has thousands of matching listings.
 
-    Without `query`: filters by keyword (full-text search with stemming on title + description).
-    With `query`: ranks results by semantic similarity to the query text, optionally
-    filtered by keyword/company/location. Pass the user's words directly as the query.
-
-    Company is optional — omit it to search across all ~100 cached companies.
-    Title filter uses PostgreSQL full-text search with stemming — describe the role
-    naturally, no need to enumerate title variants. Location uses substring matching.
+    Company is optional — omit it to search across all cached companies.
+    Location uses substring matching. Pass the user's words as the query — don't
+    rewrite, summarize, or enumerate synonyms.
 
     Results include last_sync timestamp showing cache freshness, and "already applied"
     markers cross-referenced with the application log. If cache is empty, tells user
@@ -342,13 +336,6 @@ def search_jobs(
 
     Returns the company registry if the company name isn't found."""
     from jobbuddy.search import VectorSearch
-
-    if not title_filter and not query:
-        return (
-            "Error: You must provide either `title_filter` or `query` (or both). "
-            "The cache has thousands of jobs — browsing without search criteria is not supported. "
-            "Examples: title_filter='software engineer' or query='ML infrastructure roles'."
-        )
 
     # Resolve company
     company_slug = None
@@ -379,10 +366,9 @@ def search_jobs(
                 return f"Error: Invalid 'since' value '{since}'. Use e.g. '24h', '3d', '1w', '2w'."
 
         results = search.search(
-            query=query or None,
+            query=query,
             company=company_slug,
             exclude_companies=exclude_slugs,
-            title=title_filter or None,
             location=location_filter or None,
             posted_after=posted_after,
             limit=max_results,
@@ -390,42 +376,22 @@ def search_jobs(
 
         if not results:
             filters = []
-            if title_filter:
-                filters.append(f"title='{title_filter}'")
             if location_filter:
                 filters.append(f"location='{location_filter}'")
             if since:
                 filters.append(f"since='{since}'")
-            if query:
-                filters.append(f"query='{query}'")
+            filters.append(f"query='{query}'")
             filter_desc = f" matching {', '.join(filters)}" if filters else ""
             scope = company_slug or "any company"
             return f"No cached jobs found for {scope}{filter_desc}. Try running `jsb sync` to refresh."
 
-        rows = []
-        for result in results:
-            row = dict(result.job)
-            if result.score is not None:
-                row["distance"] = 1.0 - result.score
-            rows.append(row)
+        rows = [dict(result.job) for result in results]
 
         log_entries = read_log()
 
         return JobSearchResults.from_query(rows, log_entries, company_slug=company_slug).to_mcp_result()
     finally:
         search.close()
-
-
-@mcp.tool
-def semantic_search_jobs(
-    query: Annotated[str, Field(description="Pass the user's words directly — do not rewrite or summarize")],
-    limit: Annotated[int, Field(default=20, description="Max results (default 20)")] = 20,
-    model: Annotated[str, Field(default="text3small", description="Embedding model key (ignored, kept for backwards compat)")] = "text3small",
-) -> str:
-    """Deprecated: use search_jobs with the `query` parameter instead.
-
-    Kept for backwards compatibility with existing MCP clients."""
-    return search_jobs(query=query)
 
 
 @mcp.tool

@@ -1,4 +1,4 @@
-"""Semantic job search via pgvector + OpenAI-compatible embeddings."""
+"""Hybrid job search: FTS + pgvector with RRF fusion."""
 
 from dataclasses import dataclass
 
@@ -23,31 +23,26 @@ class VectorSearch:
         query: str | None = None,
         company: str | None = None,
         exclude_companies: list[str] | None = None,
-        title: str | None = None,
         location: str | None = None,
         posted_after: str | None = None,
         limit: int = 25,
     ) -> list[SearchResult]:
         if query:
             query_vec = embed_query(query)
-            rows = self.store.search_similar_filtered(
+            rows = self.store.hybrid_search(
+                query,
                 query_vec,
                 company=company,
                 exclude_companies=exclude_companies,
-                title=title,
                 location=location,
                 posted_after=posted_after,
                 k=limit,
             )
-            return [
-                SearchResult(score=1.0 - row["distance"], job=row)
-                for row in rows
-            ]
+            return [SearchResult(score=row.pop("rrf_score", None), job=row) for row in rows]
         else:
             rows = self.store.query_jobs(
                 company=company,
                 exclude_companies=exclude_companies,
-                title=title,
                 location=location,
                 posted_after=posted_after,
                 limit=limit,
