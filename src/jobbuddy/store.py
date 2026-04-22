@@ -14,6 +14,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Json
 
 from jobbuddy.models import Company, Job
+from jobbuddy.settings import get_settings as _get_settings
 from jobbuddy.types import EmbedWorkItem, StripWorkItem
 
 log = logging.getLogger(__name__)
@@ -519,15 +520,29 @@ class JobStore:
     DIVERSITY_POOL_SIZE = 500
 
     RRF_K = 50
-    FTS_CANDIDATE_POOL = 200
-    FTS_POOL_SIZE = 60
-    VECTOR_POOL_SIZE = 60
-    FTS_WEIGHTS = "{0.1, 0.2, 0.1, 1.0}"
+    SEMANTIC_POOL_SIZE = 200
+    FTS_BOOST = 0.015
+
+    def _ensure_query_embedding(self, query_text: str) -> None:
+        """Guarantee query_text has an embedding row. Calls OpenAI on miss."""
+        from jobbuddy.embeddings import embed_query
+
+        model = _get_settings().embedding_model
+        row = self.conn.execute(
+            "SELECT 1 FROM query_embeddings WHERE query_text = %s AND model = %s",
+            (query_text, model),
+        ).fetchone()
+        if row:
+            return
+        vec = embed_query(query_text)
+        self.conn.execute(
+            "INSERT INTO query_embeddings (query_text, embedding, model) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
+            (query_text, vec, model),
+        )
 
     def hybrid_search(
         self,
         query_text: str,
-        query_embedding: list[float],
         *,
         company: str | None = None,
         exclude_companies: list[str] | None = None,
@@ -535,61 +550,53 @@ class JobStore:
         posted_after: str | None = None,
         k: int = 25,
     ) -> list[dict]:
-        """Hybrid FTS + vector search with RRF fusion and round-robin diversity.
+        """Hybrid vector + FTS search with RRF fusion and round-robin diversity.
 
-        Runs FTS and vector search as parallel CTEs, merges via Reciprocal
-        Rank Fusion, then applies round-robin diversity across companies.
-        Gracefully degrades: if FTS matches zero rows, vector-only results
-        are returned; if no embeddings exist, FTS-only results are returned.
+        Vector search (HNSW) picks the top candidates, FTS provides a binary
+        keyword-match boost via RRF. The query embedding is joined from the
+        query_embeddings table — the vector never leaves the database.
         """
+        self._ensure_query_embedding(query_text)
+        settings = _get_settings()
         conditions, params = self._build_filter_conditions(
             company=company, exclude_companies=exclude_companies,
             location=location, posted_after=posted_after,
         )
         where = " AND ".join(conditions)
 
-        fts_params = params + [query_text, self.FTS_CANDIDATE_POOL, query_text, self.FTS_POOL_SIZE]
-        vec_params = [query_embedding] + params + [query_embedding, self.VECTOR_POOL_SIZE]
+        query_params = [query_text, settings.embedding_model]
+        vec_params = params + [self.SEMANTIC_POOL_SIZE]
+        fts_params = [query_text]
 
         sql = f"""
-            WITH fts_candidates AS (
-                SELECT j.id, j.fts_vector
-                FROM jobs j
-                WHERE {where}
-                  AND j.fts_vector @@ websearch_to_tsquery('english', %s)
-                LIMIT %s
-            ),
-            fts AS (
-                SELECT id,
-                       row_number() OVER (
-                           ORDER BY ts_rank_cd(
-                               '{self.FTS_WEIGHTS}'::float4[],
-                               fts_vector,
-                               websearch_to_tsquery('english', %s),
-                               32
-                           ) DESC
-                       ) AS rank_ix
-                FROM fts_candidates
-                ORDER BY rank_ix
-                LIMIT %s
+            WITH qvec AS (
+                SELECT embedding FROM query_embeddings
+                WHERE query_text = %s AND model = %s
             ),
             semantic AS (
                 SELECT e.job_id AS id,
                        row_number() OVER (
-                           ORDER BY e.embedding <=> %s::vector
+                           ORDER BY e.embedding <=> (SELECT embedding FROM qvec)
                        ) AS rank_ix
                 FROM job_embeddings e
                 JOIN jobs j ON e.job_id = j.id
                 WHERE {where}
-                ORDER BY e.embedding <=> %s::vector
+                ORDER BY e.embedding <=> (SELECT embedding FROM qvec)
                 LIMIT %s
             ),
+            fts_matches AS (
+                SELECT s.id
+                FROM semantic s
+                JOIN jobs j ON s.id = j.id
+                WHERE j.fts_vector @@ websearch_to_tsquery('english', %s)
+            ),
             merged AS (
-                SELECT coalesce(f.id, s.id) AS id,
-                       coalesce(1.0 / ({self.RRF_K} + f.rank_ix), 0.0)
-                     + coalesce(1.0 / ({self.RRF_K} + s.rank_ix), 0.0) AS rrf_score
-                FROM fts f
-                FULL OUTER JOIN semantic s ON f.id = s.id
+                SELECT s.id,
+                       1.0 / ({self.RRF_K} + s.rank_ix)
+                     + CASE WHEN f.id IS NOT NULL THEN {self.FTS_BOOST} ELSE 0.0 END
+                       AS rrf_score
+                FROM semantic s
+                LEFT JOIN fts_matches f ON s.id = f.id
             ),
             scored AS (
                 SELECT j.*, ss.last_sync, c.name AS company_name,
@@ -610,7 +617,7 @@ class JobStore:
             ORDER BY rn, rrf_score DESC
             LIMIT %s
         """
-        all_params = fts_params + vec_params + [k]
+        all_params = query_params + vec_params + fts_params + [k]
 
         rows = self.conn.execute(sql, all_params).fetchall()
         internal_cols = {"rn", "rank_ix"}
