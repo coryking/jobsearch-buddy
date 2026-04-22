@@ -93,6 +93,7 @@ class TalentBrewFetcher(ATSFetcher):
         Handles multiple TalentBrew template variants:
         - Intuit style: <a href="/job/..." data-job-id="..." data-title="...">
         - Walgreens style: <a href="/en/job/..." data-job-id="..."><h2>Title</h2>
+        - Disney style: <tr>/<td> table layout instead of <li> cards
         """
         total_match = re.search(r'data-total-results="(\d+)"', html)
         total = int(total_match.group(1)) if total_match else 0
@@ -109,8 +110,7 @@ class TalentBrewFetcher(ATSFetcher):
             r'<span\s+[^>]*class="[^"]*(?:job.location|location)[^"]*"[^>]*>([^<]*)</span>'
         )
 
-        # Split by <li to process each job card
-        items = re.split(r"<li[\s>]", html)
+        items = re.split(r"<(?:li|tr)[\s>]", html)
         for item in items[1:]:  # skip content before first <li
             link_match = link_pattern.search(item)
             if not link_match:

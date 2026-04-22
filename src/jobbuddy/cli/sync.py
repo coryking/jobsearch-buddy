@@ -121,3 +121,6 @@ def _print_summary(
         for phase in state.phases:
             if phase.status != "pending":
                 log.info("%s: %d done, %d errors", phase.name, phase.done, phase.errors)
+        for r in results:
+            if not r.ok:
+                log.error("%s: %s", r.slug, r.error)
