@@ -307,12 +307,13 @@ def log_job_activity(
 @mcp.tool
 def search_jobs(
     company: Annotated[str, Field(default="", description="Company name or slug. Omit to search across ALL cached companies.")] = "",
+    exclude_companies: Annotated[str, Field(default="", description="Comma-separated company names or slugs to exclude from results (e.g. 'microsoft,walmart,boeing'). Useful for filtering out large employers to surface smaller companies.")] = "",
     title_filter: Annotated[str, Field(default="", description="Case-insensitive substring match on job title. Comma-separated for OR (e.g. 'product manager,PM', 'senior engineer'). Uses SQL LIKE, not regex.")] = "",
     location_filter: Annotated[str, Field(default="", description="Case-insensitive substring match on location. Comma-separated for OR (e.g. 'seattle,remote', 'new york,NYC'). Uses SQL LIKE, not regex.")] = "",
     since: Annotated[str, Field(default="", description="Only return jobs posted within this period. Examples: '24h' (last 24 hours), '3d' (3 days), '1w' (1 week), '2w' (2 weeks).")] = "",
     query: Annotated[str, Field(default="", description="Natural language query to search job descriptions by meaning (e.g. 'kubernetes security', 'ML infrastructure'). When provided, results are ranked by semantic similarity. Combinable with company/title/location filters.")] = "",
 ) -> str:
-    """Search cached job listings across one or all companies. Data comes from a local SQLite
+    """Search cached job listings across one or all companies. Data comes from a local
     cache populated by `jsb sync` — results are instant, no live API calls.
 
     REQUIRED: You must provide either `title_filter` or `query` (or both). Browsing
@@ -322,13 +323,14 @@ def search_jobs(
     "what PM jobs does [company] have", "find me jobs like...", describes a role vaguely,
     or any request to browse or search job listings.
 
+    Results are automatically diversified across employers — no single company dominates
+    even when it has thousands of matching listings. A relevance floor ensures only
+    genuinely matching results are returned (may be fewer than the max limit for
+    specific queries, which is correct behavior).
+
     Without `query`: filters by company/title/location using keyword matching (SQL LIKE).
     With `query`: ranks results by semantic similarity to the query text, optionally
     filtered by company/title/location. Pass the user's words directly as the query.
-
-    If results exceed the max limit, the tool returns an error instead of truncating.
-    When this happens, narrow your search by adding filters: location_filter, since,
-    title_filter, or company. Do NOT just accept truncated results — refine the query.
 
     Company is optional — omit it to search across all ~100 cached companies.
     Filters use case-insensitive substring matching (SQL LIKE), not regex.
@@ -341,7 +343,6 @@ def search_jobs(
     Returns the company registry if the company name isn't found."""
     from jobbuddy.search import VectorSearch
 
-    # Require at least a title or semantic query
     if not title_filter and not query:
         return (
             "Error: You must provide either `title_filter` or `query` (or both). "
@@ -358,11 +359,21 @@ def search_jobs(
             return f"Error: Unknown company '{company}'. Registered companies: {', '.join(c.name for c in companies.values())}"
         company_slug = resolved.slug
 
+    # Resolve exclude list
+    exclude_slugs = None
+    if exclude_companies:
+        exclude_slugs = []
+        for name in exclude_companies.split(","):
+            name = name.strip()
+            if not name:
+                continue
+            resolved = lookup_by_name(name)
+            exclude_slugs.append(resolved.slug if resolved else name)
+
     max_results = 100
 
     search = VectorSearch()
     try:
-        # Parse since duration
         posted_after = None
         if since:
             from jobbuddy.core import parse_duration_to_date
@@ -372,14 +383,14 @@ def search_jobs(
             except ValueError:
                 return f"Error: Invalid 'since' value '{since}'. Use e.g. '24h', '3d', '1w', '2w'."
 
-        # Fetch one extra to detect overflow
         results = search.search(
             query=query or None,
             company=company_slug,
+            exclude_companies=exclude_slugs,
             title=title_filter or None,
             location=location_filter or None,
             posted_after=posted_after,
-            limit=max_results + 1,
+            limit=max_results,
         )
 
         if not results:
@@ -395,35 +406,6 @@ def search_jobs(
             filter_desc = f" matching {', '.join(filters)}" if filters else ""
             scope = company_slug or "any company"
             return f"No cached jobs found for {scope}{filter_desc}. Try running `jsb sync` to refresh."
-
-        # Refuse to return silently truncated results
-        if len(results) > max_results:
-            current_filters = []
-            if company_slug:
-                current_filters.append(f"company='{company_slug}'")
-            if title_filter:
-                current_filters.append(f"title_filter='{title_filter}'")
-            if location_filter:
-                current_filters.append(f"location_filter='{location_filter}'")
-            if since:
-                current_filters.append(f"since='{since}'")
-            if query:
-                current_filters.append(f"query='{query}'")
-            suggestions = []
-            if not location_filter:
-                suggestions.append("location_filter (e.g. 'seattle,remote')")
-            if not since:
-                suggestions.append("since (e.g. '1w', '3d')")
-            if not company_slug:
-                suggestions.append("company")
-            if not title_filter and query:
-                suggestions.append("title_filter")
-            return (
-                f"Too many results (>{max_results}). Your query is too broad — "
-                f"narrow it down instead of accepting truncated results.\n"
-                f"Current filters: {', '.join(current_filters)}\n"
-                f"Try adding: {', '.join(suggestions)}"
-            )
 
         rows = []
         for result in results:

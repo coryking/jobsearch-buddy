@@ -22,6 +22,7 @@ class VectorSearch:
         *,
         query: str | None = None,
         company: str | None = None,
+        exclude_companies: list[str] | None = None,
         title: str | None = None,
         location: str | None = None,
         posted_after: str | None = None,
@@ -32,6 +33,7 @@ class VectorSearch:
             rows = self.store.search_similar_filtered(
                 query_vec,
                 company=company,
+                exclude_companies=exclude_companies,
                 title=title,
                 location=location,
                 posted_after=posted_after,
@@ -44,6 +46,7 @@ class VectorSearch:
         else:
             rows = self.store.query_jobs(
                 company=company,
+                exclude_companies=exclude_companies,
                 title=title,
                 location=location,
                 posted_after=posted_after,

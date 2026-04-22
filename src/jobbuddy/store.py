@@ -234,52 +234,67 @@ class JobStore:
         self,
         *,
         company: str | None = None,
+        exclude_companies: list[str] | None = None,
         title: str | None = None,
         location: str | None = None,
         posted_after: str | None = None,
         include_removed: bool = False,
         limit: int = 100,
     ) -> list[dict]:
-        conditions = []
-        params: list = []
+        """Query jobs with keyword filters and round-robin diversity.
 
-        if not include_removed:
-            conditions.append("j.listing_status = 'active'")
+        When searching across multiple companies, fetches a pool then
+        round-robins across companies by recency so no single employer
+        dominates the result set. Single-company queries skip diversity
+        (no need to round-robin with one company).
+        """
+        conditions, params = self._build_filter_conditions(
+            company=company, exclude_companies=exclude_companies,
+            title=title, location=location, posted_after=posted_after,
+        )
 
-        if company:
-            conditions.append("j.company_slug = %s")
-            params.append(company)
-
-        if posted_after:
-            conditions.append("j.published_at >= %s")
-            params.append(posted_after)
-
-        if title:
-            terms = [t.strip() for t in title.split(",") if t.strip()]
-            if terms:
-                or_clauses = ["j.title ILIKE %s"] * len(terms)
-                conditions.append(f"({' OR '.join(or_clauses)})")
-                params.extend(f"%{t}%" for t in terms)
-
-        if location:
-            terms = [t.strip() for t in location.split(",") if t.strip()]
-            if terms:
-                or_clauses = ["j.location ILIKE %s"] * len(terms)
-                conditions.append(f"({' OR '.join(or_clauses)})")
-                params.extend(f"%{t}%" for t in terms)
+        if include_removed:
+            conditions = [c for c in conditions if c != "j.listing_status = 'active'"]
 
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
 
-        sql = f"""
-            SELECT j.*, s.last_sync, c.name AS company_name
-            FROM jobs j
-            LEFT JOIN sync_status s ON j.company_slug = s.company_slug
-            LEFT JOIN companies c ON j.company_slug = c.slug
-            {where}
-            ORDER BY j.published_at DESC NULLS LAST
-            LIMIT %s
-        """
-        params.append(limit)
+        if company:
+            params.append(limit)
+            sql = f"""
+                SELECT j.*, s.last_sync, c.name AS company_name
+                FROM jobs j
+                LEFT JOIN sync_status s ON j.company_slug = s.company_slug
+                LEFT JOIN companies c ON j.company_slug = c.slug
+                {where}
+                ORDER BY j.published_at DESC NULLS LAST
+                LIMIT %s
+            """
+        else:
+            pool_size = max(self.DIVERSITY_POOL_SIZE, limit * 5)
+            params.append(pool_size)
+            sql = f"""
+                WITH base AS (
+                    SELECT j.*, s.last_sync, c.name AS company_name
+                    FROM jobs j
+                    LEFT JOIN sync_status s ON j.company_slug = s.company_slug
+                    LEFT JOIN companies c ON j.company_slug = c.slug
+                    {where}
+                    ORDER BY j.published_at DESC NULLS LAST
+                    LIMIT %s
+                ),
+                ranked AS (
+                    SELECT *,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY company_slug
+                               ORDER BY published_at DESC NULLS LAST
+                           ) AS rn
+                    FROM base
+                )
+                SELECT * FROM ranked
+                ORDER BY rn, published_at DESC NULLS LAST
+                LIMIT %s
+            """
+            params.append(limit)
 
         rows = self.conn.execute(sql, params).fetchall()
         return [dict(row) for row in rows]
@@ -461,25 +476,26 @@ class JobStore:
         """, (query_embedding, query_embedding, k)).fetchall()
         return [dict(r) for r in rows]
 
-    def search_similar_filtered(
+    def _build_filter_conditions(
         self,
-        query_embedding: list[float],
         *,
         company: str | None = None,
+        exclude_companies: list[str] | None = None,
         title: str | None = None,
         location: str | None = None,
         posted_after: str | None = None,
-        k: int = 25,
-    ) -> list[dict]:
-        """KNN search with filters on company/title/location."""
-        conditions = [
-            "j.listing_status = 'active'",
-        ]
-        params: list = [query_embedding]
+    ) -> tuple[list[str], list]:
+        """Build WHERE conditions and params for job search filters."""
+        conditions = ["j.listing_status = 'active'"]
+        params: list = []
 
         if company:
             conditions.append("j.company_slug = %s")
             params.append(company)
+
+        if exclude_companies:
+            conditions.append("j.company_slug != ALL(%s)")
+            params.append(exclude_companies)
 
         if posted_after:
             conditions.append("j.published_at >= %s")
@@ -499,22 +515,67 @@ class JobStore:
                 conditions.append(f"({' OR '.join(or_clauses)})")
                 params.extend(f"%{t}%" for t in terms)
 
-        params.extend([query_embedding, k])
+        return conditions, params
+
+    DIVERSITY_FLOOR_MULTIPLIER = 1.20
+    DIVERSITY_POOL_SIZE = 500
+
+    def search_similar_filtered(
+        self,
+        query_embedding: list[float],
+        *,
+        company: str | None = None,
+        exclude_companies: list[str] | None = None,
+        title: str | None = None,
+        location: str | None = None,
+        posted_after: str | None = None,
+        k: int = 25,
+    ) -> list[dict]:
+        """KNN search with filters, relevance floor, and round-robin diversity.
+
+        Fetches a pool of candidates, applies a dynamic relevance floor
+        (best_distance * 1.20), then round-robins across companies so no
+        single employer dominates results.
+        """
+        conditions, params = self._build_filter_conditions(
+            company=company, exclude_companies=exclude_companies,
+            title=title, location=location, posted_after=posted_after,
+        )
+
+        pool_size = max(self.DIVERSITY_POOL_SIZE, k * 5)
+        vec_params = [query_embedding] + params + [query_embedding, pool_size]
         where = " AND ".join(conditions)
 
         sql = f"""
-            SELECT e.embedding <=> %s::vector AS distance,
-                   j.*, s.last_sync, c.name AS company_name
-            FROM job_embeddings e
-            JOIN jobs j ON e.job_id = j.id
-            LEFT JOIN sync_status s ON j.company_slug = s.company_slug
-            LEFT JOIN companies c ON j.company_slug = c.slug
-            WHERE {where}
-            ORDER BY e.embedding <=> %s::vector
+            WITH base AS (
+                SELECT e.embedding <=> %s::vector AS distance,
+                       j.*, s.last_sync, c.name AS company_name
+                FROM job_embeddings e
+                JOIN jobs j ON e.job_id = j.id
+                LEFT JOIN sync_status s ON j.company_slug = s.company_slug
+                LEFT JOIN companies c ON j.company_slug = c.slug
+                WHERE {where}
+                ORDER BY e.embedding <=> %s::vector
+                LIMIT %s
+            ),
+            floored AS (
+                SELECT * FROM base
+                WHERE distance <= (SELECT min(distance) * %s FROM base)
+            ),
+            ranked AS (
+                SELECT *,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY company_slug ORDER BY distance
+                       ) AS rn
+                FROM floored
+            )
+            SELECT * FROM ranked
+            ORDER BY rn, distance
             LIMIT %s
         """
+        vec_params.extend([self.DIVERSITY_FLOOR_MULTIPLIER, k])
 
-        rows = self.conn.execute(sql, params).fetchall()
+        rows = self.conn.execute(sql, vec_params).fetchall()
         return [dict(r) for r in rows]
 
     def _embedding_base_query(self, slugs: list[str] | None = None) -> tuple[str, str, list]:

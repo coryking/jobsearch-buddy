@@ -138,6 +138,7 @@ def search(
     title: Optional[str] = typer.Option(None, "--title", "-t", help="Title substring filter (comma-separated for OR)"),
     location: Optional[str] = typer.Option(None, "--location", "-l", help="Location substring filter (comma-separated for OR)"),
     company: Optional[str] = typer.Option(None, "--company", "-c", help="Company name or slug"),
+    exclude: Optional[str] = typer.Option(None, "--exclude", "-x", help="Comma-separated company names/slugs to exclude"),
     since: Optional[str] = typer.Option(None, "--since", "-s", help="Only show jobs posted within this period (e.g. 24h, 3d, 1w, 2w)"),
 ):
     """Search cached jobs across all companies."""
@@ -153,6 +154,16 @@ def search(
         else:
             company_slug = company  # try raw slug
 
+    exclude_slugs = None
+    if exclude:
+        exclude_slugs = []
+        for name in exclude.split(","):
+            name = name.strip()
+            if not name:
+                continue
+            resolved = lookup_by_name(name)
+            exclude_slugs.append(resolved.slug if resolved else name)
+
     try:
         store = JobStore()
     except Exception:
@@ -161,6 +172,7 @@ def search(
     try:
         rows = store.query_jobs(
             company=company_slug,
+            exclude_companies=exclude_slugs,
             title=title,
             location=location,
             posted_after=posted_after,
