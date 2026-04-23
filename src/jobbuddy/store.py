@@ -234,7 +234,7 @@ class JobStore:
     def query_jobs(
         self,
         *,
-        company: str | None = None,
+        companies: list[str] | None = None,
         exclude_companies: list[str] | None = None,
         title: str | None = None,
         location: str | None = None,
@@ -250,7 +250,7 @@ class JobStore:
         (no need to round-robin with one company).
         """
         conditions, params = self._build_filter_conditions(
-            company=company, exclude_companies=exclude_companies,
+            companies=companies, exclude_companies=exclude_companies,
             title=title, location=location, posted_after=posted_after,
             include_removed=include_removed,
         )
@@ -478,7 +478,7 @@ class JobStore:
     def _build_filter_conditions(
         self,
         *,
-        company: str | None = None,
+        companies: list[str] | None = None,
         exclude_companies: list[str] | None = None,
         title: str | None = None,
         location: str | None = None,
@@ -492,9 +492,9 @@ class JobStore:
         if not include_removed:
             conditions.append("j.listing_status = 'active'")
 
-        if company:
-            conditions.append("j.company_slug = %s")
-            params.append(company)
+        if companies:
+            conditions.append("j.company_slug = ANY(%s)")
+            params.append(companies)
 
         if exclude_companies:
             conditions.append("NOT (j.company_slug = ANY(%s))")
@@ -523,10 +523,28 @@ class JobStore:
     SEMANTIC_POOL_SIZE = 200
     FTS_RANK_WEIGHT = 0.02
 
+    @staticmethod
+    def _strip_fts_operators(query_text: str) -> str:
+        """Strip websearch_to_tsquery operators for embedding input.
+
+        Removes quotes, OR, and leading minus so the embedding model sees
+        plain natural language while FTS gets the structured query.
+        """
+        import re
+        text = query_text.replace('"', '')
+        text = re.sub(r'\bOR\b', ' ', text)
+        text = re.sub(r'(?<!\w)-(?=\w)', ' ', text)
+        return ' '.join(text.split())
+
     def _ensure_query_embedding(self, query_text: str) -> None:
-        """Guarantee query_text has an embedding row. Calls OpenAI on miss."""
+        """Guarantee query_text has an embedding row. Calls OpenAI on miss.
+
+        Strips FTS operators (quotes, OR, minus) before embedding so the
+        vector search sees plain natural language.
+        """
         from jobbuddy.embeddings import embed_query
 
+        embed_text = self._strip_fts_operators(query_text)
         model = _get_settings().embedding_model
         row = self.conn.execute(
             "SELECT 1 FROM query_embeddings WHERE query_text = %s AND model = %s",
@@ -534,7 +552,7 @@ class JobStore:
         ).fetchone()
         if row:
             return
-        vec = embed_query(query_text)
+        vec = embed_query(embed_text)
         self.conn.execute(
             "INSERT INTO query_embeddings (query_text, embedding, model) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
             (query_text, vec, model),
@@ -544,7 +562,7 @@ class JobStore:
         self,
         query_text: str,
         *,
-        company: str | None = None,
+        companies: list[str] | None = None,
         exclude_companies: list[str] | None = None,
         location: str | None = None,
         posted_after: str | None = None,
@@ -560,7 +578,7 @@ class JobStore:
         self._ensure_query_embedding(query_text)
         settings = _get_settings()
         conditions, params = self._build_filter_conditions(
-            company=company, exclude_companies=exclude_companies,
+            companies=companies, exclude_companies=exclude_companies,
             location=location, posted_after=posted_after,
         )
         where = " AND ".join(conditions)

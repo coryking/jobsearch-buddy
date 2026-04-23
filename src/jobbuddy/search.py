@@ -20,7 +20,7 @@ class VectorSearch:
         self,
         *,
         query: str | None = None,
-        company: str | None = None,
+        companies: list[str] | None = None,
         exclude_companies: list[str] | None = None,
         location: str | None = None,
         posted_after: str | None = None,
@@ -29,7 +29,7 @@ class VectorSearch:
         if query:
             rows = self.store.hybrid_search(
                 query,
-                company=company,
+                companies=companies,
                 exclude_companies=exclude_companies,
                 location=location,
                 posted_after=posted_after,
@@ -38,7 +38,7 @@ class VectorSearch:
             return [SearchResult(score=row.pop("rrf_score", None), job=row) for row in rows]
         else:
             rows = self.store.query_jobs(
-                company=company,
+                companies=companies,
                 exclude_companies=exclude_companies,
                 location=location,
                 posted_after=posted_after,

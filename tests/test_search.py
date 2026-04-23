@@ -236,7 +236,7 @@ class TestHybridSearch:
 
         query_vec = _fake_vec(DIMS, seed=1).tolist()
         with patch("jobbuddy.embeddings.embed_query", return_value=query_vec):
-            results = vs.search(query="AI engineer", company="beta")
+            results = vs.search(query="AI engineer", companies=["beta"])
         assert len(results) == 1
         assert results[0].job["company_slug"] == "beta"
 

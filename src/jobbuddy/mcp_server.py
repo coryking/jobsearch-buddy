@@ -305,9 +305,9 @@ def log_job_activity(
 
 @mcp.tool
 def search_jobs(
-    query: Annotated[str, Field(description="Describe what you're looking for in natural language. Pass the user's words directly — 'startup ML engineer jobs in Seattle', 'remote product manager', 'security roles at fintech companies'. The search understands meaning (semantic) and keywords (full-text) simultaneously. Don't enumerate synonyms or title variants — just describe the role.")],
-    company: Annotated[str, Field(default="", description="Company name or slug. Omit to search across ALL cached companies.")] = "",
-    exclude_companies: Annotated[str, Field(default="", description="Comma-separated company names or slugs to exclude from results (e.g. 'microsoft,walmart,boeing'). Useful for filtering out large employers to surface smaller companies.")] = "",
+    query: Annotated[str, Field(description="Search using PostgreSQL websearch syntax. Quote phrases for exact matching: '\"software engineer\" startup' boosts jobs with 'software engineer' in the title. Unquoted words match by meaning (semantic search). Supports: \"quoted phrases\", OR for alternatives, -word to exclude. Stemming is automatic (engineer matches engineering). Don't enumerate synonyms.")],
+    companies: Annotated[list[str], Field(default=[], description="Company names or slugs to search within (e.g. brex, stripe, plaid). Omit to search across ALL cached companies.")] = [],
+    exclude_companies: Annotated[list[str], Field(default=[], description="Company names or slugs to exclude from results (e.g. microsoft, walmart, boeing).")] = [],
     location_filter: Annotated[str, Field(default="", description="Case-insensitive substring match on location. Comma-separated for OR (e.g. 'seattle,remote', 'new york,NYC').")] = "",
     since: Annotated[str, Field(default="", description="Only return jobs posted within this period. Examples: '24h' (last 24 hours), '3d' (3 days), '1w' (1 week), '2w' (2 weeks).")] = "",
 ) -> str:
@@ -337,20 +337,30 @@ def search_jobs(
     Returns the company registry if the company name isn't found."""
     from jobbuddy.search import VectorSearch
 
-    # Resolve company
-    company_slug = None
-    if company:
-        resolved = lookup_by_name(company)
-        if not resolved:
-            companies = list_companies()
-            return f"Error: Unknown company '{company}'. Registered companies: {', '.join(c.name for c in companies.values())}"
-        company_slug = resolved.slug
+    def _resolve_company_list(names: list[str]) -> list[str] | str:
+        """Resolve company names to slugs. Returns error string on unknown name."""
+        slugs = []
+        for name in names:
+            resolved = lookup_by_name(name)
+            if not resolved:
+                all_companies = list_companies()
+                return f"Error: Unknown company '{name}'. Registered companies: {', '.join(c.name for c in all_companies.values())}"
+            slugs.append(resolved.slug)
+        return slugs
 
-    # Resolve exclude list
+    company_slugs = None
+    if companies:
+        result = _resolve_company_list(companies)
+        if isinstance(result, str):
+            return result
+        company_slugs = result
+
     exclude_slugs = None
     if exclude_companies:
-        from jobbuddy.core import resolve_exclude_companies
-        exclude_slugs = resolve_exclude_companies(exclude_companies)
+        result = _resolve_company_list(exclude_companies)
+        if isinstance(result, str):
+            return result
+        exclude_slugs = result
 
     max_results = 100
 
@@ -367,7 +377,7 @@ def search_jobs(
 
         results = search.search(
             query=query,
-            company=company_slug,
+            companies=company_slugs,
             exclude_companies=exclude_slugs,
             location=location_filter or None,
             posted_after=posted_after,
@@ -382,14 +392,15 @@ def search_jobs(
                 filters.append(f"since='{since}'")
             filters.append(f"query='{query}'")
             filter_desc = f" matching {', '.join(filters)}" if filters else ""
-            scope = company_slug or "any company"
+            scope = ", ".join(company_slugs) if company_slugs else "any company"
             return f"No cached jobs found for {scope}{filter_desc}. Try running `jsb sync` to refresh."
 
         rows = [dict(result.job) for result in results]
 
         log_entries = read_log()
 
-        return JobSearchResults.from_query(rows, log_entries, company_slug=company_slug).to_mcp_result()
+        single_slug = company_slugs[0] if company_slugs and len(company_slugs) == 1 else None
+        return JobSearchResults.from_query(rows, log_entries, company_slug=single_slug).to_mcp_result()
     finally:
         search.close()
 

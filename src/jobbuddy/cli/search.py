@@ -100,7 +100,7 @@ def list_jobs(
 
     try:
         rows = store.query_jobs(
-            company=company_slug,
+            companies=[company_slug] if company_slug else None,
             title=filter,
             posted_after=posted_after,
             limit=10000,
@@ -166,7 +166,7 @@ def search(
         raise SystemExit(1)
     try:
         rows = store.query_jobs(
-            company=company_slug,
+            companies=[company_slug] if company_slug else None,
             exclude_companies=exclude_slugs,
             title=title,
             location=location,
