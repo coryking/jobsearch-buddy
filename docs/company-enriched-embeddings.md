@@ -182,9 +182,26 @@ the embedding model sees.
 - Job metadata: title, location, department, salary
 - Company profile (from Agent 1)
 
-**Output:** A single normalized document — the exact text that gets sent to
-the embedding model. `embed_text()` in `models.py` disappears. The embed
-phase becomes purely mechanical: text in, vector out.
+**Output:** Two artifacts per job:
+
+1. **Embedding text** — the normalized document sent to the embedding model.
+   `embed_text()` in `models.py` disappears. The embed phase becomes purely
+   mechanical: text in, vector out.
+
+2. **One-sentence summary** — a human-readable description of what the job
+   actually is, stored alongside the job and included in MCP search results.
+   This solves the presentation gap: without it, the MCP response contains
+   only the job title, and the consuming LLM (and humans reviewing its output)
+   judge relevance by title alone. A "Data Engineer" whose description says
+   "build backend data pipelines in Python, design real-time streaming
+   infrastructure" looks irrelevant by title but is clearly adjacent to a
+   software engineering search. The summary lets the consumer make informed
+   relevance judgments instead of title-filtering.
+
+   The summary is a byproduct of the embedding text generation — the LLM is
+   already reading the full job description and company context, so producing
+   a one-liner is marginal cost. It does NOT feed the embedding model (that
+   gets the full embedding text). It feeds humans and LLMs downstream.
 
 The embedding text generator takes the job description (the most important
 input), enriches it with company context, and produces a document optimized
