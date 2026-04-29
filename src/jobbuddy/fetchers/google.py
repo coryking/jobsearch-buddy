@@ -14,6 +14,8 @@ import re
 import urllib.parse
 from datetime import datetime, timezone
 
+import httpx
+
 from jobbuddy.fetchers.base import ATSFetcher, JobList, ProgressCallback, RetryCallback
 from jobbuddy.models import Job, strip_html
 
@@ -23,6 +25,7 @@ CAREERS_URL = "https://www.google.com/about/careers/applications/jobs/results"
 BATCHEXECUTE_PATH = "/about/careers/applications/_/HiringCportalFrontendUi/data/batchexecute"
 RPC_ID = "r06xKb"
 PAGE_SIZE = 20
+MAX_PAGES = 500
 
 
 def extract_tokens(html: str) -> tuple[str, str]:
@@ -48,26 +51,23 @@ def build_location(location_entries: list | None) -> str:
     return " | ".join(names)
 
 
+def _get_nested(entry: list, idx: int) -> str | None:
+    """Safely extract a nested HTML string from entry[idx][1]."""
+    if idx >= len(entry) or not entry[idx]:
+        return None
+    val = entry[idx]
+    if isinstance(val, list) and len(val) > 1:
+        return val[1]
+    return None
+
+
 def build_description(entry: list) -> str | None:
     """Combine summary, description, qualifications, and workplace info."""
     parts = []
-
-    summary = entry[10][1] if entry[10] else None
-    if summary:
-        parts.append(strip_html(summary))
-
-    desc = entry[3][1] if entry[3] else None
-    if desc:
-        parts.append(strip_html(desc))
-
-    quals = entry[4][1] if entry[4] else None
-    if quals:
-        parts.append(strip_html(quals))
-
-    workplace = entry[18][1] if len(entry) > 18 and entry[18] else None
-    if workplace:
-        parts.append(strip_html(workplace))
-
+    for idx in (10, 3, 4, 18):
+        html = _get_nested(entry, idx)
+        if html:
+            parts.append(strip_html(html))
     return "\n\n".join(parts) if parts else None
 
 
@@ -132,33 +132,41 @@ class GoogleFetcher(ATSFetcher):
         html = self._retry_request(do_fetch, on_retry=on_retry)
         self._f_sid, self._bl = extract_tokens(html)
 
+    def _clear_tokens(self) -> None:
+        self._f_sid = None
+        self._bl = None
+
     def _fetch_page(
         self, page: int, *, include_count: bool = False, on_retry: RetryCallback | None = None,
     ) -> tuple[list[list], int | None]:
-        """Fetch a page of results. Returns (job_entries, total_or_none)."""
+        """Fetch a page of results. Returns (job_entries, total_or_none).
+
+        On non-retryable HTTP errors (400/403), clears cached tokens and
+        retries once — Google rotates f.sid periodically.
+        """
         self._ensure_tokens(on_retry=on_retry)
 
-        payload: list = ["", None, None, None, "en", None, None, page]
-        if include_count:
-            payload.extend([None, 1])
-        inner = json.dumps([payload])
-        outer = [[RPC_ID, inner, None, "3"]]
-        f_req = json.dumps([outer])
-
-        params = {
-            "rpcids": RPC_ID,
-            "source-path": "/about/careers/applications/jobs/results",
-            "f.sid": self._f_sid,
-            "bl": self._bl,
-            "hl": "en",
-            "soc-app": "1",
-            "soc-platform": "1",
-            "soc-device": "1",
-            "_reqid": str(100000 + page * 100000),
-            "rt": "c",
-        }
-
         def do_fetch():
+            payload: list = ["", None, None, None, "en", None, None, page]
+            if include_count:
+                payload.extend([None, 1])
+            inner = json.dumps([payload])
+            outer = [[RPC_ID, inner, None, "3"]]
+            f_req = json.dumps([outer])
+
+            params = {
+                "rpcids": RPC_ID,
+                "source-path": "/about/careers/applications/jobs/results",
+                "f.sid": self._f_sid,
+                "bl": self._bl,
+                "hl": "en",
+                "soc-app": "1",
+                "soc-platform": "1",
+                "soc-device": "1",
+                "_reqid": str(100000 + page * 100000),
+                "rt": "c",
+            }
+
             resp = self.client.post(
                 f"https://www.google.com{BATCHEXECUTE_PATH}",
                 params=params,
@@ -168,25 +176,36 @@ class GoogleFetcher(ATSFetcher):
             resp.raise_for_status()
             return resp.text
 
-        raw = self._retry_request(do_fetch, on_retry=on_retry)
-        data = parse_batchexecute_response(raw)
+        try:
+            raw = self._retry_request(do_fetch, on_retry=on_retry)
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code in (400, 403):
+                log.info("Got %d, refreshing tokens", e.response.status_code)
+                self._clear_tokens()
+                self._ensure_tokens(on_retry=on_retry)
+                raw = self._retry_request(do_fetch, on_retry=on_retry)
+            else:
+                raise
 
+        data = parse_batchexecute_response(raw)
         entries = data[0] if data[0] else []
         total = data[2] if include_count and len(data) > 2 else None
         return entries, total
 
     def _entry_to_job(self, entry: list) -> Job:
         job_id = str(entry[0])
-        title = entry[1] or ""
+        title = entry[1] or "" if len(entry) > 1 else ""
+        apply_url = entry[2] if len(entry) > 2 else None
         locations = entry[9] if len(entry) > 9 else None
+        timestamp = entry[12] if len(entry) > 12 else None
 
         return Job(
             id=job_id,
             title=title,
             location=build_location(locations),
             url=f"{CAREERS_URL}/{job_id}",
-            apply_url=entry[2] or f"{CAREERS_URL}/{job_id}",
-            published_at=parse_timestamp(entry[12] if len(entry) > 12 else None),
+            apply_url=apply_url or f"{CAREERS_URL}/{job_id}",
+            published_at=parse_timestamp(timestamp),
             department=None,
             description=build_description(entry),
         )
@@ -213,7 +232,7 @@ class GoogleFetcher(ATSFetcher):
             on_progress(len(jobs), reported_total or len(jobs))
 
         page = 2
-        while True:
+        while page < MAX_PAGES:
             page_entries, _ = self._fetch_page(page, on_retry=on_retry)
             if not page_entries:
                 break
@@ -233,7 +252,11 @@ class GoogleFetcher(ATSFetcher):
         return jobs
 
     def fetch_job(self, job_id: str) -> Job:
-        for page in range(1, 100):
+        log.warning(
+            "Google fetch_job requires paginating through all listings "
+            "(no search-by-ID API) — this may be slow",
+        )
+        for page in range(1, MAX_PAGES):
             entries, _ = self._fetch_page(page)
             if not entries:
                 break

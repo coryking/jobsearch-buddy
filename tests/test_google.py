@@ -147,6 +147,16 @@ def test_build_description_all_none():
     assert desc is None
 
 
+def test_build_description_short_entry():
+    """Short entry arrays (fewer than 19 elements) should not IndexError."""
+    entry = [None] * 5
+    entry[0] = "123"
+    entry[3] = [None, "<p>Short listing</p>"]
+    desc = build_description(entry)
+    assert desc is not None
+    assert "Short listing" in desc
+
+
 # ---------------------------------------------------------------------------
 # Batchexecute response parsing
 # ---------------------------------------------------------------------------
@@ -221,6 +231,16 @@ def test_entry_to_job_minimal():
     assert job.title == "Intern"
     assert job.location == ""
     assert "999" in job.url
+
+
+def test_entry_to_job_short_entry():
+    """Entry with only a few elements should not IndexError."""
+    f = GoogleFetcher("")
+    entry = ["888"]
+    job = f._entry_to_job(entry)
+    assert job.id == "888"
+    assert job.title == ""
+    assert job.location == ""
 
 
 # ---------------------------------------------------------------------------
@@ -394,3 +414,41 @@ def test_fetch_job_not_found(monkeypatch):
 
     with pytest.raises(ValueError, match="not found"):
         f.fetch_job("nonexistent")
+
+
+# ---------------------------------------------------------------------------
+# Token refresh on stale tokens (issue 3)
+# ---------------------------------------------------------------------------
+
+def test_token_refresh_on_403(monkeypatch):
+    """Stale tokens should be refreshed on 403 and the request retried."""
+    import httpx as _httpx
+
+    entries = [_make_entry(id="1", title="Job 1")]
+    f = GoogleFetcher("")
+
+    get_calls = 0
+    post_calls = 0
+
+    def mock_get(*args, **kwargs):
+        nonlocal get_calls
+        get_calls += 1
+        return _mock_careers_page()
+
+    def mock_post(*args, **kwargs):
+        nonlocal post_calls
+        post_calls += 1
+        if post_calls == 1:
+            raise _httpx.HTTPStatusError(
+                "Forbidden",
+                request=_httpx.Request("POST", "https://example.com"),
+                response=_httpx.Response(403),
+            )
+        return _mock_batchexecute_response(entries, total=1)
+
+    monkeypatch.setattr(f.client, "get", mock_get)
+    monkeypatch.setattr(f.client, "post", mock_post)
+
+    jobs = f.list_jobs()
+    assert len(jobs) == 1
+    assert get_calls == 2  # initial + refresh
