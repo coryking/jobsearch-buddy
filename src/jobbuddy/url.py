@@ -484,6 +484,23 @@ def _parse_smartrecruiters(url: str) -> ParsedURL | None:
 
 
 # ---------------------------------------------------------------------------
+# Amazon
+# ---------------------------------------------------------------------------
+# https://www.amazon.jobs/en/jobs/{icimsJobId}/{slug}
+# https://amazon.jobs/en/jobs/{icimsJobId}/{slug}
+
+def _parse_amazon(url: str) -> ParsedURL | None:
+    m = re.search(
+        r"amazon\.jobs/[^/]+/jobs/(\d+)",
+        url,
+        re.IGNORECASE,
+    )
+    if m:
+        return ParsedURL(ats="amazon", board="amazon", job_id=m.group(1))
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Dispatcher
 # ---------------------------------------------------------------------------
 
@@ -504,6 +521,7 @@ _PARSERS = [
     _parse_jibe,
     _parse_jobsync,
     _parse_smartrecruiters,
+    _parse_amazon,
 ]
 
 
