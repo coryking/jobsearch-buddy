@@ -154,6 +154,11 @@ def sync_jobs(
     if conninfo is None:
         conninfo = pg_conninfo_with_token()
 
+    # Resolve company names/slugs to actual DB slugs for downstream phases
+    resolved_slugs: list[str] | None = None
+    if company_slugs:
+        resolved_slugs = [c.slug for c in _resolve_company_targets(company_slugs)]
+
     # Fetch phase: build targets and run
     results: list[SyncResult] = []
     slugs_to_embed: list[str] = []
@@ -238,7 +243,7 @@ def sync_jobs(
         strip_phase = StripPhase(
             conninfo,
             display=display_state.strip,
-            slugs=company_slugs,
+            slugs=resolved_slugs,
             upstream_done=enrich_done,
         )
 
@@ -248,7 +253,7 @@ def sync_jobs(
         embed_phase = EmbedPhase(
             conninfo,
             display=display_state.embed,
-            slugs=company_slugs,
+            slugs=resolved_slugs,
             upstream_done=strip_done,
         )
 
