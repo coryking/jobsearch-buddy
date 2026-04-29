@@ -112,6 +112,7 @@ jsb embed-test [-f FILE...] [--stdin] [--json] QUERIES...   # Pure embedding sim
 | Jibe        | `{careers_domain}/jobs/{id}` (iCIMS Attract layer)           |
 | JobSync     | `{careers_domain}/jobs/{slug}/{guid}` (Solr search layer)    |
 | SmartRecruiters | `jobs.smartrecruiters.com/{company}/{id}-{slug}`         |
+| Tesla       | `tesla.com/careers/search/job/{slug}-{id}`                   |
 
 ## Configuration
 
