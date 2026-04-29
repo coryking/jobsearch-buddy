@@ -7,6 +7,7 @@ from jobbuddy.fetchers.avature import AvatureFetcher
 from jobbuddy.fetchers.base import ATSFetcher
 from jobbuddy.fetchers.eightfold import EightfoldFetcher
 from jobbuddy.fetchers.eightfold_v2 import EightfoldV2Fetcher
+from jobbuddy.fetchers.google import GoogleFetcher
 from jobbuddy.fetchers.greenhouse import GreenhouseFetcher
 from jobbuddy.fetchers.jibe import JibeFetcher
 from jobbuddy.fetchers.jobsync import JobSyncFetcher
@@ -29,6 +30,7 @@ _REGISTRY: dict[str, type[ATSFetcher]] = {
     "avature": AvatureFetcher,
     "eightfold": EightfoldFetcher,
     "eightfold_v2": EightfoldV2Fetcher,
+    "google": GoogleFetcher,
     "greenhouse": GreenhouseFetcher,
     "jibe": JibeFetcher,
     "jobsync": JobSyncFetcher,

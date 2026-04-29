@@ -518,6 +518,21 @@ def _parse_amazon(url: str) -> ParsedURL | None:
 
 
 # ---------------------------------------------------------------------------
+# Google Careers
+# ---------------------------------------------------------------------------
+# https://www.google.com/about/careers/applications/jobs/results/{job_id}
+
+def _parse_google(url: str) -> ParsedURL | None:
+    m = re.search(
+        r"google\.com/about/careers/applications/jobs/results/(\d+)",
+        url,
+    )
+    if m:
+        return ParsedURL(ats="google", board="google", job_id=m.group(1))
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Dispatcher
 # ---------------------------------------------------------------------------
 
@@ -540,6 +555,7 @@ _PARSERS = [
     _parse_smartrecruiters,
     _parse_amazon,
     _parse_apple,
+    _parse_google,
 ]
 
 
