@@ -493,7 +493,7 @@ def _parse_apple(url: str) -> ParsedURL | None:
 
 def _parse_tesla(url: str) -> ParsedURL | None:
     m = re.search(
-        r"tesla\.com/careers/search/job/.*?(\d+)\s*$",
+        r"tesla\.com/careers/search/job/.*?(\d+)(?=[/?#]|$)",
         url,
         re.IGNORECASE,
     )
