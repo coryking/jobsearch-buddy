@@ -44,6 +44,17 @@ def parse_ssr_html(html: str) -> tuple[list[dict], int]:
     return results, total
 
 
+def build_description(data: dict) -> str | None:
+    """Combine jobSummary + description from a detail API response."""
+    summary = data.get("jobSummary", "")
+    raw_desc = data.get("description", "")
+    desc_text = strip_html(raw_desc) if raw_desc else ""
+
+    if summary and desc_text:
+        return f"{summary}\n\n{desc_text}"
+    return summary or desc_text or None
+
+
 class AppleFetcher(ATSFetcher):
     ats_type = "apple"
     descriptions_in_listing = False
@@ -114,7 +125,7 @@ class AppleFetcher(ATSFetcher):
         resp = self.client.get(
             f"https://jobs.apple.com/api/v1/jobDetails/{job_id}",
             params={"locale": "en-us"},
-            headers={"content-type": "application/json", "locale": "en-us"},
+            headers={"locale": "en-us"},
         )
         resp.raise_for_status()
         body = resp.json()
@@ -135,19 +146,6 @@ class AppleFetcher(ATSFetcher):
 
         url = f"https://jobs.apple.com/en-us/details/{position_id}/{slug}"
 
-        # Combine summary + full description
-        summary = data.get("jobSummary", "")
-        raw_desc = data.get("description", "")
-        desc_text = strip_html(raw_desc) if raw_desc else ""
-
-        description = None
-        if summary and desc_text:
-            description = f"{summary}\n\n{desc_text}"
-        elif summary:
-            description = summary
-        elif desc_text:
-            description = desc_text
-
         return Job(
             id=position_id,
             title=data.get("postingTitle", ""),
@@ -157,7 +155,7 @@ class AppleFetcher(ATSFetcher):
             published_at=published_at,
             department=team_name,
             team=team_name,
-            description=description,
+            description=build_description(data),
         )
 
     def fetch_job(self, job_id: str) -> Job:
@@ -166,11 +164,4 @@ class AppleFetcher(ATSFetcher):
 
     def fetch_description(self, job_id: str, metadata: dict | None = None) -> str | None:
         """Fetch description directly from detail API without building a full Job."""
-        data = self._fetch_detail(job_id)
-        summary = data.get("jobSummary", "")
-        raw_desc = data.get("description", "")
-        desc_text = strip_html(raw_desc) if raw_desc else ""
-
-        if summary and desc_text:
-            return f"{summary}\n\n{desc_text}"
-        return summary or desc_text or None
+        return build_description(self._fetch_detail(job_id))

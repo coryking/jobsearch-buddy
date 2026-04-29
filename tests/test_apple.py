@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 import httpx
 import pytest
 
-from jobbuddy.fetchers.apple import AppleFetcher, parse_ssr_html, build_location
+from jobbuddy.fetchers.apple import AppleFetcher, parse_ssr_html, build_location, build_description
 from jobbuddy.url import ParsedURL, parse_url
 
 
@@ -285,8 +285,32 @@ class TestFetchJob:
         fetcher.fetch_job("200660378-0157")
 
         call_kwargs = fetcher.client.get.call_args
-        assert call_kwargs[1]["headers"]["content-type"] == "application/json"
         assert call_kwargs[1]["headers"]["locale"] == "en-us"
+        assert "content-type" not in call_kwargs[1]["headers"]
+
+
+# ---------------------------------------------------------------------------
+# build_description tests
+# ---------------------------------------------------------------------------
+
+
+class TestBuildDescription:
+    def test_summary_and_description(self):
+        result = build_description(SAMPLE_JOB_DETAIL)
+        assert result.startswith("Imagine what you could do here")
+        assert "full job description" in result
+        assert "<p>" not in result
+
+    def test_summary_only(self):
+        data = {"jobSummary": "Just a summary", "description": ""}
+        assert build_description(data) == "Just a summary"
+
+    def test_description_only(self):
+        data = {"jobSummary": "", "description": "Raw desc"}
+        assert build_description(data) == "Raw desc"
+
+    def test_empty_returns_none(self):
+        assert build_description({}) is None
 
 
 # ---------------------------------------------------------------------------
