@@ -19,6 +19,7 @@ from jobbuddy.fetchers.rippling import RipplingFetcher
 from jobbuddy.fetchers.smartrecruiters import SmartRecruitersFetcher
 from jobbuddy.fetchers.successfactors import SuccessFactorsFetcher
 from jobbuddy.fetchers.talentbrew import TalentBrewFetcher
+from jobbuddy.fetchers.tesla import TeslaFetcher
 from jobbuddy.fetchers.workable import WorkableFetcher
 from jobbuddy.fetchers.workday import WorkdayFetcher
 from jobbuddy.models import Company
@@ -42,6 +43,7 @@ _REGISTRY: dict[str, type[ATSFetcher]] = {
     "smartrecruiters": SmartRecruitersFetcher,
     "successfactors": SuccessFactorsFetcher,
     "talentbrew": TalentBrewFetcher,
+    "tesla": TeslaFetcher,
     "workable": WorkableFetcher,
     "workday": WorkdayFetcher,
 }

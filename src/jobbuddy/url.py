@@ -485,6 +485,24 @@ def _parse_apple(url: str) -> ParsedURL | None:
 
 
 # ---------------------------------------------------------------------------
+# Tesla
+# ---------------------------------------------------------------------------
+# https://www.tesla.com/careers/search/job/{slug}-{id}
+# https://tesla.com/careers/search/job/{slug}-{id}
+
+
+def _parse_tesla(url: str) -> ParsedURL | None:
+    m = re.search(
+        r"tesla\.com/careers/search/job/.*?(\d+)(?=[/?#]|$)",
+        url,
+        re.IGNORECASE,
+    )
+    if m:
+        return ParsedURL(ats="tesla", board="tesla", job_id=m.group(1))
+    return None
+
+
+# ---------------------------------------------------------------------------
 # SmartRecruiters
 # ---------------------------------------------------------------------------
 # https://jobs.smartrecruiters.com/{companyIdentifier}/{postingId}-{slug}
@@ -552,6 +570,7 @@ _PARSERS = [
     _parse_successfactors,
     _parse_jibe,
     _parse_jobsync,
+    _parse_tesla,
     _parse_smartrecruiters,
     _parse_amazon,
     _parse_apple,
