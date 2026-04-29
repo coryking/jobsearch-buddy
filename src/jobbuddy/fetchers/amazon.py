@@ -11,6 +11,7 @@ Company registry fields:
 """
 
 import logging
+import re
 from datetime import date, datetime, timezone
 
 from jobbuddy.fetchers.base import ATSFetcher, JobList, ProgressCallback, RetryCallback
@@ -46,15 +47,13 @@ def _build_location(fields: dict) -> str:
 
 
 def _first(values: list | None) -> str | None:
-    if values and len(values) > 0:
+    if values:
         return values[0]
     return None
 
 
 def _slugify_title(title: str) -> str:
-    import re
-    slug = title.lower()
-    slug = re.sub(r"[^a-z0-9]+", "-", slug)
+    slug = re.sub(r"[^a-z0-9]+", "-", title.lower())
     return slug.strip("-")
 
 
@@ -187,16 +186,15 @@ class AmazonFetcher(ATSFetcher):
         return jobs
 
     def fetch_job(self, job_id: str) -> Job:
-        body = self._build_request_body(0, 1)
+        body = self._build_request_body(0, 10)
         body["query"] = job_id
 
-        resp = self.client.post(
-            SEARCH_URL,
-            json=body,
-            params={"is_als": "true"},
-        )
-        resp.raise_for_status()
-        data = resp.json()
+        def _do_fetch():
+            resp = self.client.post(SEARCH_URL, json=body, params={"is_als": "true"})
+            resp.raise_for_status()
+            return resp.json()
+
+        data = self._retry_request(_do_fetch)
 
         for hit in data.get("searchHits", []):
             fields = hit.get("fields", {})

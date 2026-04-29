@@ -185,3 +185,52 @@ def test_list_jobs_pagination(monkeypatch):
     assert len(jobs) == 700
     assert len(calls) == 2
     assert progress_calls[-1] == (700, 700)
+
+
+# ---------------------------------------------------------------------------
+# fetch_job (mocked HTTP)
+# ---------------------------------------------------------------------------
+
+def test_fetch_job_found(monkeypatch):
+    hit = {"fields": {"icimsJobId": ["12345"], "title": ["Test Engineer"]}}
+    f = AmazonFetcher("")
+
+    def mock_post(*args, **kwargs):
+        body = kwargs.get("json", {})
+        assert body["query"] == "12345"
+        return _make_search_response([hit], found=1)
+
+    monkeypatch.setattr(f.client, "post", mock_post)
+
+    job = f.fetch_job("12345")
+    assert job.id == "12345"
+    assert job.title == "Test Engineer"
+
+
+def test_fetch_job_not_found(monkeypatch):
+    f = AmazonFetcher("")
+
+    def mock_post(*args, **kwargs):
+        return _make_search_response([], found=0)
+
+    monkeypatch.setattr(f.client, "post", mock_post)
+
+    with pytest.raises(ValueError, match="not found"):
+        f.fetch_job("99999")
+
+
+def test_fetch_job_filters_by_id(monkeypatch):
+    hits = [
+        {"fields": {"icimsJobId": ["111"], "title": ["Wrong Job"]}},
+        {"fields": {"icimsJobId": ["222"], "title": ["Right Job"]}},
+    ]
+    f = AmazonFetcher("")
+
+    def mock_post(*args, **kwargs):
+        return _make_search_response(hits, found=2)
+
+    monkeypatch.setattr(f.client, "post", mock_post)
+
+    job = f.fetch_job("222")
+    assert job.id == "222"
+    assert job.title == "Right Job"
