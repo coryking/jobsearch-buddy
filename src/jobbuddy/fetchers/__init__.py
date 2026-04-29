@@ -1,6 +1,7 @@
 """ATS fetcher registry and factory."""
 
 from jobbuddy.fetchers.amazon import AmazonFetcher
+from jobbuddy.fetchers.apple import AppleFetcher
 from jobbuddy.fetchers.ashby import AshbyFetcher
 from jobbuddy.fetchers.avature import AvatureFetcher
 from jobbuddy.fetchers.base import ATSFetcher
@@ -23,6 +24,7 @@ from jobbuddy.models import Company
 
 _REGISTRY: dict[str, type[ATSFetcher]] = {
     "amazon": AmazonFetcher,
+    "apple": AppleFetcher,
     "ashby": AshbyFetcher,
     "avature": AvatureFetcher,
     "eightfold": EightfoldFetcher,

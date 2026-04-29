@@ -468,6 +468,23 @@ def _parse_jobsync(url: str) -> ParsedURL | None:
 
 
 # ---------------------------------------------------------------------------
+# Apple
+# ---------------------------------------------------------------------------
+# https://jobs.apple.com/en-us/details/{positionId}/{slug}
+# https://jobs.apple.com/{locale}/details/{positionId}/{slug}
+
+def _parse_apple(url: str) -> ParsedURL | None:
+    m = re.search(
+        r"jobs\.apple\.com/[^/]+/details/([^/]+)",
+        url,
+        re.IGNORECASE,
+    )
+    if m:
+        return ParsedURL(ats="apple", board="apple", job_id=m.group(1))
+    return None
+
+
+# ---------------------------------------------------------------------------
 # SmartRecruiters
 # ---------------------------------------------------------------------------
 # https://jobs.smartrecruiters.com/{companyIdentifier}/{postingId}-{slug}
@@ -522,6 +539,7 @@ _PARSERS = [
     _parse_jobsync,
     _parse_smartrecruiters,
     _parse_amazon,
+    _parse_apple,
 ]
 
 
