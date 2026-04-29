@@ -271,6 +271,16 @@ class TestTeslaURLParser:
         result = parse_url(url)
         assert result == ParsedURL(ats="tesla", board="tesla", job_id="224501")
 
+    def test_trailing_slash(self):
+        url = "https://www.tesla.com/careers/search/job/ai-engineer-224501/"
+        result = parse_url(url)
+        assert result == ParsedURL(ats="tesla", board="tesla", job_id="224501")
+
+    def test_query_params(self):
+        url = "https://www.tesla.com/careers/search/job/ai-engineer-224501?ref=homepage"
+        result = parse_url(url)
+        assert result == ParsedURL(ats="tesla", board="tesla", job_id="224501")
+
     def test_non_tesla_url_returns_none(self):
         result = parse_url("https://example.com/careers/search/job/12345")
         assert result is None
