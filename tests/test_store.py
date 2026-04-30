@@ -66,7 +66,7 @@ class TestUpsertAndQuery:
     def test_upsert_replaces_on_resync(self, store):
         store.upsert_jobs("acme", [make_job("1", "PM", "Seattle")])
         store.upsert_jobs("acme", [make_job("1", "PM Updated", "NYC")])
-        rows = store.query_jobs(company="acme")
+        rows = store.query_jobs(companies=["acme"])
         assert len(rows) == 1
         assert rows[0]["title"] == "PM Updated"
         assert rows[0]["location"] == "NYC"
@@ -88,9 +88,17 @@ class TestUpsertAndQuery:
     def test_upsert_deduplicates_input(self, store):
         dupes = [make_job("1", "PM v1"), make_job("1", "PM v2")]
         store.upsert_jobs("acme", dupes)
-        rows = store.query_jobs(company="acme")
+        rows = store.query_jobs(companies=["acme"])
         assert len(rows) == 1
         assert rows[0]["title"] == "PM v2"
+
+    def test_query_jobs_single_company_filter(self, store):
+        """query_jobs(companies=[...]) should not crash on single-company queries."""
+        store.upsert_jobs("acme", [make_job("1", "PM")])
+        store.upsert_jobs("beta", [make_job("2", "SWE")])
+        rows = store.query_jobs(companies=["acme"])
+        assert len(rows) == 1
+        assert rows[0]["title"] == "PM"
 
     def test_upsert_isolates_companies(self, store):
         store.upsert_jobs("acme", [make_job("1")])
@@ -102,7 +110,7 @@ class TestUpsertAndQuery:
         """Re-syncing with NULL description keeps previously-enriched description."""
         store.upsert_jobs("acme", [make_job("1", description="enriched")])
         store.upsert_jobs("acme", [make_job("1")])
-        rows = store.query_jobs(company="acme")
+        rows = store.query_jobs(companies=["acme"])
         assert rows[0]["description"] == "enriched"
 
     def test_surrogate_key_assigned(self, store):
@@ -172,7 +180,7 @@ class TestQueryFilters:
         assert len(rows) == 6
 
     def test_query_by_company(self, store):
-        rows = store.query_jobs(company="acme")
+        rows = store.query_jobs(companies=["acme"])
         assert len(rows) == 4
 
     def test_query_title_filter(self, store):
@@ -184,7 +192,7 @@ class TestQueryFilters:
         assert len(rows) == 2
 
     def test_query_combined_filters(self, store):
-        rows = store.query_jobs(company="acme", title="engineer", location="remote")
+        rows = store.query_jobs(companies=["acme"], title="engineer", location="remote")
         assert len(rows) == 1
         assert rows[0]["title"] == "Software Engineer"
 

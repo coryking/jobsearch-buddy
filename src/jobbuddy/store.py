@@ -257,7 +257,7 @@ class JobStore:
 
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
 
-        if company:
+        if companies and len(companies) == 1:
             params.append(limit)
             sql = f"""
                 SELECT j.*, s.last_sync, c.name AS company_name
