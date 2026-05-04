@@ -47,10 +47,13 @@ def lookup_by_board(board: str, ats: str | None = None) -> Company | None:
 
 
 def lookup_by_name(name: str) -> Company | None:
-    """Look up a company by display name, slug, or fuzzy match. Returns Company or None.
+    """Look up a company by display name, slug, board, or fuzzy match. Returns Company or None.
 
     Tries exact match on name/slug first, then falls back to normalized matching
-    so 'open ai', 'Open AI', 'openai' all resolve to the same company."""
+    so 'open ai', 'Open AI', 'openai' all resolve to the same company. Finally
+    falls back to board match (case-insensitive) so an ATS board identifier
+    extracted from a URL (e.g. 'thealleninstitute' for the Greenhouse board
+    backing the 'ai2' slug) resolves to the registered company."""
     registry = load_registry()
     name_lower = name.lower()
 
@@ -61,10 +64,14 @@ def lookup_by_name(name: str) -> Company | None:
 
     # Fuzzy match: strip non-alphanumeric, compare
     name_norm = _normalize(name)
-    if not name_norm:
-        return None
+    if name_norm:
+        for company in registry.values():
+            if _normalize(company.name) == name_norm or _normalize(company.slug) == name_norm:
+                return company
+
+    # Board match: URL-derived board identifiers (board != slug)
     for company in registry.values():
-        if _normalize(company.name) == name_norm or _normalize(company.slug) == name_norm:
+        if company.board and company.board.lower() == name_lower:
             return company
 
     return None
