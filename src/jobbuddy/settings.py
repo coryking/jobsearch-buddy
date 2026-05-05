@@ -44,10 +44,26 @@ class Settings(BaseSettings):
     embedding_model: str = "text-embedding-3-small"
     strip_batch_size: int = 50
 
+    research_model: str = "gpt-5.4"
+    research_endpoint: Optional[str] = None
+    research_max_workers: int = 8
+
     @property
     def has_openai(self) -> bool:
         """Whether OpenAI credentials are configured (enables strip/embed/search)."""
         return bool(self.openai_api_key or self.openai_azure_api_version)
+
+    @property
+    def has_research(self) -> bool:
+        """Whether company-research is configured.
+
+        Research uses Azure's OpenAI-compatible /openai/v1/ Responses surface
+        with managed-identity bearer auth. Needs an Azure-flavored endpoint
+        — either research_endpoint explicitly, or openai_base_url pointing at
+        an Azure resource.
+        """
+        endpoint = self.research_endpoint or self.openai_base_url or ""
+        return bool(endpoint) and "azure" in endpoint.lower()
 
     @property
     def needs_azure_token(self) -> bool:

@@ -465,9 +465,15 @@ def get_log() -> str:
 
 @mcp.resource("ats://companies")
 def get_companies() -> str:
-    """Registered target companies and their ATS configurations. Use to check which
-    companies are available for list_company_jobs and lookup_job."""
-    return json.dumps(list_companies(), indent=2)
+    """Registered target companies — slug, name, ATS config, short_bio.
+
+    short_bio is a 60-100 word factual capsule (NPOV). Use it to decide
+    which companies are interesting before drilling into their job listings."""
+    rows = {
+        slug: c.model_dump(include={"slug", "name", "ats", "board", "short_bio"})
+        for slug, c in list_companies().items()
+    }
+    return json.dumps(rows, indent=2)
 
 
 @mcp.resource("ats://supported-domains")

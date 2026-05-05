@@ -17,7 +17,7 @@ log = logging.getLogger(__name__)
 
 @app.command()
 def sync(
-    phases: Optional[list[str]] = typer.Argument(None, help="Phases to run: fetch, enrich, strip, embed (default: all)"),
+    phases: Optional[list[str]] = typer.Argument(None, help="Phases to run: fetch, enrich, strip, embed, research (default: all)"),
     company: Optional[list[str]] = typer.Option(None, "--company", "-c", help="Sync specific companies (repeatable)"),
     stale: Optional[float] = typer.Option(None, "--stale", "-s", help="Skip companies synced within N hours"),
     force: bool = typer.Option(False, "--force", "-f", help="Re-strip already-stripped jobs (strip phase only)"),
@@ -66,8 +66,9 @@ def sync(
         )
 
     # Determine display filter for TUI
+    _PHASE_ORDER = ["fetch", "enrich", "strip", "embed", "research"]
     filter_phases = (
-        [p.capitalize() for p in sorted(config.phases, key=lambda p: ["fetch", "enrich", "strip", "embed"].index(p))]
+        [p.capitalize() for p in sorted(config.phases, key=lambda p: _PHASE_ORDER.index(p))]
         if phase_set else None
     )
 

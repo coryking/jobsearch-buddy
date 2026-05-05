@@ -162,10 +162,11 @@ class SyncDisplayState:
     enrich: PhaseState = field(default_factory=lambda: PhaseState("Enrich"))
     strip: PhaseState = field(default_factory=lambda: PhaseState("Strip"))
     embed: PhaseState = field(default_factory=lambda: PhaseState("Embed"))
+    research: PhaseState = field(default_factory=lambda: PhaseState("Research"))
 
     @property
     def phases(self) -> list[PhaseState]:
-        return [self.fetch, self.enrich, self.strip, self.embed]
+        return [self.fetch, self.enrich, self.strip, self.embed, self.research]
 
     def visible_phases(self) -> list[PhaseState]:
         return [p for p in self.phases if p.status != "pending"]
