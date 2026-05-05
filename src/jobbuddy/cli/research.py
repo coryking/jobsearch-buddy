@@ -14,18 +14,19 @@ log = logging.getLogger(__name__)
 
 @app.command(name="research-companies")
 def research_companies(
-    company: Optional[str] = typer.Argument(
-        None, help="Company slug or name (omit for backfill: research all unfilled)"
+    company: Optional[list[str]] = typer.Option(
+        None, "--company", "-c",
+        help="Research specific companies (repeatable). Omit for backfill: all unfilled.",
     ),
     force: bool = typer.Option(
-        False, "--force", "-f", help="Re-research even if a bio is already present"
+        False, "--force", "-f", help="Re-research even if a bio is already present",
     ),
 ):
     """Fill long_bio + short_bio for companies via Azure Responses API.
 
     Default mode is backfill: research every company where long_bio IS NULL.
-    Pass a company slug/name to research just that one. --force re-runs even
-    if a bio already exists (clears it first)."""
+    Pass --company/-c (repeatable) to scope to specific companies. --force
+    clears existing bios first."""
     from jobbuddy.registry import lookup_by_name
     from jobbuddy.settings import pg_conninfo_with_token
     from jobbuddy.store import JobStore
@@ -40,29 +41,45 @@ def research_companies(
         raise SystemExit(1)
 
     conninfo = pg_conninfo_with_token()
+    target_slugs: list[str] | None = None
 
     if company:
-        resolved = lookup_by_name(company)
-        if not resolved:
-            console.print(f"[red]Unknown company: {company}[/red]")
-            raise SystemExit(1)
+        resolved_slugs: list[str] = []
+        for c in company:
+            resolved = lookup_by_name(c)
+            if not resolved:
+                console.print(f"[red]Unknown company: {c}[/red]")
+                raise SystemExit(1)
+            resolved_slugs.append(resolved.slug)
+        target_slugs = resolved_slugs
+
         store = JobStore(conninfo)
         try:
-            row = store.conn.execute(
-                "SELECT long_bio FROM companies WHERE slug = %s", (resolved.slug,),
-            ).fetchone()
-            if row and row["long_bio"] and not force:
-                console.print(
-                    f"[yellow]{resolved.slug} already has a bio. Use --force to re-research.[/yellow]"
-                )
-                return
             if force:
                 store.conn.execute(
                     "UPDATE companies SET long_bio = NULL, short_bio = NULL,"
                     " bio_researched_at = NULL, bio_model = NULL"
-                    " WHERE slug = %s",
-                    (resolved.slug,),
+                    " WHERE slug = ANY(%s)",
+                    (target_slugs,),
                 )
+            else:
+                already = store.conn.execute(
+                    "SELECT slug FROM companies"
+                    " WHERE long_bio IS NOT NULL AND slug = ANY(%s)",
+                    (target_slugs,),
+                ).fetchall()
+                if already:
+                    filled = ", ".join(r["slug"] for r in already)
+                    console.print(
+                        f"[yellow]Already have bios: {filled}."
+                        f" Use --force to re-research.[/yellow]"
+                    )
+                    target_slugs = [
+                        s for s in target_slugs
+                        if s not in {r["slug"] for r in already}
+                    ]
+                    if not target_slugs:
+                        return
         finally:
             store.close()
     elif force:
@@ -76,7 +93,7 @@ def research_companies(
             store.close()
 
     state = SyncDisplayState()
-    phase = ResearchPhase(conninfo, display=state.research)
+    phase = ResearchPhase(conninfo, display=state.research, slugs=target_slugs)
 
     interactive = console.is_terminal
     if not interactive:

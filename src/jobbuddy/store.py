@@ -123,22 +123,40 @@ class JobStore:
              str(company.content_hash)),
         )
 
-    def count_companies_needing_bio(self) -> int:
-        """Count companies with no researched long_bio."""
-        row = self.conn.execute(
-            "SELECT COUNT(*) AS cnt FROM companies WHERE long_bio IS NULL"
-        ).fetchone()
+    def count_companies_needing_bio(self, *, slugs: list[str] | None = None) -> int:
+        """Count companies with no researched long_bio. Optional slug filter."""
+        if slugs is not None:
+            row = self.conn.execute(
+                "SELECT COUNT(*) AS cnt FROM companies"
+                " WHERE long_bio IS NULL AND slug = ANY(%s)",
+                (slugs,),
+            ).fetchone()
+        else:
+            row = self.conn.execute(
+                "SELECT COUNT(*) AS cnt FROM companies WHERE long_bio IS NULL"
+            ).fetchone()
         return row["cnt"]
 
-    def get_companies_needing_bio(self, limit: int = 50) -> list[ResearchWorkItem]:
+    def get_companies_needing_bio(
+        self, limit: int = 50, *, slugs: list[str] | None = None,
+    ) -> list[ResearchWorkItem]:
         """Return companies with no researched long_bio, slug + name only."""
-        rows = self.conn.execute(
-            """SELECT slug, name FROM companies
-               WHERE long_bio IS NULL
-               ORDER BY slug
-               LIMIT %s""",
-            (limit,),
-        ).fetchall()
+        if slugs is not None:
+            rows = self.conn.execute(
+                """SELECT slug, name FROM companies
+                   WHERE long_bio IS NULL AND slug = ANY(%s)
+                   ORDER BY slug
+                   LIMIT %s""",
+                (slugs, limit),
+            ).fetchall()
+        else:
+            rows = self.conn.execute(
+                """SELECT slug, name FROM companies
+                   WHERE long_bio IS NULL
+                   ORDER BY slug
+                   LIMIT %s""",
+                (limit,),
+            ).fetchall()
         return [{"slug": r["slug"], "name": r["name"]} for r in rows]
 
     def update_company_bio(
