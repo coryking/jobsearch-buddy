@@ -26,14 +26,13 @@ def parse_since(value: str) -> str:
 
 @app.command()
 def companies():
-    """List supported companies and their ATS configurations."""
+    """List supported companies and their ATS + bio status."""
     registry = list_companies()
     buf = io.StringIO()
     writer = csv.writer(buf)
-    writer.writerow(["Company", "ATS", "Board ID", "Default Output Dir"])
+    writer.writerow(["Company", "ATS", "Board ID", "Short Bio"])
     for slug, company in sorted(registry.items()):
-        output_dir = f"job-listings/{slug}/"
-        writer.writerow([slug, company.ats, company.board, output_dir])
+        writer.writerow([slug, company.ats, company.board, company.short_bio or ""])
     print(buf.getvalue(), end="")
 
 

@@ -38,7 +38,10 @@ def block_prod_db():
     service name — catches hardcoded conninfo that bypasses settings.
     """
     import jobbuddy.settings as settings_mod
-    settings_mod._settings = Settings(pg_service="job-search-buddy-test")
+    settings_mod._settings = Settings(
+        pg_service="job-search-buddy-test",
+        research_endpoint="https://test.openai.azure.com/",
+    )
 
     original_connect = psycopg.connect
 
@@ -140,6 +143,10 @@ def clean_test_data():
     conn.execute("DELETE FROM jobs")
     conn.execute("DELETE FROM sync_status")
     conn.execute("DELETE FROM activity_log")
+    conn.execute(
+        "UPDATE companies SET short_bio = NULL, long_bio = NULL,"
+        " bio_researched_at = NULL, bio_model = NULL"
+    )
     conn.close()
 
 

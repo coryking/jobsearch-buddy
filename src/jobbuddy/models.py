@@ -55,6 +55,8 @@ class Company(BaseModel):
     name: str
     ats: str | None = None
     board: str | None = None
+    short_bio: str | None = None
+    long_bio: str | None = None
 
     @field_validator("slug", mode="before")
     @classmethod

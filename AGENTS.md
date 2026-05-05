@@ -32,9 +32,12 @@ Code lives under `src/jobbuddy/`. Things that aren't obvious from `ls`:
 - `cli/` is a package, not a single file: each submodule registers its
   commands on the shared `app` Typer instance via `@app.command()`.
 - `sync/` is a phase pipeline; phases extend the `WorkerPhase` ABC in
-  `sync/base.py`. See "Sync Pipeline" below.
+  `sync/base.py`. The orchestrator lives in `sync/orchestrator.py`;
+  `sync/__init__.py` re-exports the public surface. See "Sync Pipeline" below.
 - `fetchers/` is one module per ATS platform plus an `ATSFetcher` ABC and a
   registry/factory in `fetchers/__init__.py`. Add new ATSes here.
+- `research.py` runs the Azure Responses API + `web_search` to populate
+  `companies.short_bio` and `long_bio`. The bio feeds the distill prompt.
 - `migrations/` holds numbered SQL files applied by `jsb migrate`. See
   "Schema Migrations" below.
 
@@ -56,7 +59,8 @@ jsb-mcp                          # Run MCP server
 
 ```
 jsb migrate                                  # Apply pending database migrations
-jsb sync [PHASES...] [--company NAME] [--stale HOURS]  # Sync pipeline (phases: fetch, enrich; distill pending Unit 2)
+jsb sync [PHASES...] [--company NAME] [--stale HOURS]  # Sync pipeline (phases: fetch, enrich, research; distill pending Unit 2)
+jsb research-companies [--company NAME]... [--force]  # Fill companies.short_bio/long_bio (Azure Responses + web_search)
 jsb list-jobs [company] [-f FILTER]         # List cached jobs
 jsb search [--title T] [--location L] [--company C]  # Search cache
 jsb companies                               # List registered companies
@@ -103,23 +107,36 @@ Override defaults with env vars (prefix `JOBBUDDY_`) or a `.env` file:
 | `openai_azure_api_version` | `JOBBUDDY_OPENAI_AZURE_API_VERSION`  | `None` *(if set, uses AzureOpenAI client)* |
 | `distill_model`            | `JOBBUDDY_DISTILL_MODEL`             | `gpt-5-nano`                               |
 | `distill_prompt_version`   | `JOBBUDDY_DISTILL_PROMPT_VERSION`    | `distill-v1`                               |
+| `research_model`           | `JOBBUDDY_RESEARCH_MODEL`            | `gpt-5.4`                                  |
+| `research_endpoint`        | `JOBBUDDY_RESEARCH_ENDPOINT`         | `None` *(Azure OpenAI resource root URL)*  |
+| `research_max_workers`     | `JOBBUDDY_RESEARCH_MAX_WORKERS`      | `4`                                        |
 
 ## Sync Pipeline
 
-The sync pipeline uses a **DB-as-queue** pattern. Two phases are wired today;
+The sync pipeline uses a **DB-as-queue** pattern. Three phases are wired today;
 DistillPhase is pending Unit 2 of the Phase 1 redesign plan.
 
 1. **Fetch** — parallel company fetching via ThreadPoolExecutor
 2. **Enrich** — description enrichment for stub fetchers (Workday, Eightfold, etc.)
-3. **Distill** *(Unit 2, pending)* — one structured-output LLM call per job;
+3. **Research** — Azure Responses API + web_search to fill `companies.short_bio`
+   and `long_bio`. Independent of the job pipeline (polls companies, not jobs).
+   The `long_bio` feeds the distill prompt as `<company_bio>` context.
+4. **Distill** *(Unit 2, pending)* — one structured-output LLM call per job;
    will produce `short_jd`, `description_normalized`, and `salary` in a single
    round trip. Schema columns and the polling index already exist (migration
    011); the phase implementation does not.
 
-`jsb sync` runs all wired phases by default (currently `fetch enrich`).
-Once distill ships it will require OpenAI credentials — either
-`JOBBUDDY_OPENAI_API_KEY` (local) or `JOBBUDDY_OPENAI_AZURE_API_VERSION`
-with managed identity (Azure). Until then no OpenAI key is required.
+`jsb sync` runs all wired phases by default (currently `fetch enrich research`).
+Research requires an Azure Responses-API endpoint
+(`JOBBUDDY_RESEARCH_ENDPOINT` or `JOBBUDDY_OPENAI_BASE_URL`) — bearer-token
+auth via managed identity. Once distill ships it will additionally require
+OpenAI credentials (`JOBBUDDY_OPENAI_API_KEY` or
+`JOBBUDDY_OPENAI_AZURE_API_VERSION` with managed identity). Sync fails fast
+at startup if a selected phase's credentials are missing.
+
+**Backfill ordering:** research must run before distill — distill consumes
+`long_bio` as `<company_bio>` context. Run `jsb research-companies` first,
+then `jsb sync distill` once Unit 2 ships.
 
 Preconditions (phase names, OpenAI key, company resolution) are validated
 up front by `validate_sync_config()` before any I/O. The orchestrator
@@ -127,12 +144,13 @@ up front by `validate_sync_config()` before any I/O. The orchestrator
 
 All phases update `PhaseState` objects directly for display — no event queue.
 
-`EnrichPhase` (and the future `DistillPhase`) extends the `WorkerPhase` ABC
-(`sync/base.py`), which provides: DB polling for work items,
+`EnrichPhase`, `ResearchPhase` (and the future `DistillPhase`) extend the
+`WorkerPhase` ABC (`sync/base.py`), which provides: DB polling for work items,
 `ThreadPoolExecutor` parallelism, DB writes via a single-threaded `WriteQueue`,
 graceful shutdown via `threading.Event`, and display state updates. Phases
 poll the database for unprocessed items, process them in worker threads, and
-write results back.
+write results back. This decouples phases — each can run independently via
+phase selection (`jsb sync research`, `jsb research-companies`).
 
 The distill phase's "needs work" predicate (already enforced by the
 `idx_jobs_needs_distill` partial index) is a stable column-presence check

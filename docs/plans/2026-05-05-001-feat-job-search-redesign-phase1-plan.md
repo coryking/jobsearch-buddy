@@ -13,7 +13,7 @@ origin: docs/brainstorms/2026-05-05-job-search-redesign-requirements.md
 | Unit | Status | Notes |
 |------|--------|-------|
 | 1 — Schema migration | **Done** (commit `030c6ca`) | Folded with Unit 7. Migration 011 applied to test DB. Index named `idx_jobs_needs_distill`. |
-| 2 — `sync/distill.py` | **Pending** | Soft-blocked on Phase A merge (companies.long_bio). Not hard-blocked: `getattr(company, 'long_bio', None) or ""` works either way. |
+| 2 — `sync/distill.py` | **Pending** | Phase A (company-bio pipeline) merged in. `Company.long_bio` and `JobStore.update_company_bio` are available. Migration 012 already applied to prod. |
 | 3 — MCP surface rebuild | **Pending** | Depends on Unit 2. |
 | 4 — MCP tool descriptions | **Pending** | Depends on Unit 3. |
 | 5 — Eval harness rewrite | **Pending** | Depends on Unit 2. |
@@ -23,7 +23,16 @@ origin: docs/brainstorms/2026-05-05-job-search-redesign-requirements.md
 
 **Naming change since plan was first written:** the LLM phase is now called **distill**, not "extract". Rationale in the Unit 1 commit message. References throughout the plan have been updated.
 
-**Phase 2 dependency surfaced during execution:** the distill prompt's `<company_bio>` slot will be fed by `companies.long_bio` from a separate "Phase A" branch (commit `3ae6f6d` on that branch adds the column + `Company.long_bio` attribute + `JobStore.update_company_bio`). Unit 2 will read `Company.long_bio` defensively; if the merge hasn't happened, the slot is empty and the prompt handles that.
+**Phase 2 dependency now resolved (merged):** the company-bio pipeline (former "Phase A") was merged into this branch. `companies.short_bio`/`long_bio` columns + `JobStore.update_company_bio` + `ResearchPhase` + `jsb research-companies` CLI are all live. Migration 012 is already applied to prod (011 is not). Unit 2's distill prompt reads `Company.long_bio` directly — no defensive `getattr` needed.
+
+**Backfill ordering (when shipping Unit 2):**
+1. Apply migration 011 in prod (`jsb migrate`) — drops embedding stack, adds `short_jd`/`description_normalized`.
+2. Run `jsb research-companies` to fill `companies.long_bio` for every company (distill prompt depends on it).
+3. Run `jsb sync distill` (or full sync) to backfill `short_jd`/`description_normalized` for every active job.
+
+Reverse order would distill jobs against empty `<company_bio>` slots, producing weaker `short_jd` output that would need to be re-distilled later.
+
+**Open question for next session:** the distill prompt currently treats `<company_bio>` as inert context (paste-through). It should explicitly direct the model to *synthesize* bio + JD when producing `short_jd` / `description_normalized` — elevate company-specific signal (mission, sector, posture) into the per-job output. Worth a focused prompt-engineering pass before Unit 5/6 eval work.
 
 ## Overview
 
@@ -332,10 +341,10 @@ Replaces `sync/strip.py` in the orchestrator.
   graceful shutdown — no new infrastructure.
 - Construct the user message per the XML-tag schema declared at the
   top of `prompts/distill-v1.txt`. The `<company_bio>` slot is fed
-  by `Company.long_bio` from the Phase A branch (commit `3ae6f6d`
-  on that branch). Read defensively:
-  `getattr(company, 'long_bio', None) or ""` — the prompt promises
-  to handle empty.
+  by `Company.long_bio` (merged from Phase A — already on this branch).
+  Read directly: `company.long_bio or ""`. Empty is rare in practice
+  (research backfill should run before distill backfill) but the
+  prompt promises to handle empty regardless.
 - Cache `{slug → long_bio}` once at `on_phase_start()` to avoid
   re-fetching companies per job. Bios change slowly; per-sync
   staleness is fine.

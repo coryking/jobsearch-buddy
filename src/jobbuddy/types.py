@@ -22,3 +22,10 @@ class EnrichWorkItem(TypedDict):
     slug: str
     job_ids: list[str]
     jobs_meta: dict[str, JobMeta]
+
+
+class ResearchWorkItem(TypedDict):
+    """One company to research — returned by JobStore.get_companies_needing_bio()."""
+
+    slug: str
+    name: str

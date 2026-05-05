@@ -16,7 +16,7 @@ def _make_company(slug: str, ats: str = "greenhouse") -> Company:
 
 
 class TestSync:
-    @patch("jobbuddy.sync.list_companies")
+    @patch("jobbuddy.sync.orchestrator.list_companies")
     @patch("jobbuddy.sync.fetch.get_fetcher")
     def test_sync_single_company(self, mock_get_fetcher, mock_list_companies, pg_conninfo):
         """Sync one company populates cache."""
@@ -27,7 +27,7 @@ class TestSync:
         mock_fetcher.list_jobs.return_value = [make_job("1"), make_job("2")]
         mock_get_fetcher.return_value = mock_fetcher
 
-        with patch("jobbuddy.sync.lookup_by_name", return_value=company):
+        with patch("jobbuddy.sync.orchestrator.lookup_by_name", return_value=company):
             results = sync_jobs(company_slugs=["acme"], conninfo=pg_conninfo)
 
         assert len(results) == 1
@@ -42,7 +42,7 @@ class TestSync:
         assert len(rows) == 2
         store.close()
 
-    @patch("jobbuddy.sync.list_companies")
+    @patch("jobbuddy.sync.orchestrator.list_companies")
     @patch("jobbuddy.sync.fetch.get_fetcher")
     def test_sync_error_isolation(self, mock_get_fetcher, mock_list_companies, pg_conninfo):
         """One company failing doesn't stop others."""
@@ -68,7 +68,7 @@ class TestSync:
         assert len(err_results) == 1
         assert err_results[0].error == "Connection refused"
 
-    @patch("jobbuddy.sync.list_companies")
+    @patch("jobbuddy.sync.orchestrator.list_companies")
     @patch("jobbuddy.sync.fetch.get_fetcher")
     def test_sync_updates_display_state(self, mock_get_fetcher, mock_list_companies, pg_conninfo):
         """sync_jobs updates display_state.fetch via PhaseState."""
@@ -91,7 +91,7 @@ class TestSync:
     # moved to TestValidateSyncConfig — validation happens in
     # validate_sync_config(), not sync_jobs().
 
-    @patch("jobbuddy.sync.list_companies")
+    @patch("jobbuddy.sync.orchestrator.list_companies")
     @patch("jobbuddy.sync.fetch.get_fetcher")
     def test_sync_stale_skips_recent(self, mock_get_fetcher, mock_list_companies, pg_conninfo):
         """--stale flag skips recently synced companies."""
@@ -390,6 +390,7 @@ class TestValidateSyncConfig:
         return Settings(
             pg_service="job-search-buddy-test",
             openai_api_key="test-key" if has_openai else None,
+            research_endpoint="https://test.openai.azure.com/",
         )
 
     def test_rejects_invalid_phases(self):
@@ -399,7 +400,7 @@ class TestValidateSyncConfig:
         with pytest.raises(ValueError, match="Invalid phase"):
             validate_sync_config(phases={"bogus"}, settings=self._settings())
 
-    @patch("jobbuddy.sync.lookup_by_name")
+    @patch("jobbuddy.sync.orchestrator.lookup_by_name")
     def test_resolves_company_slugs(self, mock_lookup):
         """Company names are resolved to Company objects."""
         from jobbuddy.sync import validate_sync_config
@@ -414,7 +415,7 @@ class TestValidateSyncConfig:
         assert len(config.targets) == 1
         assert config.targets[0].slug == "acme"
 
-    @patch("jobbuddy.sync.lookup_by_name", return_value=None)
+    @patch("jobbuddy.sync.orchestrator.lookup_by_name", return_value=None)
     def test_unknown_company_raises(self, mock_lookup):
         """Unknown company name raises ValueError."""
         from jobbuddy.sync import validate_sync_config
@@ -426,7 +427,7 @@ class TestValidateSyncConfig:
                 settings=self._settings(),
             )
 
-    @patch("jobbuddy.sync.lookup_by_name")
+    @patch("jobbuddy.sync.orchestrator.lookup_by_name")
     def test_company_without_ats_raises(self, mock_lookup):
         """Company without ATS config raises ValueError."""
         from jobbuddy.sync import validate_sync_config

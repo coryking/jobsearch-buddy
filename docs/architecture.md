@@ -12,9 +12,12 @@ Both call into `core.py`. Core raises `ValueError`; callers handle presentation.
 Phase 1 of the search redesign replaced the strip+embed pipeline with a
 single LLM **distill** phase that produces three derived fields per job
 (`short_jd`, `description_normalized`, `salary`). Search is PostgreSQL
-full-text search over those fields plus title/location/department. The
-`pgvector` extension stays installed for Phase 2 (company-side work) but
-no job-side code uses it.
+full-text search over those fields plus title/location/department.
+
+Phase 2 (company-side) is partly merged: the `ResearchPhase` populates
+`companies.short_bio` and `long_bio` via Azure Responses API + web_search.
+`long_bio` feeds the distill prompt as `<company_bio>` context. The
+`pgvector` extension stays installed but no current code uses it.
 
 ## Data Access — JobStore
 
