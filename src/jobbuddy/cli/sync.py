@@ -10,37 +10,28 @@ from jobbuddy.cli import app, console
 log = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Commands
-# ---------------------------------------------------------------------------
-
-
 @app.command()
 def sync(
-    phases: Optional[list[str]] = typer.Argument(None, help="Phases to run: fetch, enrich, strip, embed (default: all)"),
+    phases: Optional[list[str]] = typer.Argument(None, help="Phases to run: fetch, enrich, research, distill (default: all)"),
     company: Optional[list[str]] = typer.Option(None, "--company", "-c", help="Sync specific companies (repeatable)"),
     stale: Optional[float] = typer.Option(None, "--stale", "-s", help="Skip companies synced within N hours"),
-    force: bool = typer.Option(False, "--force", "-f", help="Re-strip already-stripped jobs (strip phase only)"),
 ):
     """Sync job listings from ATS boards into the local cache.
 
     Run specific phases by passing them as arguments:
 
         jsb sync                    # all phases (default)
-        jsb sync strip embed        # just strip + embed
         jsb sync fetch              # fetch only
     """
-    from jobbuddy.sync import sync_jobs, validate_sync_config
+    from jobbuddy.sync import VALID_PHASES, sync_jobs, validate_sync_config
     from jobbuddy.sync.display import SyncDisplayState, create_live, print_sync_summary
 
-    # Validate all preconditions up front — before any I/O
     phase_set = set(phases) if phases else None
     try:
         config = validate_sync_config(
             phases=phase_set,
             company_slugs=company or None,
             stale_hours=stale,
-            force_strip=force,
         )
     except ValueError as e:
         console.print(f"[red]{e}[/red]")
@@ -62,12 +53,11 @@ def sync(
             stale_hours=stale,
             display_state=state,
             phases=phase_set,
-            force_strip=force,
         )
 
-    # Determine display filter for TUI
+    phase_order = ["fetch", "enrich", "research", "distill"]
     filter_phases = (
-        [p.capitalize() for p in sorted(config.phases, key=lambda p: ["fetch", "enrich", "strip", "embed"].index(p))]
+        [p.capitalize() for p in sorted(config.phases, key=lambda p: phase_order.index(p) if p in phase_order else 99)]
         if phase_set else None
     )
 
@@ -87,11 +77,7 @@ def sync(
 
 
 def _setup_logging() -> None:
-    """Configure logging for non-interactive (systemd/cron) runs.
-
-    Root logger stays at WARNING to suppress httpx/urllib3 noise;
-    only jobbuddy loggers get INFO.
-    """
+    """Configure logging for non-interactive (systemd/cron) runs."""
     logging.basicConfig(
         level=logging.WARNING,
         format="%(levelname)s %(name)s: %(message)s",
@@ -100,7 +86,7 @@ def _setup_logging() -> None:
 
 
 def _print_summary(
-    state,
+    state: "SyncDisplayState",
     results: list,
     ran_fetch: bool,
     interactive: bool,

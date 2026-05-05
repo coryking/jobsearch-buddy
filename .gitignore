@@ -20,5 +20,7 @@ infrastructure/terraform.tfstate
 infrastructure/terraform.tfstate.backup
 infrastructure/*.tfvars
 scratchpad/
+.context/
 
 .compound-engineering/*.local.yaml
+.context/

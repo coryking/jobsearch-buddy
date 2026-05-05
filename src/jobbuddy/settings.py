@@ -36,18 +36,41 @@ class Settings(BaseSettings):
     postgres_database: Optional[str] = None
     postgres_user: Optional[str] = None  # Managed identity name (not client ID)
 
-    # OpenAI API (for strip, embed, and semantic search)
+    # OpenAI API (for the distill phase)
     openai_api_key: Optional[str] = None
     openai_base_url: Optional[str] = None
     openai_azure_api_version: Optional[str] = None  # If set, uses AzureOpenAI client
-    strip_model: str = "gpt-5-nano"
-    embedding_model: str = "text-embedding-3-small"
-    strip_batch_size: int = 50
+    distill_model: str = "gpt-5-nano"
+    distill_prompt_version: str = "distill-v1"
+
+    research_model: str = "gpt-5.4"
+    research_endpoint: Optional[str] = None
+    research_max_workers: int = 4  # Bing web_search 429s observed >4 concurrent
 
     @property
     def has_openai(self) -> bool:
-        """Whether OpenAI credentials are configured (enables strip/embed/search)."""
+        """Whether OpenAI credentials are configured (enables the distill phase)."""
         return bool(self.openai_api_key or self.openai_azure_api_version)
+
+    @property
+    def has_research(self) -> bool:
+        """Whether company-research is configured.
+
+        Research uses Azure's OpenAI-compatible /openai/v1/ Responses surface
+        with managed-identity bearer auth. Recognizes the three documented
+        Azure-resource hostname suffixes: openai.azure.com,
+        cognitiveservices.azure.com, and api.cognitive.microsoft.com.
+        """
+        endpoint = self.research_endpoint or self.openai_base_url or ""
+        host = endpoint.lower()
+        return any(
+            suffix in host
+            for suffix in (
+                ".openai.azure.com",
+                ".cognitiveservices.azure.com",
+                ".api.cognitive.microsoft.com",
+            )
+        )
 
     @property
     def needs_azure_token(self) -> bool:

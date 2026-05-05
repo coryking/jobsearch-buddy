@@ -16,59 +16,34 @@ the user.
 A command-line tool and MCP server for job searching: scrapes ATS job boards
 (see Supported ATS Platforms below), caches listings in PostgreSQL, and exposes
 them via a FastMCP server for use with Claude Desktop or any MCP-compatible
-client. Semantic search uses OpenAI-compatible embeddings with pgvector HNSW
-indexes.
+client. Search uses PostgreSQL full-text search over a per-job distill
+pipeline that produces `short_jd`, `description_normalized`, and `salary`.
+The `pgvector` extension stays installed for Phase 2 (company-side work).
 
 This is a practical tool, not enterprise software. Bias toward shipping.
 80% today beats 99% tomorrow.
 
-## Package Structure
+## Package Layout
 
-```
-src/jobbuddy/
-├── cli/                # Typer CLI (jsb command), split into submodules
-│   ├── __init__.py     # Main Typer app, shared console
-│   ├── sync.py         # jsb sync command (phase-selective)
-│   ├── search.py       # jsb search, jsb list-jobs, jsb serve commands
-│   ├── jobs.py         # jsb save, jsb lookup, jsb companies commands
-│   └── log.py          # jsb log command
-├── mcp_server.py       # FastMCP server (jsb-mcp command)
-├── core.py             # Shared logic: fetch, save, URL parsing (no sync)
-├── store.py            # JobStore class — PostgreSQL + pgvector (surrogate keys)
-├── search.py           # VectorSearch class — pgvector HNSW search
-├── embeddings.py       # OpenAI-compatible text-embedding-3-small (1536 dims)
-├── settings.py         # pydantic-settings config (env vars, platformdirs paths)
-├── registry.py         # Company registry + fuzzy name matching
-├── models.py           # Pydantic Job, FetchResult, Company models
-├── url.py              # ATS URL parser
-├── job_log.py          # CSV activity log (WA unemployment audit compliance)
-├── web.py              # Flask web UI for semantic search
-├── templates/
-│   └── search.html     # Jinja2 template for web search UI
-├── sync/               # Sync pipeline (fetch → enrich → strip → embed)
-│   ├── __init__.py     # sync_jobs() orchestrator, SyncResult
-│   ├── base.py         # WorkerPhase ABC — DB-polling, thread-pooled phase runner
-│   ├── display.py      # PhaseState, SyncDisplayState, Rich Live TUI renderer
-│   ├── fetch.py        # FetchPhase — parallel company fetching
-│   ├── enrich.py       # EnrichPhase — description enrichment for stub fetchers
-│   ├── strip.py        # StripPhase — LLM-based boilerplate removal (OpenAI-compatible)
-│   └── embed.py        # EmbedPhase — OpenAI-compatible batch embedding generation
-└── fetchers/           # Per-ATS scrapers — one file per platform (see Supported ATS Platforms)
-    ├── base.py         # ATSFetcher ABC
-    ├── __init__.py     # Fetcher registry + factory
-    └── {platform}.py   # One module per ATS (greenhouse.py, workday.py, etc.)
+Code lives under `src/jobbuddy/`. Things that aren't obvious from `ls`:
 
-tests/
-├── test_store.py       # JobStore: schema, upsert, embeddings, migrations
-├── test_search.py      # VectorSearch: ranking, limits, pgvector HNSW
-├── test_embeddings.py  # Serialize/deserialize, embed functions
-├── test_sync.py        # Sync orchestration: phases, error isolation
-└── test_settings.py    # Settings: defaults, env var overrides, singleton
+- `core.py` is the shared layer between CLI and MCP. Both interfaces import
+  from it; new business logic goes here, not in `cli/` or `mcp_server.py`.
+- `cli/` is a package, not a single file: each submodule registers its
+  commands on the shared `app` Typer instance via `@app.command()`.
+- `sync/` is a phase pipeline; phases extend the `WorkerPhase` ABC in
+  `sync/base.py`. The orchestrator lives in `sync/orchestrator.py`;
+  `sync/__init__.py` re-exports the public surface. See "Sync Pipeline" below.
+- `fetchers/` is one module per ATS platform plus an `ATSFetcher` ABC and a
+  registry/factory in `fetchers/__init__.py`. Add new ATSes here.
+- `research.py` runs the Azure Responses API + `web_search` to populate
+  `companies.short_bio` and `long_bio`. The bio feeds the distill prompt.
+- `migrations/` holds numbered SQL files applied by `jsb migrate`. See
+  "Schema Migrations" below.
 
-docs/
-├── architecture.md     # Detailed architecture, store design, fetcher pattern
-└── throughput-reference.md  # Sync pipeline throughput benchmarks
-```
+`tests/` mirrors the package — `test_store.py`, `test_sync.py`, plus per-ATS
+fetcher tests. `docs/architecture.md` is the long-form architecture; this
+file is the navigation layer.
 
 ## Build / Test Commands
 
@@ -84,14 +59,14 @@ jsb-mcp                          # Run MCP server
 
 ```
 jsb migrate                                  # Apply pending database migrations
-jsb sync [PHASES...] [--company NAME] [--stale HOURS] [--force]  # Sync pipeline (phases: fetch, enrich, strip, embed)
+jsb sync [PHASES...] [--company NAME] [--stale HOURS]  # Sync pipeline (phases: fetch, enrich, research, distill)
+jsb research-companies [--company NAME]... [--force]  # Fill companies.short_bio/long_bio (Azure Responses + web_search)
 jsb list-jobs [company] [-f FILTER]         # List cached jobs
 jsb search [--title T] [--location L] [--company C]  # Search cache
 jsb companies                               # List registered companies
 jsb save <company> <job_ids...> [-o DIR]    # Save listings as markdown
 jsb lookup <url>                            # Fetch single job details
 jsb log <url> [-a ACTION] [-p PERSON] [-n NOTES] [-d DATE]  # Log application
-jsb embed-test [-f FILE...] [--stdin] [--json] QUERIES...   # Pure embedding similarity test (no DB)
 ```
 
 ## Supported ATS Platforms
@@ -127,53 +102,62 @@ Override defaults with env vars (prefix `JOBBUDDY_`) or a `.env` file:
 | `postgres_database`        | `JOBBUDDY_POSTGRES_DATABASE`         | `None`                                     |
 | `postgres_user`            | `JOBBUDDY_POSTGRES_USER`             | `None` *(managed identity name)*           |
 | `listings_dir`             | `JOBBUDDY_LISTINGS_DIR`              | platformdirs `user_data_dir/listings`      |
-| `openai_api_key`           | `JOBBUDDY_OPENAI_API_KEY`            | `None` *(required for strip/embed/search)* |
+| `openai_api_key`           | `JOBBUDDY_OPENAI_API_KEY`            | `None` *(required for the distill phase)*  |
 | `openai_base_url`          | `JOBBUDDY_OPENAI_BASE_URL`           | `None` *(omit for api.openai.com)*         |
 | `openai_azure_api_version` | `JOBBUDDY_OPENAI_AZURE_API_VERSION`  | `None` *(if set, uses AzureOpenAI client)* |
-| `strip_model`              | `JOBBUDDY_STRIP_MODEL`               | `gpt-5-nano`                               |
-| `embedding_model`          | `JOBBUDDY_EMBEDDING_MODEL`           | `text-embedding-3-small`                   |
-| `strip_batch_size`         | `JOBBUDDY_STRIP_BATCH_SIZE`          | `50`                                       |
+| `distill_model`            | `JOBBUDDY_DISTILL_MODEL`             | `gpt-5-nano`                               |
+| `distill_prompt_version`   | `JOBBUDDY_DISTILL_PROMPT_VERSION`    | `distill-v1`                               |
+| `research_model`           | `JOBBUDDY_RESEARCH_MODEL`            | `gpt-5.4`                                  |
+| `research_endpoint`        | `JOBBUDDY_RESEARCH_ENDPOINT`         | `None` *(Azure OpenAI resource root URL)*  |
+| `research_max_workers`     | `JOBBUDDY_RESEARCH_MAX_WORKERS`      | `4`                                        |
 
 ## Sync Pipeline
 
-The sync pipeline uses a **DB-as-queue** pattern with four phases:
+The sync pipeline uses a **DB-as-queue** pattern. Four phases are wired:
 
 1. **Fetch** — parallel company fetching via ThreadPoolExecutor
 2. **Enrich** — description enrichment for stub fetchers (Workday, Eightfold, etc.)
-3. **Strip** — LLM-based boilerplate removal via OpenAI-compatible API
-4. **Embed** — batch embedding generation via OpenAI-compatible API
+3. **Research** — Azure Responses API + web_search to fill `companies.short_bio`
+   and `long_bio`. Independent of the job pipeline (polls companies, not jobs).
+   The `long_bio` feeds the distill prompt as `<company_bio>` context.
+4. **Distill** — one structured-output LLM call per job, producing `short_jd`,
+   `description_normalized`, and `salary` in a single round trip. Polls the
+   `idx_jobs_needs_distill` predicate (`description IS NOT NULL AND short_jd
+   IS NULL AND listing_status = 'active'`).
 
-`jsb sync` runs all four phases by default. Strip and embed require
-OpenAI credentials — either `JOBBUDDY_OPENAI_API_KEY` (local) or
-`JOBBUDDY_OPENAI_AZURE_API_VERSION` with managed identity (Azure).
-Sync fails fast at startup if neither is configured.
-Use `jsb sync fetch enrich` to run without OpenAI credentials.
+`jsb sync` runs all wired phases by default. Distill runs sequentially after
+enrich+research join — it depends on description (from enrich) and reads
+`companies.long_bio` (from research) at `on_phase_start()`. Research requires
+an Azure Responses-API endpoint (`JOBBUDDY_RESEARCH_ENDPOINT` or
+`JOBBUDDY_OPENAI_BASE_URL`) with bearer-token auth via managed identity.
+Distill requires OpenAI credentials (`JOBBUDDY_OPENAI_API_KEY` or
+`JOBBUDDY_OPENAI_AZURE_API_VERSION` with managed identity). Sync fails fast
+at startup if a selected phase's credentials are missing.
+
+**Backfill ordering:** research must run before distill — distill consumes
+`long_bio` as `<company_bio>` context. Run `jsb research-companies` first,
+then `jsb sync distill`.
 
 Preconditions (phase names, OpenAI key, company resolution) are validated
 up front by `validate_sync_config()` before any I/O. The orchestrator
 (`sync_jobs()`) trusts the caller and does not re-validate.
 
-All phases update `PhaseState` objects directly for display. The fetch phase
-uses the same pattern as enrich/strip/embed — no event queue.
+All phases update `PhaseState` objects directly for display — no event queue.
 
-`EnrichPhase` and `StripPhase` extend the `WorkerPhase` ABC (`sync/base.py`),
-which provides: DB polling for work items, `ThreadPoolExecutor` parallelism,
-per-thread DB connections via a single-threaded `WriteQueue`, graceful shutdown
-via `threading.Event`, and display state updates. Phases poll the database
-for unprocessed items, process them in worker threads, and write results back.
-This decouples phases — each can run independently via phase selection
-(`jsb sync strip`, `jsb sync embed`).
+`EnrichPhase`, `ResearchPhase`, and `DistillPhase` extend the
+`WorkerPhase` ABC (`sync/base.py`), which provides: DB polling for work items,
+`ThreadPoolExecutor` parallelism, DB writes via a single-threaded `WriteQueue`,
+graceful shutdown via `threading.Event`, and display state updates. Phases
+poll the database for unprocessed items, process them in worker threads, and
+write results back. This decouples phases — each can run independently via
+phase selection (`jsb sync research`, `jsb research-companies`).
 
-`EmbedPhase` does NOT extend `WorkerPhase`. It runs a synchronous, single-threaded
-poll → embed → write loop. `embed_texts()` saturates the TPM quota from one
-worker via header-based pacing, so the parallel machinery wasn't helping —
-and its prefetch-ahead dedup set (keyed on batch tuples) was the source of a
-race that re-embedded each job 3–4× per sync. See `sync/embed.py` for details.
-
-**Rate limiting:** Embedding pacing uses `x-ratelimit-remaining-tokens` response
-headers. If your provider returns these headers, pacing activates automatically.
-Without them, no pacing occurs — you're responsible for staying within your
-provider's limits.
+The distill phase's "needs work" predicate (already enforced by the
+`idx_jobs_needs_distill` partial index) is a stable column-presence check
+(`short_jd IS NULL AND description IS NOT NULL AND listing_status = 'active'`)
+— no hash. The upsert nulls `short_jd`/`description_normalized` whenever a
+job's `description` body changes, so the distill phase will pick the row up
+again on the next pass.
 
 Display uses Rich Live with `PhaseState` objects (`sync/display.py`). Phase
 workers update `PhaseState` attributes directly (GIL-atomic writes); the Rich

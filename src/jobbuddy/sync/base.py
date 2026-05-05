@@ -82,7 +82,7 @@ class WorkerPhase(ABC, Generic[T]):
 
     Base handles: producer-consumer loop, WriteQueue, display updates, shutdown.
     DB writes go through a single-threaded WriteQueue via submit_write().
-    Type parameter T is the work item type (e.g. StripWorkItem, EmbedBatch).
+    Type parameter T is the work item type (e.g. EnrichWorkItem).
     """
 
     def __init__(self, conninfo: str, *, max_workers: int,

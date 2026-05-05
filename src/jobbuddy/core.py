@@ -37,6 +37,58 @@ def parse_duration_to_date(value: str) -> str:
     return (date.today() - delta).isoformat()
 
 
+def resolve_company_slugs(names: list[str]) -> list[str]:
+    """Resolve a list of company names/slugs to canonical slugs.
+
+    Raises ValueError naming the unknown entry. Used by both CLI and MCP so
+    the failure mode is consistent.
+    """
+    slugs = []
+    for name in names:
+        resolved = lookup_by_name(name)
+        if not resolved:
+            available = ", ".join(c.name for c in list_companies().values())
+            raise ValueError(f"Unknown company '{name}'. Registered: {available}")
+        slugs.append(resolved.slug)
+    return slugs
+
+
+def search_cached_jobs(
+    *,
+    query: str = "",
+    companies: list[str] | None = None,
+    exclude_companies: list[str] | None = None,
+    location: str = "",
+    posted_since: str = "",
+    limit: int = 20,
+) -> list[dict]:
+    """Search the cached job listings — shared entry point for CLI and MCP.
+
+    Resolves company names to slugs, parses the duration filter, and delegates
+    to JobStore.search_jobs_fts. Raises ValueError on unknown company or bad
+    duration.
+    """
+    from jobbuddy.store import JobStore
+
+    company_slugs = resolve_company_slugs(companies) if companies else None
+    exclude_slugs = resolve_company_slugs(exclude_companies) if exclude_companies else None
+
+    posted_after = parse_duration_to_date(posted_since) if posted_since else None
+
+    store = JobStore()
+    try:
+        return store.search_jobs_fts(
+            query=query or None,
+            companies=company_slugs,
+            exclude_companies=exclude_slugs,
+            location=location or None,
+            posted_after=posted_after,
+            limit=limit,
+        )
+    finally:
+        store.close()
+
+
 def resolve_exclude_companies(exclude_csv: str) -> list[str]:
     """Parse comma-separated company names/slugs into resolved slug list."""
     slugs = []

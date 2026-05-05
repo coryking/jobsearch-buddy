@@ -6,8 +6,6 @@ categorically impossible for tests to connect to the production database.
 
 import psycopg
 import pytest
-from pgvector.psycopg import register_vector
-from psycopg.rows import dict_row
 
 from jobbuddy.models import Company, Job
 from jobbuddy.settings import Settings
@@ -40,7 +38,10 @@ def block_prod_db():
     service name — catches hardcoded conninfo that bypasses settings.
     """
     import jobbuddy.settings as settings_mod
-    settings_mod._settings = Settings(pg_service="job-search-buddy-test")
+    settings_mod._settings = Settings(
+        pg_service="job-search-buddy-test",
+        research_endpoint="https://test.openai.azure.com/",
+    )
 
     original_connect = psycopg.connect
 
@@ -97,7 +98,6 @@ def seed_jobs(conninfo: str, slug: str, jobs: list[Job]) -> None:
 def clean_tables(conninfo: str) -> None:
     """Delete all rows from test tables (FK-safe ordering)."""
     conn = psycopg.connect(conninfo, autocommit=True)
-    conn.execute("DELETE FROM job_embeddings")
     conn.execute("DELETE FROM jobs")
     conn.execute("DELETE FROM sync_status")
     conn.execute("DELETE FROM activity_log")
@@ -140,11 +140,13 @@ def ensure_pg_schema():
 def clean_test_data():
     """Clean child tables between tests. Companies persist from session setup."""
     conn = psycopg.connect(TEST_CONNINFO, autocommit=True)
-    conn.execute("DELETE FROM query_embeddings")
-    conn.execute("DELETE FROM job_embeddings")
     conn.execute("DELETE FROM jobs")
     conn.execute("DELETE FROM sync_status")
     conn.execute("DELETE FROM activity_log")
+    conn.execute(
+        "UPDATE companies SET short_bio = NULL, long_bio = NULL,"
+        " bio_researched_at = NULL, bio_model = NULL"
+    )
     conn.close()
 
 
