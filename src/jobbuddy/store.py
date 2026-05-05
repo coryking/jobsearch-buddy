@@ -15,7 +15,7 @@ from psycopg.types.json import Json
 
 from jobbuddy.models import Company, Job
 from jobbuddy.settings import get_settings as _get_settings
-from jobbuddy.types import EmbedWorkItem, StripWorkItem
+from jobbuddy.types import EmbedWorkItem, ResearchWorkItem, StripWorkItem
 
 log = logging.getLogger(__name__)
 
@@ -79,7 +79,10 @@ class JobStore:
         config = row["config"] or {}
         return Company(
             slug=row["slug"], name=row["name"],
-            ats=row["ats"], board=row["board"], **config,
+            ats=row["ats"], board=row["board"],
+            short_bio=row.get("short_bio"),
+            long_bio=row.get("long_bio"),
+            **config,
         )
 
     def load_companies(self) -> dict[str, Company]:
@@ -98,10 +101,11 @@ class JobStore:
 
     def save_company(self, company: Company) -> None:
         """Upsert a company. COALESCE on ats/board so ensure_company(ats=None)
-        doesn't clobber existing ATS config."""
+        doesn't clobber existing ATS config. Bios are owned by the research
+        phase and are never touched here."""
         extra = {
             k: v for k, v in company.model_dump().items()
-            if k not in ("slug", "name", "ats", "board")
+            if k not in ("slug", "name", "ats", "board", "short_bio", "long_bio")
         }
         self.conn.execute(
             """INSERT INTO companies (slug, name, ats, board, config, content_hash)
@@ -117,6 +121,38 @@ class JobStore:
                 content_hash = excluded.content_hash""",
             (company.slug, company.name, company.ats, company.board, Json(extra),
              str(company.content_hash)),
+        )
+
+    def count_companies_needing_bio(self) -> int:
+        """Count companies with no researched long_bio."""
+        row = self.conn.execute(
+            "SELECT COUNT(*) AS cnt FROM companies WHERE long_bio IS NULL"
+        ).fetchone()
+        return row["cnt"]
+
+    def get_companies_needing_bio(self, limit: int = 50) -> list[ResearchWorkItem]:
+        """Return companies with no researched long_bio, slug + name only."""
+        rows = self.conn.execute(
+            """SELECT slug, name FROM companies
+               WHERE long_bio IS NULL
+               ORDER BY slug
+               LIMIT %s""",
+            (limit,),
+        ).fetchall()
+        return [{"slug": r["slug"], "name": r["name"]} for r in rows]
+
+    def update_company_bio(
+        self, slug: str, *, short_bio: str, long_bio: str, model: str,
+    ) -> None:
+        """Persist a researched bio. bio_researched_at = now()."""
+        self.conn.execute(
+            """UPDATE companies SET
+                short_bio = %s,
+                long_bio = %s,
+                bio_model = %s,
+                bio_researched_at = now()
+               WHERE slug = %s""",
+            (short_bio, long_bio, model, slug),
         )
 
     # -------------------------------------------------------------------

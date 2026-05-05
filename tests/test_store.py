@@ -572,3 +572,69 @@ class TestEmbeddings:
                        VALUES (%s, 1, %s, %s, %s)""",
                     (ids[0], "00000000-0000-0000-0000-000000000000", company_hash, vec),
                 )
+
+
+# ---------------------------------------------------------------------------
+# Company bios (Phase 2 research pipeline)
+# ---------------------------------------------------------------------------
+
+
+class TestCompanyBios:
+    def test_companies_table_has_bio_columns(self, store):
+        rows = store.conn.execute("""
+            SELECT column_name FROM information_schema.columns
+            WHERE table_name = 'companies'
+        """).fetchall()
+        cols = {r["column_name"] for r in rows}
+        assert {"short_bio", "long_bio", "bio_researched_at", "bio_model"} <= cols
+
+    def test_count_companies_needing_bio_counts_unfilled(self, store):
+        n = store.count_companies_needing_bio()
+        # All 6 test companies seeded, all start with NULL long_bio.
+        assert n == 6
+
+    def test_count_companies_needing_bio_excludes_filled(self, store):
+        store.update_company_bio("acme", short_bio="s", long_bio="l", model="gpt-5.4")
+        assert store.count_companies_needing_bio() == 5
+
+    def test_get_companies_needing_bio_returns_slug_and_name(self, store):
+        items = store.get_companies_needing_bio(limit=100)
+        assert len(items) == 6
+        # Items are TypedDicts with slug + name only.
+        first = items[0]
+        assert set(first.keys()) == {"slug", "name"}
+        slugs = {i["slug"] for i in items}
+        assert "acme" in slugs
+
+    def test_get_companies_needing_bio_excludes_filled(self, store):
+        store.update_company_bio("acme", short_bio="s", long_bio="l", model="gpt-5.4")
+        slugs = {i["slug"] for i in store.get_companies_needing_bio(limit=100)}
+        assert "acme" not in slugs
+        assert len(slugs) == 5
+
+    def test_get_companies_needing_bio_respects_limit(self, store):
+        items = store.get_companies_needing_bio(limit=2)
+        assert len(items) == 2
+
+    def test_update_company_bio_writes_all_fields(self, store):
+        store.update_company_bio(
+            "acme", short_bio="short", long_bio="long prose", model="gpt-5.4"
+        )
+        row = store.conn.execute(
+            "SELECT short_bio, long_bio, bio_researched_at, bio_model"
+            " FROM companies WHERE slug = 'acme'"
+        ).fetchone()
+        assert row["short_bio"] == "short"
+        assert row["long_bio"] == "long prose"
+        assert row["bio_model"] == "gpt-5.4"
+        assert row["bio_researched_at"] is not None
+
+    def test_update_company_bio_overwrites(self, store):
+        store.update_company_bio("acme", short_bio="v1", long_bio="v1-long", model="m1")
+        store.update_company_bio("acme", short_bio="v2", long_bio="v2-long", model="m2")
+        row = store.conn.execute(
+            "SELECT short_bio, long_bio, bio_model FROM companies WHERE slug = 'acme'"
+        ).fetchone()
+        assert row["short_bio"] == "v2"
+        assert row["long_bio"] == "v2-long"
+        assert row["bio_model"] == "m2"

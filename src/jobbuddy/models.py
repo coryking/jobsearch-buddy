@@ -92,6 +92,8 @@ class Company(BaseModel):
     name: str
     ats: str | None = None
     board: str | None = None
+    short_bio: str | None = None
+    long_bio: str | None = None
 
     @property
     def content_hash(self) -> uuid.UUID:
