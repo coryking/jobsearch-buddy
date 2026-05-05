@@ -80,6 +80,6 @@ def get_fetcher(company: Company) -> ATSFetcher:
     extra = {
         k: v
         for k, v in company.model_dump().items()
-        if k not in ("slug", "name", "ats", "board", "metadata")
+        if k not in ("slug", "name", "ats", "board", "metadata", "short_bio", "long_bio")
     }
     return create_fetcher(company.ats, board=company.board or "", name=company.name, **extra)
