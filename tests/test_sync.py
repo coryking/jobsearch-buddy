@@ -38,7 +38,7 @@ class TestSync:
         from jobbuddy.store import JobStore
         store = JobStore(pg_conninfo)
         assert store.job_count() == 2
-        rows = store.query_jobs(company="acme")
+        rows = store.query_jobs(companies=["acme"])
         assert len(rows) == 2
         store.close()
 

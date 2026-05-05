@@ -1,21 +1,18 @@
 [project]
 name = "jobsearch-buddy"
 version = "0.1.0"
-description = "Job search tool with ATS scraping, PostgreSQL/pgvector cache, vector search, and cloud-hosted MCP server"
+description = "Job search tool with ATS scraping, PostgreSQL FTS cache, and cloud-hosted MCP server"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "fastmcp>=3.1.1",
-    "flask>=3.0.0",
     "httpx>=0.28.1",
-    "numpy>=1.24.0",
     "platformdirs>=4.0.0",
     "pydantic>=2.0",
     "pydantic-settings>=2.0.0",
     "python-docx>=1.2.0",
     "rich>=14.3.2",
     "psycopg[binary]>=3.2",
-    "pgvector>=0.3",
     "psycopg_pool>=3.2",
     "openai>=1.0.0",
     "toml>=0.10.0",

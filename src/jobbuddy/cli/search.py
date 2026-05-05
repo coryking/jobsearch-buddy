@@ -1,4 +1,4 @@
-"""Search and listing commands: search, list-jobs, serve, companies."""
+"""Search and listing commands: search, list-jobs, companies."""
 
 import csv
 import io
@@ -199,12 +199,3 @@ def search(
     print(buf.getvalue(), end="")
 
 
-@app.command()
-def serve(
-    port: int = typer.Option(8000, "--port", "-p", help="Port to listen on"),
-    host: str = typer.Option("127.0.0.1", "--host", help="Host to bind to"),
-):
-    """Start the semantic search web UI."""
-    from jobbuddy.web import create_app
-    console.print(f"[green]Starting web UI at[/green] http://{host}:{port}")
-    create_app().run(host=host, port=port, debug=True)

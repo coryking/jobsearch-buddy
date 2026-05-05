@@ -335,7 +335,7 @@ def search_jobs(
     to run `jsb sync`.
 
     Returns the company registry if the company name isn't found."""
-    from jobbuddy.search import VectorSearch
+    from jobbuddy.store import JobStore
 
     def _resolve_company_list(names: list[str]) -> list[str] | str:
         """Resolve company names to slugs. Returns error string on unknown name."""
@@ -364,45 +364,44 @@ def search_jobs(
 
     max_results = 100
 
-    search = VectorSearch()
+    posted_after = None
+    if since:
+        from jobbuddy.core import parse_duration_to_date
+
+        try:
+            posted_after = parse_duration_to_date(since)
+        except ValueError:
+            return f"Error: Invalid 'since' value '{since}'. Use e.g. '24h', '3d', '1w', '2w'."
+
+    store = JobStore()
     try:
-        posted_after = None
-        if since:
-            from jobbuddy.core import parse_duration_to_date
-
-            try:
-                posted_after = parse_duration_to_date(since)
-            except ValueError:
-                return f"Error: Invalid 'since' value '{since}'. Use e.g. '24h', '3d', '1w', '2w'."
-
-        results = search.search(
-            query=query,
+        rows = store.query_jobs(
             companies=company_slugs,
             exclude_companies=exclude_slugs,
+            title=query or None,
             location=location_filter or None,
             posted_after=posted_after,
             limit=max_results,
         )
 
-        if not results:
+        if not rows:
             filters = []
             if location_filter:
                 filters.append(f"location='{location_filter}'")
             if since:
                 filters.append(f"since='{since}'")
-            filters.append(f"query='{query}'")
+            if query:
+                filters.append(f"query='{query}'")
             filter_desc = f" matching {', '.join(filters)}" if filters else ""
             scope = ", ".join(company_slugs) if company_slugs else "any company"
             return f"No cached jobs found for {scope}{filter_desc}. Try running `jsb sync` to refresh."
-
-        rows = [dict(result.job) for result in results]
 
         log_entries = read_log()
 
         single_slug = company_slugs[0] if company_slugs and len(company_slugs) == 1 else None
         return JobSearchResults.from_query(rows, log_entries, company_slug=single_slug).to_mcp_result()
     finally:
-        search.close()
+        store.close()
 
 
 @mcp.tool

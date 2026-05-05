@@ -1,7 +1,7 @@
-"""JobStore — PostgreSQL persistence layer for job listings and embeddings.
+"""JobStore — PostgreSQL persistence layer for job listings.
 
 Schema uses a surrogate SERIAL PRIMARY KEY on jobs with a UNIQUE constraint
-on (company_slug, job_id). Embeddings stored as pgvector vector(1536) column.
+on (company_slug, job_id).
 """
 
 import json
@@ -9,13 +9,10 @@ import logging
 from datetime import date, datetime, timezone
 
 import psycopg
-from pgvector.psycopg import register_vector
 from psycopg.rows import dict_row
 from psycopg.types.json import Json
 
 from jobbuddy.models import Company, Job
-from jobbuddy.settings import get_settings as _get_settings
-from jobbuddy.types import EmbedWorkItem, StripWorkItem
 
 log = logging.getLogger(__name__)
 
@@ -66,7 +63,6 @@ class JobStore:
             conninfo = pg_conninfo_with_token()
 
         conn = psycopg.connect(conninfo, autocommit=True)
-        register_vector(conn)
         conn.row_factory = dict_row
         return conn
 
@@ -104,8 +100,8 @@ class JobStore:
             if k not in ("slug", "name", "ats", "board")
         }
         self.conn.execute(
-            """INSERT INTO companies (slug, name, ats, board, config, content_hash)
-               VALUES (%s, %s, %s, %s, %s, %s)
+            """INSERT INTO companies (slug, name, ats, board, config)
+               VALUES (%s, %s, %s, %s, %s)
                ON CONFLICT (slug) DO UPDATE SET
                 name = excluded.name,
                 ats = COALESCE(excluded.ats, companies.ats),
@@ -113,10 +109,8 @@ class JobStore:
                 config = CASE
                     WHEN excluded.ats IS NOT NULL THEN excluded.config
                     ELSE companies.config
-                END,
-                content_hash = excluded.content_hash""",
-            (company.slug, company.name, company.ats, company.board, Json(extra),
-             str(company.content_hash)),
+                END""",
+            (company.slug, company.name, company.ats, company.board, Json(extra)),
         )
 
     # -------------------------------------------------------------------
@@ -178,7 +172,6 @@ class JobStore:
                     j.description or None,
                     json.dumps(j.ats_metadata) if j.ats_metadata else None,
                     now,
-                    str(j.content_hash(None)),
                 )
                 for j in jobs
             ]
@@ -187,8 +180,8 @@ class JobStore:
                     """INSERT INTO jobs
                        (company_slug, job_id, title, location, url, published_at,
                         department, team, salary, description, ats_metadata, last_seen,
-                        listing_status, content_hash)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'active', %s)
+                        listing_status)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'active')
                        ON CONFLICT(company_slug, job_id) DO UPDATE SET
                         title = excluded.title,
                         location = excluded.location,
@@ -201,12 +194,20 @@ class JobStore:
                         ats_metadata = COALESCE(excluded.ats_metadata, jobs.ats_metadata),
                         last_seen = excluded.last_seen,
                         listing_status = 'active',
-                        content_hash = md5(
-                            coalesce(jobs.description_stripped, '')
-                            || excluded.title
-                            || coalesce(excluded.location, '')
-                            || coalesce(excluded.department, '')
-                        )::uuid
+                        -- Invalidate extract outputs when the description body changes,
+                        -- so the extract phase picks the row up again.
+                        short_jd = CASE
+                            WHEN excluded.description IS NOT NULL
+                              AND excluded.description IS DISTINCT FROM jobs.description
+                            THEN NULL
+                            ELSE jobs.short_jd
+                        END,
+                        description_normalized = CASE
+                            WHEN excluded.description IS NOT NULL
+                              AND excluded.description IS DISTINCT FROM jobs.description
+                            THEN NULL
+                            ELSE jobs.description_normalized
+                        END
                        WHERE (jobs.title, jobs.location, jobs.url, jobs.published_at,
                               jobs.department, jobs.team, jobs.salary, jobs.description,
                               jobs.ats_metadata, jobs.listing_status)
@@ -320,78 +321,6 @@ class JobStore:
                     returning=False,
                 )
 
-    def _stripping_conditions(self, slugs: list[str] | None = None) -> tuple[str, list]:
-        conditions = [
-            "description IS NOT NULL",
-            "description_stripped IS NULL",
-            "listing_status = 'active'",
-        ]
-        params: list = []
-        if slugs:
-            conditions.append("company_slug = ANY(%s)")
-            params.append(slugs)
-        return " AND ".join(conditions), params
-
-    def count_jobs_needing_stripping(self, *, slugs: list[str] | None = None) -> int:
-        """Count active jobs with descriptions but no stripped version."""
-        where, params = self._stripping_conditions(slugs)
-        row = self.conn.execute(
-            f"SELECT COUNT(*) AS cnt FROM jobs WHERE {where}", params
-        ).fetchone()
-        return row["cnt"]
-
-    def get_jobs_needing_stripping(self, limit: int = 50, *, slugs: list[str] | None = None) -> list[StripWorkItem]:
-        """Return active jobs with descriptions but no stripped version."""
-        where, params = self._stripping_conditions(slugs)
-        params.append(limit)
-        rows = self.conn.execute(
-            f"""SELECT id, company_slug, job_id, title, description FROM jobs
-               WHERE {where}
-               LIMIT %s""",
-            params,
-        ).fetchall()
-        return [dict(row) for row in rows]  # type: ignore[return-value]
-
-    def update_stripped_description(self, job_pk: int, stripped: str) -> None:
-        """Set the stripped description for a job.
-
-        Empty/whitespace-only strings are stored as NULL so the job gets
-        re-stripped on the next pass. Recomputes content_hash so the embed
-        phase detects the change via hash mismatch.
-        """
-        value = stripped.strip() if stripped else None
-        if not value:
-            value = None
-        self.conn.execute(
-            """UPDATE jobs SET
-                description_stripped = %s,
-                content_hash = md5(
-                    coalesce(%s, '') || title || coalesce(location, '') || coalesce(department, '')
-                )::uuid
-               WHERE id = %s""",
-            (value, value, job_pk),
-        )
-
-    def clear_stripped_descriptions(self) -> int:
-        """Set description_stripped to NULL for all jobs. Returns count affected.
-
-        Deletes embeddings for affected jobs and recomputes content_hash.
-        """
-        with self.conn.transaction():
-            self.conn.execute("""
-                DELETE FROM job_embeddings
-                WHERE job_id IN (SELECT id FROM jobs WHERE description_stripped IS NOT NULL)
-            """)
-            cur = self.conn.execute("""
-                UPDATE jobs SET
-                    description_stripped = NULL,
-                    content_hash = md5(
-                        '' || title || coalesce(location, '') || coalesce(department, '')
-                    )::uuid
-                WHERE description_stripped IS NOT NULL
-            """)
-            return cur.rowcount
-
     def get_job_by_ids(self, job_ids: list[int]) -> list[dict]:
         """Fetch jobs by surrogate key IDs."""
         if not job_ids:
@@ -423,57 +352,6 @@ class JobStore:
             (slugs, jids),
         ).fetchall()
         return {(r["company_slug"], r["job_id"]): dict(r) for r in rows}
-
-    # -------------------------------------------------------------------
-    # Embeddings
-    # -------------------------------------------------------------------
-
-    def store_embedding(self, job_id: int, job_hash: str, company_hash: str,
-                        embedding: list[float]) -> None:
-        """Store a single embedding in job_embeddings (chunk_index=0)."""
-        self.store_embeddings([(job_id, job_hash, company_hash, embedding)])
-
-    def store_embeddings(self, items: list[tuple[int, str, str, list[float]]]) -> None:
-        """Batch store embeddings in job_embeddings.
-
-        Each item is (job_id, job_hash, company_hash, vector).
-        Deletes old chunks per job_id first, then inserts new ones.
-        """
-        if not items:
-            return
-        job_ids = [i[0] for i in items]
-        with self.conn.transaction():
-            self.conn.execute(
-                "DELETE FROM job_embeddings WHERE job_id = ANY(%s)", (job_ids,)
-            )
-            with self.conn.cursor() as cur:
-                cur.executemany(
-                    """INSERT INTO job_embeddings (job_id, chunk_index, job_hash, company_hash, embedding)
-                       VALUES (%s, 0, %s, %s, %s)""",
-                    [(jid, jh, ch, vec) for jid, jh, ch, vec in items],
-                    returning=False,
-                )
-
-    def delete_embedding(self, job_id: int) -> None:
-        """Delete all embeddings for a job."""
-        self.conn.execute(
-            "DELETE FROM job_embeddings WHERE job_id = %s", (job_id,)
-        )
-
-    def search_similar(self, query_embedding: list[float], k: int = 25) -> list[dict]:
-        """KNN search via pgvector, returns job dicts with distance score."""
-        rows = self.conn.execute("""
-            SELECT e.embedding <=> %s::vector AS distance,
-                   j.*, s.last_sync, c.name AS company_name
-            FROM job_embeddings e
-            JOIN jobs j ON e.job_id = j.id
-            LEFT JOIN sync_status s ON j.company_slug = s.company_slug
-            LEFT JOIN companies c ON j.company_slug = c.slug
-            WHERE j.listing_status = 'active'
-            ORDER BY e.embedding <=> %s::vector
-            LIMIT %s
-        """, (query_embedding, query_embedding, k)).fetchall()
-        return [dict(r) for r in rows]
 
     def _build_filter_conditions(
         self,
@@ -518,182 +396,6 @@ class JobStore:
         return conditions, params
 
     DIVERSITY_POOL_SIZE = 500
-
-    RRF_K = 50
-    SEMANTIC_POOL_SIZE = 200
-    FTS_RANK_WEIGHT = 0.02
-
-    @staticmethod
-    def _strip_fts_operators(query_text: str) -> str:
-        """Strip websearch_to_tsquery operators for embedding input.
-
-        Removes quotes, OR, and leading minus so the embedding model sees
-        plain natural language while FTS gets the structured query.
-        """
-        import re
-        text = query_text.replace('"', '')
-        text = re.sub(r'\bOR\b', ' ', text)
-        text = re.sub(r'(?<!\w)-(?=\w)', ' ', text)
-        return ' '.join(text.split())
-
-    def _ensure_query_embedding(self, query_text: str) -> None:
-        """Guarantee query_text has an embedding row. Calls OpenAI on miss.
-
-        Strips FTS operators (quotes, OR, minus) before embedding so the
-        vector search sees plain natural language.
-        """
-        from jobbuddy.embeddings import embed_query
-
-        embed_text = self._strip_fts_operators(query_text)
-        model = _get_settings().embedding_model
-        row = self.conn.execute(
-            "SELECT 1 FROM query_embeddings WHERE query_text = %s AND model = %s",
-            (query_text, model),
-        ).fetchone()
-        if row:
-            return
-        vec = embed_query(embed_text)
-        self.conn.execute(
-            "INSERT INTO query_embeddings (query_text, embedding, model) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
-            (query_text, vec, model),
-        )
-
-    def hybrid_search(
-        self,
-        query_text: str,
-        *,
-        companies: list[str] | None = None,
-        exclude_companies: list[str] | None = None,
-        location: str | None = None,
-        posted_after: str | None = None,
-        k: int = 25,
-    ) -> list[dict]:
-        """Hybrid vector + FTS search with RRF fusion and round-robin diversity.
-
-        Vector search (HNSW) picks the top candidates, then ts_rank_cd
-        scores those candidates using the weighted fts_vector column
-        (title=A, description=B). Jobs with query terms in the title get
-        a substantial boost; jobs with no keyword match at all sink.
-        """
-        self._ensure_query_embedding(query_text)
-        settings = _get_settings()
-        conditions, params = self._build_filter_conditions(
-            companies=companies, exclude_companies=exclude_companies,
-            location=location, posted_after=posted_after,
-        )
-        where = " AND ".join(conditions)
-
-        query_params = [query_text, settings.embedding_model]
-        vec_params = params + [self.SEMANTIC_POOL_SIZE]
-        fts_params = [query_text]
-
-        sql = f"""
-            WITH qvec AS (
-                SELECT embedding FROM query_embeddings
-                WHERE query_text = %s AND model = %s
-            ),
-            semantic AS (
-                SELECT e.job_id AS id,
-                       row_number() OVER (
-                           ORDER BY e.embedding <=> (SELECT embedding FROM qvec)
-                       ) AS rank_ix
-                FROM job_embeddings e
-                JOIN jobs j ON e.job_id = j.id
-                WHERE {where}
-                ORDER BY e.embedding <=> (SELECT embedding FROM qvec)
-                LIMIT %s
-            ),
-            fts_scored AS (
-                SELECT s.id,
-                       ts_rank_cd(
-                           j.fts_vector,
-                           websearch_to_tsquery('english', %s),
-                           32
-                       ) AS fts_rank
-                FROM semantic s
-                JOIN jobs j ON s.id = j.id
-            ),
-            merged AS (
-                SELECT s.id,
-                       1.0 / ({self.RRF_K} + s.rank_ix)
-                     + f.fts_rank * {self.FTS_RANK_WEIGHT}
-                       AS rrf_score
-                FROM semantic s
-                JOIN fts_scored f ON s.id = f.id
-            ),
-            scored AS (
-                SELECT j.*, ss.last_sync, c.name AS company_name,
-                       m.rrf_score
-                FROM merged m
-                JOIN jobs j ON m.id = j.id
-                LEFT JOIN sync_status ss ON j.company_slug = ss.company_slug
-                LEFT JOIN companies c ON j.company_slug = c.slug
-            ),
-            ranked AS (
-                SELECT *,
-                       ROW_NUMBER() OVER (
-                           PARTITION BY company_slug ORDER BY rrf_score DESC
-                       ) AS rn
-                FROM scored
-            )
-            SELECT * FROM ranked
-            ORDER BY rn, rrf_score DESC
-            LIMIT %s
-        """
-        all_params = query_params + vec_params + fts_params + [k]
-
-        rows = self.conn.execute(sql, all_params).fetchall()
-        internal_cols = {"rn", "rank_ix"}
-        return [{k: v for k, v in dict(r).items() if k not in internal_cols} for r in rows]
-
-    def _embedding_base_query(self, slugs: list[str] | None = None) -> tuple[str, str, list]:
-        """Base FROM/WHERE for jobs needing embeddings (hash mismatch or missing)."""
-        extra_conditions = []
-        params: list = []
-        if slugs:
-            extra_conditions.append("j.company_slug = ANY(%s)")
-            params.append(slugs)
-        extra = (" AND " + " AND ".join(extra_conditions)) if extra_conditions else ""
-
-        from_clause = """
-            jobs j
-            JOIN companies c ON j.company_slug = c.slug
-            LEFT JOIN job_embeddings e ON e.job_id = j.id AND e.chunk_index = 0
-        """
-        where_clause = f"""
-            j.listing_status = 'active'
-            AND j.description_stripped IS NOT NULL
-            AND (e.id IS NULL OR e.job_hash IS DISTINCT FROM j.content_hash
-                 OR e.company_hash IS DISTINCT FROM c.content_hash)
-            {extra}
-        """
-        return from_clause, where_clause, params
-
-    def count_jobs_needing_embeddings(self, slugs: list[str] | None = None) -> int:
-        """Count jobs needing embeddings (missing or hash mismatch)."""
-        from_clause, where_clause, params = self._embedding_base_query(slugs)
-        row = self.conn.execute(
-            f"SELECT COUNT(*) AS cnt FROM {from_clause} WHERE {where_clause}", params
-        ).fetchone()
-        return row["cnt"]
-
-    def list_jobs_needing_embeddings(self, slugs: list[str] | None = None, limit: int = 0) -> list[EmbedWorkItem]:
-        """Jobs needing embeddings (missing or hash mismatch)."""
-        from_clause, where_clause, params = self._embedding_base_query(slugs)
-
-        sql = f"""
-            SELECT j.id, j.content_hash AS job_hash, c.content_hash AS company_hash,
-                   j.company_slug, j.job_id, j.title, j.department, j.location,
-                   j.description_stripped
-            FROM {from_clause}
-            WHERE {where_clause}
-        """
-        if limit > 0:
-            sql += " LIMIT %s"
-            params.append(limit)
-
-        rows = self.conn.execute(sql, params).fetchall()
-        return [dict(r) for r in rows]  # type: ignore[return-value]
 
     # -------------------------------------------------------------------
     # Sync bookkeeping

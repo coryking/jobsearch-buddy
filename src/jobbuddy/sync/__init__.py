@@ -1,17 +1,13 @@
-"""Sync pipeline -- fetch, enrich, strip, embed job listings.
+"""Sync pipeline -- fetch + enrich (Phase 1, pre-distill).
 
-Orchestrates four phases:
+Orchestrates two phases:
 1. FetchPhase: parallel company fetching via ThreadPoolExecutor
 2. EnrichPhase: description enrichment for stub fetchers
-3. StripPhase: LLM-based boilerplate removal (requires OpenAI API)
-4. EmbedPhase: embedding generation (requires OpenAI API)
 
-All four phases run by default. Strip and embed require OpenAI credentials
-(JOBBUDDY_OPENAI_API_KEY) — sync fails fast if they're missing.
+The third phase (ExtractPhase) is wired up by Unit 2.
 
 Phases use DB-as-queue: each polls PostgreSQL for work items and updates
-PhaseState objects for live display. No event queue for inter-phase
-coordination -- phases are independent and idempotent.
+PhaseState objects for live display.
 """
 
 from __future__ import annotations
@@ -24,13 +20,11 @@ from jobbuddy.registry import list_companies, lookup_by_name
 from jobbuddy.settings import Settings, get_settings, pg_conninfo_with_token
 from jobbuddy.store import JobStore
 from jobbuddy.sync.display import SyncDisplayState
+from jobbuddy.sync.enrich import EnrichPhase
+from jobbuddy.sync.fetch import FetchPhase
 from jobbuddy.sync.types import SyncResult
 
 __all__ = ["sync_jobs", "validate_sync_config", "SyncConfig", "SyncResult", "VALID_PHASES"]
-from jobbuddy.sync.embed import EmbedPhase
-from jobbuddy.sync.enrich import EnrichPhase
-from jobbuddy.sync.fetch import FetchPhase
-from jobbuddy.sync.strip import StripPhase
 
 
 # ---------------------------------------------------------------------------
@@ -38,8 +32,8 @@ from jobbuddy.sync.strip import StripPhase
 # ---------------------------------------------------------------------------
 
 
-VALID_PHASES = {"fetch", "enrich", "strip", "embed"}
-_OPENAI_PHASES = {"strip", "embed"}
+VALID_PHASES = {"fetch", "enrich"}
+_OPENAI_PHASES: set[str] = set()
 
 
 @dataclass
@@ -52,7 +46,6 @@ class SyncConfig:
     company_slugs: list[str] | None = None
     stale_hours: float | None = None
     max_workers: int = 5
-    force_strip: bool = False
 
 
 def validate_sync_config(
@@ -61,18 +54,16 @@ def validate_sync_config(
     company_slugs: list[str] | None = None,
     stale_hours: float | None = None,
     max_workers: int = 5,
-    force_strip: bool = False,
     settings: Settings | None = None,
 ) -> SyncConfig:
     """Validate all sync preconditions up front. Returns SyncConfig or raises ValueError.
 
-    Checks: phase names valid, OpenAI key present for strip/embed, company slugs
+    Checks: phase names valid, OpenAI key present for distill, company slugs
     resolve to known companies with ATS config.
     """
     if settings is None:
         settings = get_settings()
 
-    # Resolve phases
     resolved_phases = phases if phases is not None else VALID_PHASES
     invalid = resolved_phases - VALID_PHASES
     if invalid:
@@ -81,14 +72,12 @@ def validate_sync_config(
             f"Valid phases: {', '.join(sorted(VALID_PHASES))}"
         )
 
-    # OpenAI required for strip/embed
     needs_openai = resolved_phases & _OPENAI_PHASES
     if needs_openai and not settings.has_openai:
         raise ValueError(
             f"JOBBUDDY_OPENAI_API_KEY required for {', '.join(sorted(needs_openai))} phase(s)"
         )
 
-    # Resolve company targets
     targets: list[Company] = []
     if company_slugs:
         for cs in company_slugs:
@@ -106,7 +95,6 @@ def validate_sync_config(
         company_slugs=company_slugs,
         stale_hours=stale_hours,
         max_workers=max_workers,
-        force_strip=force_strip,
     )
 
 
@@ -130,15 +118,12 @@ def sync_jobs(
     conninfo: str | None = None,
     display_state: SyncDisplayState | None = None,
     phases: set[str] | None = None,
-    force_strip: bool = False,
 ) -> list[SyncResult]:
     """Sync job listings from ATS boards into the PostgreSQL cache.
 
-    Fetch runs first, then enrich/strip/embed run concurrently. Each phase
-    polls the DB for work; upstream_done events signal when it's safe to stop
-    polling (enrich_done -> strip, strip_done -> embed). Strip starts processing
-    full-fetcher jobs immediately while enrich is still fetching descriptions
-    for stub fetchers.
+    Fetch runs first; enrich and distill run concurrently after.
+    Each phase polls the DB for work; upstream_done events signal when it's
+    safe to stop polling (enrich_done -> distill).
 
     Callers should use validate_sync_config() first to check preconditions.
     """
@@ -154,17 +139,14 @@ def sync_jobs(
     if conninfo is None:
         conninfo = pg_conninfo_with_token()
 
-    # Resolve company names/slugs to actual DB slugs for downstream phases
     resolved_slugs: list[str] | None = None
     if company_slugs:
         resolved_slugs = [c.slug for c in _resolve_company_targets(company_slugs)]
 
-    # Fetch phase: build targets and run
     results: list[SyncResult] = []
-    slugs_to_embed: list[str] = []
+    slugs_to_enrich: list[str] = []
 
     if "fetch" in run_phases:
-        # Build target list
         if company_slugs:
             targets = _resolve_company_targets(company_slugs)
         else:
@@ -172,7 +154,6 @@ def sync_jobs(
 
         store = JobStore(conninfo)
         try:
-            # Filter by staleness
             if stale_hours is not None:
                 filtered = []
                 for c in targets:
@@ -183,78 +164,39 @@ def sync_jobs(
             if not targets:
                 return []
 
-            # Shuffle to spread same-platform companies across time
             random.shuffle(targets)
 
-            # Phase 1: Fetch
-            results, slugs_to_embed = FetchPhase(
+            results, slugs_to_enrich = FetchPhase(
                 store, targets, max_workers, display=display_state.fetch,
             ).run()
         finally:
             store.close()
     else:
-        # When skipping fetch, build targets for enrich from registry
         if company_slugs:
             targets = _resolve_company_targets(company_slugs)
         else:
             targets = [c for c in registry.values() if c.ats is not None]
 
-        # Discover stub-fetcher slugs so enrich can fill missing descriptions
         if "enrich" in run_phases:
             from jobbuddy.fetchers import has_descriptions_in_listing
-            slugs_to_embed = [
+            slugs_to_enrich = [
                 c.slug for c in targets
                 if c.ats and not has_descriptions_in_listing(c.ats)
             ]
 
-    # Phases 2-4: Enrich, strip, embed run concurrently.
-    # Each phase polls the DB for work. upstream_done events chain them
-    # so downstream phases keep polling until upstream finishes producing.
-    #   enrich_done -> strip keeps polling for newly-enriched descriptions
-    #   strip_done  -> embed keeps polling for newly-stripped descriptions
     enrich_done = threading.Event()
-    strip_done = threading.Event()
 
-    # Ensure schema/migrations run in the main thread before spawning
-    # phase threads -- avoids race where multiple threads try to migrate
-    # simultaneously.
+    # Ensure schema/migrations run in main thread before spawning phase threads.
     JobStore(conninfo).close()
 
-    # Force-strip: clear existing stripped descriptions before strip phase
-    if force_strip and "strip" in run_phases:
-        store = JobStore(conninfo)
-        store.clear_stripped_descriptions()
-        store.close()
-
-    # Build enrich phase (if selected and any stub fetchers succeeded)
     enrich_phase = None
-    if "enrich" in run_phases and slugs_to_embed:
+    if "enrich" in run_phases and slugs_to_enrich:
         enrich_phase = EnrichPhase(
             conninfo,
-            slugs=slugs_to_embed,
+            slugs=slugs_to_enrich,
             targets=targets,
             display=display_state.enrich,
             max_workers=max_workers,
-        )
-
-    # Build strip phase (if selected)
-    strip_phase = None
-    if "strip" in run_phases:
-        strip_phase = StripPhase(
-            conninfo,
-            display=display_state.strip,
-            slugs=resolved_slugs,
-            upstream_done=enrich_done,
-        )
-
-    # Build embed phase (if selected)
-    embed_phase = None
-    if "embed" in run_phases:
-        embed_phase = EmbedPhase(
-            conninfo,
-            display=display_state.embed,
-            slugs=resolved_slugs,
-            upstream_done=strip_done,
         )
 
     def run_enrich() -> None:
@@ -264,32 +206,11 @@ def sync_jobs(
         finally:
             enrich_done.set()
 
-    def run_strip() -> None:
-        try:
-            if strip_phase:
-                strip_phase.run()
-        finally:
-            strip_done.set()
-
-    def run_embed() -> None:
-        if embed_phase:
-            embed_phase.run()
-
-    # If enrich is skipped, pre-set its done event so strip doesn't wait
     if "enrich" not in run_phases:
         enrich_done.set()
 
-    # If strip is skipped, pre-set its done event so embed doesn't wait
-    if "strip" not in run_phases:
-        strip_done.set()
-
-    threads: list[threading.Thread] = []
-    threads.append(threading.Thread(target=run_enrich, daemon=True))
-    threads.append(threading.Thread(target=run_strip, daemon=True))
-    threads.append(threading.Thread(target=run_embed, daemon=True))
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
+    if enrich_phase:
+        threading.Thread(target=run_enrich, daemon=True).start()
+        enrich_done.wait()
 
     return results

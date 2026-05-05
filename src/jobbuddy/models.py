@@ -1,11 +1,9 @@
 """Normalized job model and text utilities."""
 
 import csv
-import hashlib
 import io
 import json
 import re
-import uuid
 from collections import Counter
 from datetime import date
 from html.parser import HTMLParser
@@ -47,41 +45,6 @@ class Job(BaseModel):
     description: str | None = None
     ats_metadata: dict | None = Field(default=None, exclude=True)
 
-    def content_hash(self, description_stripped: str | None = None) -> uuid.UUID:
-        """Content hash for cache invalidation — matches SQL md5(...)::uuid.
-
-        Covers exactly the fields that feed embed_text(): title, location,
-        department, description_stripped. Company name is covered by
-        Company.content_hash separately.
-
-        Takes description_stripped as a parameter because it's stored separately
-        in the DB, not on the model instance.
-        """
-        parts = (
-            (description_stripped or "")
-            + self.title
-            + (self.location or "")
-            + (self.department or "")
-        )
-        return uuid.UUID(hashlib.md5(parts.encode()).hexdigest())
-
-    def embed_text(self, company_name: str, *, description_stripped: str | None = None) -> str | None:
-        """Build semantically rich text for embedding. Returns None if no description.
-
-        Uses description_stripped (LLM-cleaned) when available, falling back to
-        the raw description.
-        """
-        desc = description_stripped or self.description
-        if not desc:
-            return None
-        parts = [f"{company_name} — {self.title}"]
-        meta = ", ".join(filter(None, [self.department, self.location]))
-        if meta:
-            parts.append(meta)
-        parts.append("")
-        parts.append(desc)
-        return "\n".join(parts)
-
 
 class Company(BaseModel):
     """A company in the registry. Slug is normalized at construction time."""
@@ -92,11 +55,6 @@ class Company(BaseModel):
     name: str
     ats: str | None = None
     board: str | None = None
-
-    @property
-    def content_hash(self) -> uuid.UUID:
-        """Content hash for cache invalidation — matches SQL md5(name)::uuid."""
-        return uuid.UUID(hashlib.md5(self.name.encode()).hexdigest())
 
     @field_validator("slug", mode="before")
     @classmethod
@@ -287,10 +245,13 @@ class CompactJob(BaseModel):
 
     @classmethod
     def from_db_row(cls, row: dict, company_name: str) -> "CompactJob":
-        """Build from a JobStore row dict."""
+        """Build from a JobStore row dict.
+
+        Prefers the distill-phase output (description_normalized); falls back
+        to the raw description for jobs that haven't been distilled yet.
+        """
         meta = _filter_metadata(row.get("ats_metadata"))
-        # Prefer stripped description, fall back to raw
-        desc = row.get("description_stripped") or row.get("description")
+        desc = row.get("description_normalized") or row.get("description")
         return cls(
             title=row["title"],
             company=company_name,

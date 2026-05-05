@@ -1,17 +1,17 @@
 ---
-title: Job Search Redesign — Phase 1 (Extract Pipeline + MCP Surface Rebuild)
+title: Job Search Redesign — Phase 1 (Distill Pipeline + MCP Surface Rebuild)
 type: feat
 status: active
 date: 2026-05-05
 origin: docs/brainstorms/2026-05-05-job-search-redesign-requirements.md
 ---
 
-# Job Search Redesign — Phase 1 (Extract Pipeline + MCP Surface Rebuild)
+# Job Search Redesign — Phase 1 (Distill Pipeline + MCP Surface Rebuild)
 
 ## Overview
 
 Replace the embedding-dependent strip pipeline with a single structured-output
-**extract pipeline** that produces three fields per job (`short_jd`,
+**distill pipeline** that produces three fields per job (`short_jd`,
 `description_normalized`, `salary`). Reshape the MCP surface so it returns
 fact-dense rows the calling LLM can rank without re-fetching JDs. Drop the
 job embedding stack cleanly.
@@ -31,7 +31,7 @@ because it issues keyword-shaped queries. The strip-then-embed stack is
 paying its per-job LLM cost with no downstream payoff. (See origin doc
 "Background and motivation".)
 
-This plan replaces that stack with one extract LLM call per job that
+This plan replaces that stack with one distill LLM call per job that
 produces three artifacts the MCP surface actually returns, and rebuilds the
 MCP surface around those artifacts plus PostgreSQL FTS.
 
@@ -45,16 +45,16 @@ MCP surface around those artifacts plus PostgreSQL FTS.
 - R3. `search_jobs` supports `query` (FTS over `title + short_jd +
   description_normalized`) and `posted_since`. (origin §"MCP tool
   surface changes")
-- R4. Job extract pipeline runs as one structured-output LLM call per job.
-  (origin §"Job extract pipeline")
+- R4. Job distill pipeline runs as one structured-output LLM call per job.
+  (origin §"Job distill pipeline")
 - R5. Job embedding infrastructure is removed: tables, indexes, modules,
   CLI, and migration scaffolding for embeddings are dropped. (origin
   §"Removed work")
 - R6. `pgvector` extension and the `companies` table remain installed —
   Phase 2 will use them. (origin §"Schema changes")
-- R7. NPOV is enforced in the extract prompt and evaluated by the new eval
+- R7. NPOV is enforced in the distill prompt and evaluated by the new eval
   rubric. (origin §"NPOV", §"Eval")
-- R8. The eval harness scores each of the three extract outputs
+- R8. The eval harness scores each of the three distill outputs
   independently with appropriate rubrics. (origin §"Eval")
 
 ## Scope Boundaries
@@ -72,17 +72,25 @@ MCP surface around those artifacts plus PostgreSQL FTS.
 
 ### Deferred to Separate Tasks
 
-- Sibling-JD context for the extract phase (Phase 1.5 if `short_jd`
+- Sibling-JD context for the distill phase (Phase 1.5 if `short_jd`
   output is too generic) — origin §"Open questions"
 - Post-launch removal of `eval/prompts/v9-surgical-benefits.txt` once the
   new eval is validated end-to-end
+- **SERP tuning** — per-company diversity cap, FTS-ranked pagination
+  (cursor doesn't compose with `ts_rank` as primary sort), and
+  ts_rank weight tuning against the new `short_jd` content. Phase 1
+  ships pure `ts_rank` (when query set) / `published_at DESC` (otherwise)
+  with simple `LIMIT` — no diversity cap, no cursor for FTS queries.
+  Premise: the calling LLM issues keyword queries; semantic reasoning
+  happens in the LLM over the returned `short_jd` rows. SERP quality
+  is a tuning layer on top of correct FTS, not Phase 1 correctness.
 
 ## Context & Research
 
 ### Relevant Code and Patterns
 
 - `src/jobbuddy/sync/strip.py` — current strip phase; pattern for the new
-  `extract.py`. Same `WorkerPhase` shape (DB-poll, threadpool workers,
+  `distill.py`. Same `WorkerPhase` shape (DB-poll, threadpool workers,
   write queue).
 - `src/jobbuddy/sync/base.py` — `WorkerPhase` ABC the new phase extends.
 - `src/jobbuddy/sync/embed.py` — read once for the rate-pacing pattern
@@ -92,15 +100,15 @@ MCP surface around those artifacts plus PostgreSQL FTS.
 - `src/jobbuddy/mcp_server.py` — current tool surface (`search_jobs`,
   `get_job_post_details`, `lookup_by_name`, `companies`, `log_*`).
 - `src/jobbuddy/store.py` — `JobStore` data access; needs new methods for
-  extract polling and reads of the new fields.
+  distill polling and reads of the new fields.
 - `src/jobbuddy/openai_client.py` — Azure-aware OpenAI client factory.
 - `src/jobbuddy/migrations/` — numbered SQL files; existing 007a–007f
   scaffolding to roll back.
-- `prompts/extract-v1.txt` — already drafted from the brainstorm; load
+- `prompts/distill-v1.txt` — already drafted from the brainstorm; load
   at runtime via `Path.read_text()`. Construct the user-message inputs
   per the XML-tag schema declared at the top of that file.
 - `eval/` — current strip-eval harness. Reuse the harness shape; rewrite
-  the runner and judge for three-output extract scoring.
+  the runner and judge for three-output distill scoring.
 
 ### Institutional Learnings
 
@@ -115,7 +123,7 @@ MCP surface around those artifacts plus PostgreSQL FTS.
 - **Azure embedding starvation (unresolved)**: hash-churn loop suspected.
   Phase 1's removal of embeddings makes this moot for jobs, but the
   lesson — unstable upstream fields cause silent re-work — applies to
-  the extract phase's "is this row done?" predicate. Use a stable column
+  the distill phase's "is this row done?" predicate. Use a stable column
   presence check (`short_jd IS NOT NULL`), not a hash.
 - **Strip eval hit diminishing returns**: prompt iteration at the strip
   level couldn't tell us if quality changes affected retrieval. Phase 1
@@ -130,31 +138,34 @@ MCP surface around those artifacts plus PostgreSQL FTS.
   `<ats_provided_salary>` flag is correct but rarely fires (3.5% fill
   rate). Rationale: cost and latency, not quality.
 - **`description_stripped` is replaced by `description_normalized` in
-  migration 011, and re-populated by the extract phase.** New column
-  rather than dual-write because: (a) extract semantics differ
+  migration 011, and re-populated by the distill phase.** New column
+  rather than dual-write because: (a) distill semantics differ
   meaningfully from strip (substance-preserved vs. boilerplate-removed),
-  (b) every existing row must re-run extract anyway, (c) clean cut
+  (b) every existing row must re-run distill anyway, (c) clean cut
   prevents the calling LLM from seeing mixed-quality outputs. Search
-  matches over the JD body will be empty for un-extracted jobs until
-  extract catches up — acceptable trade.
+  matches over the JD body will be empty for un-distilled jobs until
+  distill catches up — acceptable trade.
 - **Job embeddings are removed, not deprecated-in-place.** Drop tables,
   index, module, CLI. Single rollback migration; do not edit existing
   ones. Rationale: dead code is a maintenance tax and a lure for future
   contributors. (origin §"Removed work")
 - **`get_job_post_details` falls back to raw `description` when
   `description_normalized IS NULL`**, with a marker field
-  (`extracted: false`). Consumer-visible behavior is degraded but not
-  broken during the extract backfill window. (origin Open Question
+  (`distilled: false`). Consumer-visible behavior is degraded but not
+  broken during the distill backfill window. (origin Open Question
   resolved here.)
 - **Default `search_jobs` ordering when `query` is empty: `published_at
   DESC NULLS LAST`, tie-break on `(company_slug, job_id)` for
-  determinism.** (origin Open Question resolved here.)
-- **Default `search_jobs` page size: 20; max 100; cursor is
-  `(published_at, company_slug, job_id)` opaque tuple.** Cheap, stable
-  under inserts, no offset weirdness. (origin Open Question resolved
-  here.)
-- **Recommended extract model: `gpt-5-nano`**, kept as a setting
-  (`JOBBUDDY_EXTRACT_MODEL`). The existing strip-eval winner;
+  determinism.** When `query` is set: `ts_rank` DESC with the same
+  tie-break. (origin Open Question resolved here.)
+- **Default `search_jobs` page size: 20; max 100; simple `LIMIT` for
+  Phase 1 (no cursor, no diversity cap).** Cursor pagination on
+  FTS-ranked queries doesn't compose cleanly with `ts_rank` as primary
+  sort key, and per-company diversity is a SERP tuning concern — both
+  are deferred. The calling LLM issues keyword queries and reasons
+  over `short_jd` itself; ranking-quality work belongs in a follow-up.
+- **Recommended distill model: `gpt-5-nano`**, kept as a setting
+  (`JOBBUDDY_DISTILL_MODEL`). The existing strip-eval winner;
   re-validated by the new eval.
 - **Eval reshape, not rewrite.** Keep `eval/run.py` orchestrator shape
   (parallel workers, judge dispatch, CSV output) but rewrite work-item
@@ -166,16 +177,17 @@ MCP surface around those artifacts plus PostgreSQL FTS.
 
 - Migration strategy for existing `description_stripped` data → drop the
   old column and add `description_normalized` in migration 011;
-  re-populate via extract phase.
-- Behavior of `get_job_post_details` for un-extracted jobs → return raw
-  `description` with `extracted: false` marker.
+  re-populate via distill phase.
+- Behavior of `get_job_post_details` for un-distilled jobs → return raw
+  `description` with `distilled: false` marker.
 - Default ordering for `search_jobs` when `query` empty → `published_at
   DESC NULLS LAST`.
-- Pagination shape → cursor on `(published_at, company_slug, job_id)`.
+- Pagination shape → simple `LIMIT` for Phase 1 (no cursor). Cursor
+  + diversity belong to SERP tuning follow-up.
 
 ### Deferred to Implementation
 
-- Exact JSON schema field types for the extract structured-output call —
+- Exact JSON schema field types for the distill structured-output call —
   needs a real call against the Azure deployment to confirm the schema
   is accepted (Azure occasionally rejects schemas that pass strict-mode
   validation locally).
@@ -192,7 +204,7 @@ MCP surface around those artifacts plus PostgreSQL FTS.
 
 ```
    jsb sync           ┌─────────────────────────────────────┐
-                      │  fetch  →  enrich  →  extract       │
+                      │  fetch  →  enrich  →  distill       │
                       │  (HTTP)    (HTTP)     (LLM, no web) │
                       └─────────────────────────────────────┘
                                      │
@@ -209,12 +221,12 @@ MCP surface around those artifacts plus PostgreSQL FTS.
 
      get_job_post_details(company_slug, job_id)
         → {…, description: description_normalized OR raw,
-              extracted: bool}
+              distilled: bool}
 ```
 
 ## Implementation Units
 
-- [ ] **Unit 1: Schema migration — add extract fields, drop embedding stack**
+- [ ] **Unit 1: Schema migration — add distill fields, drop embedding stack**
 
 **Goal:** Schema reflects Phase 1's job-side design: `short_jd` and
 `description_normalized` exist on `jobs`; embedding tables and indexes
@@ -265,7 +277,7 @@ are gone; FTS column rebuilt over the new fields.
   into `job_embeddings` before applying 011).
 - Integration: Existing fixture jobs survive the migration with
   `description` (raw) intact and `description_normalized = NULL` until
-  re-extracted.
+  re-distilled.
 
 **Verification:**
 - `jsb migrate` against a copy of prod-shape data succeeds.
@@ -273,10 +285,10 @@ are gone; FTS column rebuilt over the new fields.
 
 ---
 
-- [ ] **Unit 2: `sync/extract.py` — three-field extract phase**
+- [ ] **Unit 2: `sync/distill.py` — three-field distill phase**
 
 **Goal:** A new `WorkerPhase` polls jobs missing `short_jd`, calls the
-OpenAI-compatible API with `prompts/extract-v1.txt` and structured
+OpenAI-compatible API with `prompts/distill-v1.txt` and structured
 output, writes `short_jd`, `description_normalized`, and `salary` back.
 Replaces `sync/strip.py` in the orchestrator.
 
@@ -285,24 +297,24 @@ Replaces `sync/strip.py` in the orchestrator.
 **Dependencies:** Unit 1
 
 **Files:**
-- Create: `src/jobbuddy/sync/extract.py`
+- Create: `src/jobbuddy/sync/distill.py`
 - Modify: `src/jobbuddy/sync/__init__.py` (register phase, update
   `SyncResult`, update `validate_sync_config` to require the OpenAI
-  key for `extract`)
-- Modify: `src/jobbuddy/store.py` (new `list_jobs_needing_extract` /
-  `update_job_extract` methods; deterministic ORDER BY to prevent the
+  key for `distill`)
+- Modify: `src/jobbuddy/store.py` (new `list_jobs_needing_distill` /
+  `update_job_distill` methods; deterministic ORDER BY to prevent the
   unordered-LIMIT race documented in `sync/embed.py`)
-- Modify: `src/jobbuddy/types.py` (new `ExtractWorkItem`)
-- Modify: `src/jobbuddy/cli/sync.py` (replace `strip` with `extract`
+- Modify: `src/jobbuddy/types.py` (new `DistillWorkItem`)
+- Modify: `src/jobbuddy/cli/sync.py` (replace `strip` with `distill`
   in phase choices)
-- Test: `tests/test_extract.py` (new), `tests/test_store.py` (extract
+- Test: `tests/test_distill.py` (new), `tests/test_store.py` (distill
   query coverage)
 
 **Approach:**
 - Reuse `WorkerPhase` ABC verbatim. Threadpool workers, write queue,
   graceful shutdown — no new infrastructure.
 - Construct the user message per the XML-tag schema declared at the
-  top of `prompts/extract-v1.txt`.
+  top of `prompts/distill-v1.txt`.
 - Structured output: `response_format={"type": "json_schema",
   "json_schema": {...strict...}}` with three required fields, `salary`
   nullable.
@@ -310,7 +322,7 @@ Replaces `sync/strip.py` in the orchestrator.
   the Azure embedding-starvation churn class.
 - Failure mode: on parse error or API error, leave all three fields
   null; next sync retries. Same posture as `sync/strip.py`.
-- Model defaults to `JOBBUDDY_EXTRACT_MODEL` (new setting), default
+- Model defaults to `JOBBUDDY_DISTILL_MODEL` (new setting), default
   `gpt-5-nano`.
 
 **Execution note:** Implement test-first against a recorded
@@ -337,13 +349,13 @@ input shape before wiring the live API.
 - Error path: API timeout / rate-limit → row left null, error counted
   in `PhaseState`.
 - Integration: Two-row fixture sync end-to-end; FTS index updates
-  incorporate `short_jd` after extract completes.
-- Integration: `list_jobs_needing_extract` is deterministic under
+  incorporate `short_jd` after distill completes.
+- Integration: `list_jobs_needing_distill` is deterministic under
   concurrent worker polling (regression for the `sync/embed.py` race).
 
 **Verification:**
-- `uv run python -m pytest tests/test_extract.py -v` passes.
-- `jsb sync extract --company anthropic` populates the three fields
+- `uv run python -m pytest tests/test_distill.py -v` passes.
+- `jsb sync distill --company anthropic` populates the three fields
   for fixture jobs.
 
 ---
@@ -370,19 +382,20 @@ input shape before wiring the live API.
   will be deleted in Unit 6)
 
 **Approach:**
-- `search_jobs` parameters: `title`, `location`, `company`,
-  `posted_since` (parser accepts `"7d"`, `"2w"`, `"1mo"`, ISO date,
-  ISO datetime), `query` (FTS via `to_tsquery` over the new
-  `jobs_fts_vector`), `limit` (default 20, cap 100), `cursor` (opaque
-  base64 of `(published_at, company_slug, job_id)`).
-- Ranking: when `query` is non-empty, `ts_rank` over FTS plus tie-break
-  on `published_at DESC`. When `query` is empty, pure
-  `published_at DESC NULLS LAST`. Drop any vestige of embedding
-  similarity.
+- `search_jobs` parameters: `query` (FTS via `websearch_to_tsquery`
+  over `fts_vector`), `companies`, `exclude_companies`,
+  `location_filter`, `posted_since` (re-uses today's `since` parser:
+  `7d`, `24h`, `2w`), `limit` (default 20, cap 100). No cursor in
+  Phase 1.
+- Ranking: when `query` is non-empty, `ts_rank` over FTS with
+  `published_at DESC NULLS LAST` tie-break. When `query` is empty,
+  pure `published_at DESC NULLS LAST`. No diversity cap. Drop any
+  vestige of embedding similarity. SERP tuning (diversity, rank
+  weights, cursor) is a deferred follow-up.
 - Row shape: `{company_slug, company_name, job_id, title, location,
   short_jd, salary, posted_at, apply_url}`.
 - `get_job_post_details` now reads `description_normalized` when
-  present, raw `description` otherwise; returns `extracted: bool`.
+  present, raw `description` otherwise; returns `distilled: bool`.
 
 **Execution note:** Test-first against the new `core.py` helpers; MCP
 tool functions stay thin wrappers.
@@ -401,14 +414,14 @@ tool functions stay thin wrappers.
 - Edge case: `posted_since="invalid"` → `ValueError` from `core.py`
   with a descriptive message; MCP returns the message string.
 - Edge case: Job with `description_normalized=NULL` →
-  `get_job_post_details` returns raw `description` and `extracted:
+  `get_job_post_details` returns raw `description` and `distilled:
   false`.
 - Error path: Postgres connection drop mid-query → exception bubbles
   to MCP, which returns an error string per existing convention.
 - Integration: Cursor pagination — page 1 + page 2 return disjoint
   rows under inserts that happen between pages (cursor stability
   test).
-- Integration: FTS query updates incorporate a freshly extracted job
+- Integration: FTS query updates incorporate a freshly distilled job
   within one sync cycle.
 
 **Verification:**
@@ -461,9 +474,9 @@ inline `short_jd` over re-fetching.
 
 ---
 
-- [ ] **Unit 5: Eval harness — three-field extract scoring**
+- [ ] **Unit 5: Eval harness — three-field distill scoring**
 
-**Goal:** The eval harness scores the new extract pipeline (three
+**Goal:** The eval harness scores the new distill pipeline (three
 outputs, each with its own rubric). Strip-prompt-specific content is
 deleted; harness shape and parallelism remain.
 
@@ -476,7 +489,7 @@ deleted; harness shape and parallelism remain.
   multi-output dispatch)
 - Modify: `eval/judge.py` (new judge prompts; multi-rubric scoring per
   job)
-- Create: `eval/prompts/extract-judge-v1.txt`
+- Create: `eval/prompts/distill-judge-v1.txt`
 - Delete: `eval/prompts/v1-` through `v9-` strip prompts (all)
 - Delete: any strip-specific config files
 - Modify: `eval/AGENTS.md` (update workflow to reflect new artifacts)
@@ -507,7 +520,7 @@ deleted; harness shape and parallelism remain.
 - Edge case: Job whose JD has no salary and the skip-flag is true →
   `salary_correctness` rubric correctly grades null as correct.
 - Integration: Run on 30 jobs across 3 companies, baseline current
-  `prompts/extract-v1.txt`. This becomes the seed for Unit 6 prompt
+  `prompts/distill-v1.txt`. This becomes the seed for Unit 6 prompt
   iteration.
 
 **Verification:**
@@ -517,9 +530,9 @@ deleted; harness shape and parallelism remain.
 
 ---
 
-- [ ] **Unit 6: Extract prompt tuning — extract-v1 → vN**
+- [ ] **Unit 6: Distill prompt tuning — distill-v1 → vN**
 
-**Goal:** Iterate `prompts/extract-v1.txt` against the new extract
+**Goal:** Iterate `prompts/distill-v1.txt` against the new distill
 eval until scores converge. The user explicitly flagged this:
 "we'll need some prompt tuning for the JD."
 
@@ -528,18 +541,18 @@ eval until scores converge. The user explicitly flagged this:
 **Dependencies:** Unit 5
 
 **Files:**
-- Create: `prompts/extract-v2.txt`, `-v3.txt`, … as iteration
+- Create: `prompts/distill-v2.txt`, `-v3.txt`, … as iteration
   proceeds. Keep all versions in version control so eval comparisons
   stay reproducible.
-- Modify: `prompts/extract-v1.txt` only to fix typos; otherwise treat
+- Modify: `prompts/distill-v1.txt` only to fix typos; otherwise treat
   as immutable baseline.
-- Modify: `src/jobbuddy/sync/extract.py` to read whichever version is
-  configured via `JOBBUDDY_EXTRACT_PROMPT_VERSION` (default to the
+- Modify: `src/jobbuddy/sync/distill.py` to read whichever version is
+  configured via `JOBBUDDY_DISTILL_PROMPT_VERSION` (default to the
   most recent winner).
 - No tests — eval is the test.
 
 **Approach:**
-- Run baseline eval on `extract-v1.txt`. Identify the lowest-scoring
+- Run baseline eval on `distill-v1.txt`. Identify the lowest-scoring
   rubric.
 - For each iteration: change one thing (one rubric, one principle).
   Re-run on the same fixture set. Compare. Promote if ≥0 change in
@@ -582,7 +595,7 @@ Unit 5 (eval no longer references the old code)
   registration; `validate_sync_config` no longer requires OpenAI key
   for embeddings)
 - Modify: `src/jobbuddy/cli/sync.py` (remove `strip` / `embed` phase
-  choices, surface `extract` instead — most of this lands in Unit 2)
+  choices, surface `distill` instead — most of this lands in Unit 2)
 - Modify: `src/jobbuddy/settings.py` (remove `embedding_model`,
   `strip_model`, `strip_batch_size` if no longer referenced)
 - Modify: `pyproject.toml` if removing dependencies (the `pgvector`
@@ -601,37 +614,37 @@ Unit 5 (eval no longer references the old code)
   deletions.
 - Happy path: `jsb --help` no longer lists `embed-test`;
   `jsb sync --help` no longer lists `strip` / `embed`.
-- Edge case: `jsb sync` (no phases) runs `fetch enrich extract` and
+- Edge case: `jsb sync` (no phases) runs `fetch enrich distill` and
   exits clean with zero embedding-related warnings.
 
 **Verification:**
 - `rg "embedding|VectorSearch|short_jd"` shows hits only in expected
-  places (settings, extract, store, MCP).
+  places (settings, distill, store, MCP).
 - Final commit diff is net-negative LOC.
 
 ## System-Wide Impact
 
-- **Interaction graph:** Extract phase writes three new fields to
+- **Interaction graph:** Distill phase writes three new fields to
   `jobs`. MCP `search_jobs` and `get_job_post_details` shift from
   reading `description_stripped` to reading `description_normalized`
   and `short_jd`. The FTS trigger re-fires on every `UPDATE` of
   `short_jd` or `description_normalized`.
-- **Error propagation:** Extract failures leave row fields null and
+- **Error propagation:** Distill failures leave row fields null and
   retry on next sync invocation. MCP reads tolerate nulls (degraded
   but not broken).
-- **State lifecycle risks:** During the extract backfill window,
+- **State lifecycle risks:** During the distill backfill window,
   `search_jobs` is partial — rows with `short_jd IS NULL` will not
   match `query` searches over their JD. The `posted_since` and
   `company` filters still work. Acceptable trade per Key Decisions.
 - **API surface parity:** `jsb search` CLI and `search_jobs` MCP tool
   must stay in lockstep on the new filters — both sit on top of the
   same `core.py` helpers.
-- **Integration coverage:** Tests must cover (a) extract write →
+- **Integration coverage:** Tests must cover (a) distill write →
   trigger → FTS update → search match, (b) MCP cursor stability under
   concurrent inserts.
 - **Unchanged invariants:**
   - Raw `description` column is preserved on every job. The brainstorm
-    explicitly keeps it as the audit / re-extraction source.
+    explicitly keeps it as the audit / re-distillation source.
   - `lookup_by_name`, `companies`, `log_job_application`, and
     `log_job_activity` MCP tools are unchanged.
   - `pgvector` extension stays installed; `companies` table stays
@@ -642,8 +655,8 @@ Unit 5 (eval no longer references the old code)
 
 | Risk | Mitigation |
 |------|------------|
-| Extract pipeline produces lower-quality `short_jd` than the prototype on edge-case JDs (multi-role postings, very short JDs, non-English JDs) | Eval harness covers this in Unit 5; prompt iteration in Unit 6. Worst case: ship with `extract-v1` and iterate post-launch. |
-| Search is empty for un-extracted jobs during backfill window | Backfill before flipping the MCP tool descriptions to advertise `query`. Sequence: Unit 2 runs to completion on prod data, then Unit 4 lands. |
+| Distill pipeline produces lower-quality `short_jd` than the prototype on edge-case JDs (multi-role postings, very short JDs, non-English JDs) | Eval harness covers this in Unit 5; prompt iteration in Unit 6. Worst case: ship with `distill-v1` and iterate post-launch. |
+| Search is empty for un-distilled jobs during backfill window | Backfill before flipping the MCP tool descriptions to advertise `query`. Sequence: Unit 2 runs to completion on prod data, then Unit 4 lands. |
 | Migration 011 trips PG pending-trigger constraint (per `MEMORY.md`) | Pre-split into 011a/011b/011c if needed; rehearse on the dev DB. |
 | Calling LLM ignores `short_jd` and keeps re-fetching JDs | Unit 4's tool-description prompt-engineering is the lever. Verify behavior in Claude Desktop before declaring Unit 4 done. |
 | Removing embeddings while resume project depends on jobsearch-buddy as editable dep breaks resume's MCP usage | Resume project consumes `jsb-mcp` and `jsb` CLI, both of which are reshaped here. Smoke-test resume's flows after Unit 3 + Unit 7. |
@@ -652,20 +665,20 @@ Unit 5 (eval no longer references the old code)
 
 - Update `AGENTS.md`:
   - Package structure section (no `strip.py`, `embed.py`,
-    `embeddings.py`, `search.py`; new `extract.py`)
+    `embeddings.py`, `search.py`; new `distill.py`)
   - Sync pipeline section (three phases not four)
   - Schema migrations section (note the 011 split if it happens)
 - Update `docs/architecture.md`:
-  - Strip → Extract pipeline shape diagram
+  - Strip → Distill pipeline shape diagram
   - Removal of vector search; replacement with FTS
-- Update `docs/throughput-reference.md` with new extract throughput
+- Update `docs/throughput-reference.md` with new distill throughput
   numbers (likely similar to strip; confirm post-launch).
 - Add `prompts/CHANGELOG.md` to track prompt iterations.
 - `MEMORY.md`: After Phase 1 ships, resolve the Azure embedding
   starvation entry — embeddings are gone.
 - Operational rollout:
   1. Apply migration 011 in dev → prod after rehearsal.
-  2. Run `jsb sync extract` to backfill `short_jd` and
+  2. Run `jsb sync distill` to backfill `short_jd` and
      `description_normalized` for all jobs.
   3. Deploy MCP changes (Unit 3 + Unit 4).
   4. Remove dead code (Unit 7) once consumers (resume project) are
@@ -687,7 +700,7 @@ adding more later.
 
 - **Origin document:**
   `docs/brainstorms/2026-05-05-job-search-redesign-requirements.md`
-- Prompt artifact in repo: `prompts/extract-v1.txt`
+- Prompt artifact in repo: `prompts/distill-v1.txt`
 - Memory: `MEMORY.md` §"Strip Prompt Eval: Conclusions",
   §"Eval Lessons Learned", §"PostgreSQL + pgvector",
   §"migration_pending_triggers", §"Azure embedding starvation"

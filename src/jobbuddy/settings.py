@@ -36,17 +36,16 @@ class Settings(BaseSettings):
     postgres_database: Optional[str] = None
     postgres_user: Optional[str] = None  # Managed identity name (not client ID)
 
-    # OpenAI API (for strip, embed, and semantic search)
+    # OpenAI API (for the distill phase)
     openai_api_key: Optional[str] = None
     openai_base_url: Optional[str] = None
     openai_azure_api_version: Optional[str] = None  # If set, uses AzureOpenAI client
-    strip_model: str = "gpt-5-nano"
-    embedding_model: str = "text-embedding-3-small"
-    strip_batch_size: int = 50
+    distill_model: str = "gpt-5-nano"
+    distill_prompt_version: str = "distill-v1"
 
     @property
     def has_openai(self) -> bool:
-        """Whether OpenAI credentials are configured (enables strip/embed/search)."""
+        """Whether OpenAI credentials are configured (enables the distill phase)."""
         return bool(self.openai_api_key or self.openai_azure_api_version)
 
     @property
