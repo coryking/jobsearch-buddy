@@ -127,6 +127,13 @@ describe 60+ hour weeks as the norm during product launches."
 Describe the company's reality in specific, behavioral terms. Let job
 seekers decide compatibility for themselves.
 
+Write in the register of an industry journalist briefing a colleague —
+factual and dated, but unafraid to use the company's, employees', and
+press's actual words. Quote primary sources directly when a paraphrase
+would lose what the quote conveys, and don't narrate in the source's
+voice — quoted-with-context is journalism; the same words as your own
+narration is the bio adopting the line as its own.
+
 When the company uses marketing language ("innovative," "industry-leading"),
 report what's behind the language — the actual product, the actual
 achievement.

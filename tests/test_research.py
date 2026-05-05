@@ -141,6 +141,11 @@ def test_has_research_recognizes_documented_endpoints():
 
 
 def test_has_research_rejects_lookalike():
-    assert not Settings(research_endpoint="https://attacker.com").has_research
-    assert not Settings(research_endpoint="").has_research
-    assert not Settings(research_endpoint=None).has_research
+    # openai_base_url=None pinned explicitly so a JOBBUDDY_OPENAI_BASE_URL
+    # in the developer's shell can't accidentally satisfy the Azure-host
+    # check via the documented research_endpoint -> openai_base_url fallback.
+    assert not Settings(
+        research_endpoint="https://attacker.com", openai_base_url=None,
+    ).has_research
+    assert not Settings(research_endpoint="", openai_base_url=None).has_research
+    assert not Settings(research_endpoint=None, openai_base_url=None).has_research

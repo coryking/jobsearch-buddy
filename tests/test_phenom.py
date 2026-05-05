@@ -155,18 +155,61 @@ class TestPhenomListJobs:
         assert jobs[0].description is None  # stub fetcher
 
     def test_pagination(self):
-        """list_jobs paginates through multiple pages."""
+        """list_jobs paginates through multiple pages.
+
+        The fetcher requests Phenom's documented page size (20). The fixtures
+        below simulate a 21-hit board: page 0 fills with 20 stub-shaped jobs
+        plus the original first job, and page 1 returns the trailing job from
+        ``REFINE_SEARCH_PAGE_1``. We don't care about the synthetic IDs —
+        just that pagination triggered and the boundary job came through.
+        """
+        # Synthesize 19 filler jobs to fill page 0 alongside the original 2.
+        filler = [
+            {
+                "jobId": f"FILL{i:03d}",
+                "title": f"Filler {i}",
+                "location": "Remote",
+                "category": "Engineering",
+                "postedDate": "2026-01-01T00:00:00.000+0000",
+                "applyUrl": f"https://sjobs.brassring.com/apply/FILL{i:03d}",
+                "type": "Full-Time",
+                "descriptionTeaser": "",
+                "reqId": f"FILL{i:03d}",
+                "jobSeqNo": f"BAE1USFILL{i:03d}EXTERNAL",
+            }
+            for i in range(18)
+        ]
+        page_0 = {
+            "refineSearch": {
+                "status": 200,
+                "hits": 20,
+                "totalHits": 21,
+                "data": {
+                    "jobs": REFINE_SEARCH_PAGE_0["refineSearch"]["data"]["jobs"] + filler,
+                },
+            },
+        }
+        page_1 = {
+            "refineSearch": {
+                "status": 200,
+                "hits": 1,
+                "totalHits": 21,
+                "data": {
+                    "jobs": REFINE_SEARCH_PAGE_1["refineSearch"]["data"]["jobs"],
+                },
+            },
+        }
         fetcher = make_phenom_fetcher()
         fetcher.client.post.side_effect = [
-            mock_post_response(REFINE_SEARCH_PAGE_0),
-            mock_post_response(REFINE_SEARCH_PAGE_1),
+            mock_post_response(page_0),
+            mock_post_response(page_1),
         ]
 
         jobs = fetcher.list_jobs()
 
-        assert len(jobs) == 3
+        assert len(jobs) == 21
         ids = {j.id for j in jobs}
-        assert ids == {"120644BR", "130999XY", "140111ZZ"}
+        assert "120644BR" in ids and "130999XY" in ids and "140111ZZ" in ids
 
     def test_progress_callback(self):
         """list_jobs calls on_progress with (fetched, total)."""

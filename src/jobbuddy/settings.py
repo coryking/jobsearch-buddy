@@ -40,8 +40,9 @@ class Settings(BaseSettings):
     openai_api_key: Optional[str] = None
     openai_base_url: Optional[str] = None
     openai_azure_api_version: Optional[str] = None  # If set, uses AzureOpenAI client
-    distill_model: str = "gpt-5-nano"
-    distill_prompt_version: str = "distill-v1"
+    distill_model: str = "gpt-5.4-nano"
+    distill_reasoning_effort: str = "high"
+    distill_prompt_version: str = "distill-v3.1"
 
     research_model: str = "gpt-5.4"
     research_endpoint: Optional[str] = None
