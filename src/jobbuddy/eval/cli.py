@@ -17,6 +17,7 @@ def main(ctx: typer.Context) -> None:
 
 
 def register_commands() -> None:
+    from jobbuddy.eval.compare import compare
     from jobbuddy.eval.ground_truth import ground_truth
     from jobbuddy.eval.judge import judge
     from jobbuddy.eval.results import results_app
@@ -26,6 +27,7 @@ def register_commands() -> None:
     app.command()(run)
     app.command()(score)
     app.command()(judge)
+    app.command()(compare)
     app.add_typer(results_app, name="results")
     app.command(name="ground-truth")(ground_truth)
 

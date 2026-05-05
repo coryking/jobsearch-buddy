@@ -44,7 +44,25 @@ _CSV_COLUMNS = [
 
 
 def _append_run_stats(csv_path: Path, row: dict) -> None:
-    """Append one row to run_stats.csv, writing header if needed."""
+    """Append one row to run_stats.csv. If the file exists but its header
+    doesn't match the current ``_CSV_COLUMNS`` (e.g. because columns were
+    added after older runs were written), rewrite the file with the new
+    header — old rows are remapped by name and any missing columns are
+    filled with 0. This prevents silent column-shift corruption when
+    DictReader encounters a row that has more values than headers.
+    """
+    if csv_path.exists() and csv_path.stat().st_size > 0:
+        with open(csv_path, "r", newline="", encoding="utf-8") as f:
+            existing_header = next(csv.reader(f), [])
+        if existing_header != _CSV_COLUMNS:
+            with open(csv_path, "r", newline="", encoding="utf-8") as f:
+                old_rows = list(csv.DictReader(f))
+            with open(csv_path, "w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=_CSV_COLUMNS)
+                writer.writeheader()
+                for old in old_rows:
+                    writer.writerow({k: old.get(k, 0) or 0 for k in _CSV_COLUMNS})
+
     write_header = not csv_path.exists() or csv_path.stat().st_size == 0
     with open(csv_path, "a", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=_CSV_COLUMNS)
@@ -111,46 +129,51 @@ class _DistillSample:
         )
 
 
-def _load_samples(job_ids: list[str]) -> list[_DistillSample]:
-    """Look up the given ATS job_ids in the DB. Each row's company must
-    already have a long_bio. Raises typer.Exit on any miss so the eval
-    fails loudly rather than silently producing fewer samples than asked."""
+def _load_samples(row_ids: list[str]) -> list[_DistillSample]:
+    """Look up the given internal `jobs.id` PKs in the DB. Each row's
+    company must already have a long_bio. Raises typer.Exit on any miss
+    so the eval fails loudly rather than silently producing fewer samples
+    than asked."""
     store = JobStore()
+    parsed: list[tuple[str, int | None]] = []
+    for raw in row_ids:
+        try:
+            parsed.append((raw, int(raw)))
+        except ValueError:
+            parsed.append((raw, None))
+
+    int_ids = [pid for _, pid in parsed if pid is not None]
     try:
         rows = store.conn.execute(
-            """SELECT j.job_id, j.title, j.location, j.salary, j.description,
+            """SELECT j.id, j.job_id, j.title, j.location, j.salary, j.description,
                       j.listing_status,
                       c.slug AS company_slug, c.name AS company_name, c.long_bio
                FROM jobs j
                JOIN companies c ON c.slug = j.company_slug
-               WHERE j.job_id = ANY(%s)""",
-            [list(job_ids)],
+               WHERE j.id = ANY(%s)""",
+            [int_ids],
         ).fetchall()
     finally:
         store.close()
 
-    by_id: dict[str, list[dict]] = {}
-    for r in rows:
-        by_id.setdefault(r["job_id"], []).append(dict(r))
+    by_id: dict[int, dict] = {r["id"]: dict(r) for r in rows}
 
     samples: list[_DistillSample] = []
     problems: list[str] = []
-    for jid in job_ids:
-        matches = by_id.get(jid, [])
-        if not matches:
-            problems.append(f"  {jid}: not in DB")
+    for raw, pid in parsed:
+        if pid is None:
+            problems.append(f"  {raw}: not an integer (use jobs.id, not the ATS job_id)")
             continue
-        if len(matches) > 1:
-            slugs = ", ".join(m["company_slug"] for m in matches)
-            problems.append(f"  {jid}: ambiguous (matches {slugs})")
+        job = by_id.get(pid)
+        if job is None:
+            problems.append(f"  {raw}: not in DB")
             continue
-        job = matches[0]
         if job["description"] is None:
-            problems.append(f"  {jid} ({job['company_slug']}): no description")
+            problems.append(f"  {raw} ({job['company_slug']}): no description")
             continue
         if job["long_bio"] is None:
             problems.append(
-                f"  {jid} ({job['company_slug']}): company has no long_bio "
+                f"  {raw} ({job['company_slug']}): company has no long_bio "
                 f"(run `jsb research-companies --company {job['company_slug']}` first)"
             )
             continue
@@ -166,7 +189,7 @@ def _load_samples(job_ids: list[str]) -> list[_DistillSample]:
         ))
 
     if problems:
-        print("Cannot run eval -- problems with the requested job_ids:")
+        print("Cannot run eval -- problems with the requested ids:")
         for p in problems:
             print(p)
         raise typer.Exit(1)
@@ -193,7 +216,7 @@ class _SampleResult:
 
 
 def run(
-    job_ids: Annotated[list[str], typer.Argument(help="ATS job_ids to evaluate. The company is derived from the DB join.")],
+    job_ids: Annotated[list[str], typer.Argument(help="Internal jobs.id PKs (integer). Look them up via `azpg ... -c \"SELECT id FROM jobs WHERE ...\"`.")],
     run_name: Annotated[Optional[str], typer.Option(help="Name for this run (becomes output subdir). Default: {prompt_stem}-{model}")] = None,
     prompt: Annotated[Optional[Path], typer.Option(help="Path to prompt text file")] = None,
     model: Annotated[Optional[list[str]], typer.Option("--model", "-m", help="Azure OpenAI model deployment name. Repeatable: --model gpt-5-mini --model DeepSeek-V3.2 runs both. Omit for interactive picker.")] = None,
