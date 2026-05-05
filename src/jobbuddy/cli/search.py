@@ -134,46 +134,35 @@ def list_jobs(
 
 @app.command()
 def search(
-    title: Optional[str] = typer.Option(None, "--title", "-t", help="Keyword search across title and description (full-text search with stemming)"),
+    query: Optional[str] = typer.Option(None, "--query", "-q", help="Postgres FTS query over title, short_jd, description_normalized, location, department"),
     location: Optional[str] = typer.Option(None, "--location", "-l", help="Location substring filter (comma-separated for OR)"),
     company: Optional[str] = typer.Option(None, "--company", "-c", help="Company name or slug"),
     exclude: Optional[str] = typer.Option(None, "--exclude", "-x", help="Comma-separated company names/slugs to exclude"),
-    since: Optional[str] = typer.Option(None, "--since", "-s", help="Only show jobs posted within this period (e.g. 24h, 3d, 1w, 2w)"),
+    posted_since: Optional[str] = typer.Option(None, "--posted-since", "-s", help="Only show jobs posted within this period (e.g. 24h, 3d, 1w, 2w)"),
+    limit: int = typer.Option(50, "--limit", "-n", help="Max rows to return"),
 ):
-    """Search cached jobs across all companies."""
-    from jobbuddy.store import JobStore
+    """Search cached jobs across all companies (CLI parity with the search_jobs MCP tool)."""
+    from jobbuddy.core import search_cached_jobs
 
-    posted_after = parse_since(since) if since else None
-
-    company_slug = None
-    if company:
-        resolved = lookup_by_name(company)
-        if resolved:
-            company_slug = resolved.slug
-        else:
-            company_slug = company  # try raw slug
-
-    exclude_slugs = None
+    exclude_list = None
     if exclude:
-        from jobbuddy.core import resolve_exclude_companies
-        exclude_slugs = resolve_exclude_companies(exclude)
+        exclude_list = [s.strip() for s in exclude.split(",") if s.strip()]
 
     try:
-        store = JobStore()
+        rows = search_cached_jobs(
+            query=query or "",
+            companies=[company] if company else None,
+            exclude_companies=exclude_list,
+            location=location or "",
+            posted_since=posted_since or "",
+            limit=limit,
+        )
+    except ValueError as e:
+        console.print(f"[red]{e}[/red]")
+        raise SystemExit(1)
     except Exception:
         console.print("[yellow]Cannot connect to database. Check pg_service.conf.[/yellow]")
         raise SystemExit(1)
-    try:
-        rows = store.query_jobs(
-            companies=[company_slug] if company_slug else None,
-            exclude_companies=exclude_slugs,
-            title=title,
-            location=location,
-            posted_after=posted_after,
-            limit=500,
-        )
-    finally:
-        store.close()
 
     if not rows:
         console.print("[yellow]No jobs found matching filters.[/yellow]")
@@ -183,7 +172,7 @@ def search(
 
     buf = io.StringIO()
     writer = csv.writer(buf)
-    writer.writerow(["Company", "Title", "Location", "Posted", "Job ID", "Salary", "Team", "URL"])
+    writer.writerow(["Company", "Title", "Location", "Posted", "Job ID", "Salary", "Team", "Short JD", "URL"])
     for r in rows:
         writer.writerow([
             r["company_slug"],
@@ -193,6 +182,7 @@ def search(
             r["job_id"],
             r["salary"] or "",
             r["team"] or r["department"] or "",
+            (r.get("short_jd") or "").replace("\n", " "),
             r["url"] or "",
         ])
     print(buf.getvalue(), end="")

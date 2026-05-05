@@ -13,7 +13,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Json
 
 from jobbuddy.models import Company, Job
-from jobbuddy.types import ResearchWorkItem
+from jobbuddy.types import DistillWorkItem, ResearchWorkItem
 
 log = logging.getLogger(__name__)
 
@@ -358,6 +358,61 @@ class JobStore:
         rows = self.conn.execute(sql, params).fetchall()
         return [{k: v for k, v in dict(row).items() if k != "rn"} for row in rows]
 
+    def search_jobs_fts(
+        self,
+        *,
+        query: str | None = None,
+        companies: list[str] | None = None,
+        exclude_companies: list[str] | None = None,
+        location: str | None = None,
+        posted_after: str | None = None,
+        include_removed: bool = False,
+        limit: int = 20,
+    ) -> list[dict]:
+        """Phase 1 search: FTS over fts_vector with deterministic ranking.
+
+        - When `query` is set: rank by ts_rank DESC, tie-break on
+          (published_at DESC NULLS LAST, company_slug, job_id).
+        - When `query` is empty: pure published_at DESC NULLS LAST,
+          tie-break on (company_slug, job_id).
+        - No per-company diversity cap (a deferred SERP-tuning concern).
+        - Returns rows including short_jd, salary, published_at — the
+          fact-dense shape the calling LLM filters on.
+        """
+        conditions, params = self._build_filter_conditions(
+            companies=companies, exclude_companies=exclude_companies,
+            title=query, location=location, posted_after=posted_after,
+            include_removed=include_removed,
+        )
+
+        select_extra = ""
+        order_by = "j.published_at DESC NULLS LAST, j.company_slug, j.job_id"
+        if query:
+            # Reuse the same tsquery already bound to params via _build_filter_conditions
+            select_extra = (
+                ", ts_rank(j.fts_vector, websearch_to_tsquery('english', %s)) AS rank"
+            )
+            params.insert(0, query)  # bound to the SELECT-list %s
+            order_by = (
+                "rank DESC, j.published_at DESC NULLS LAST, "
+                "j.company_slug, j.job_id"
+            )
+
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        params.append(limit)
+
+        sql = f"""
+            SELECT j.*, s.last_sync, c.name AS company_name{select_extra}
+              FROM jobs j
+              LEFT JOIN sync_status s ON j.company_slug = s.company_slug
+              LEFT JOIN companies c ON j.company_slug = c.slug
+              {where}
+              ORDER BY {order_by}
+              LIMIT %s
+        """
+        rows = self.conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+
     def get_jobs_needing_descriptions(self, slug: str) -> list[dict]:
         """Return active jobs with NULL description for a company."""
         rows = self.conn.execute(
@@ -379,6 +434,87 @@ class JobStore:
                     [(desc, slug, job_id) for job_id, desc in descs.items()],
                     returning=False,
                 )
+
+    # -------------------------------------------------------------------
+    # Distill phase
+    # -------------------------------------------------------------------
+
+    def _distill_conditions(self, slugs: list[str] | None) -> tuple[str, list]:
+        """Stable column-presence predicate matching idx_jobs_needs_distill."""
+        conditions = [
+            "description IS NOT NULL",
+            "short_jd IS NULL",
+            "listing_status = 'active'",
+        ]
+        params: list = []
+        if slugs:
+            conditions.append("company_slug = ANY(%s)")
+            params.append(slugs)
+        return " AND ".join(conditions), params
+
+    def count_jobs_needing_distill(self, *, slugs: list[str] | None = None) -> int:
+        """Count active jobs with a description but no distilled short_jd."""
+        where, params = self._distill_conditions(slugs)
+        row = self.conn.execute(
+            f"SELECT COUNT(*) AS cnt FROM jobs WHERE {where}", params
+        ).fetchone()
+        return row["cnt"]
+
+    def get_jobs_needing_distill(
+        self, limit: int = 50, *, slugs: list[str] | None = None,
+    ) -> list[DistillWorkItem]:
+        """Return jobs needing distill, joined with company name for the prompt.
+
+        ORDER BY id is deterministic, so concurrent worker polls don't race
+        on different orderings of the same predicate result set (the bug
+        documented in the deleted sync/embed.py).
+        """
+        where, params = self._distill_conditions(slugs)
+        params.append(limit)
+        rows = self.conn.execute(
+            f"""SELECT j.id, j.company_slug, c.name AS company_name,
+                       j.job_id, j.title, j.location, j.salary, j.description
+                  FROM jobs j
+                  LEFT JOIN companies c ON c.slug = j.company_slug
+                 WHERE {where}
+                 ORDER BY j.id
+                 LIMIT %s""",
+            params,
+        ).fetchall()
+        return [
+            {
+                "id": r["id"],
+                "company_slug": r["company_slug"],
+                "company_name": r["company_name"] or r["company_slug"],
+                "job_id": r["job_id"],
+                "title": r["title"],
+                "location": r["location"],
+                "salary": r["salary"],
+                "description": r["description"],
+            }
+            for r in rows
+        ]
+
+    def update_job_distill(
+        self, job_pk: int, *,
+        short_jd: str,
+        description_normalized: str,
+        salary: str | None,
+    ) -> None:
+        """Persist distill outputs for one job. salary may be None.
+
+        salary is only overwritten when distill produced a value — the
+        existing structured-field salary (set by the fetcher) is preserved
+        when distill returns None.
+        """
+        self.conn.execute(
+            """UPDATE jobs SET
+                short_jd = %s,
+                description_normalized = %s,
+                salary = COALESCE(%s, salary)
+               WHERE id = %s""",
+            (short_jd, description_normalized, salary, job_pk),
+        )
 
     def get_job_by_ids(self, job_ids: list[int]) -> list[dict]:
         """Fetch jobs by surrogate key IDs."""

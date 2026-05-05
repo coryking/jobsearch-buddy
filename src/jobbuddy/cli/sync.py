@@ -12,7 +12,7 @@ log = logging.getLogger(__name__)
 
 @app.command()
 def sync(
-    phases: Optional[list[str]] = typer.Argument(None, help="Phases to run: fetch, enrich, research (default: all; distill pending Unit 2)"),
+    phases: Optional[list[str]] = typer.Argument(None, help="Phases to run: fetch, enrich, research, distill (default: all)"),
     company: Optional[list[str]] = typer.Option(None, "--company", "-c", help="Sync specific companies (repeatable)"),
     stale: Optional[float] = typer.Option(None, "--stale", "-s", help="Skip companies synced within N hours"),
 ):
