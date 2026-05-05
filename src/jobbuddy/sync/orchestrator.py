@@ -23,6 +23,7 @@ import random
 import threading
 from dataclasses import dataclass, field
 
+from jobbuddy.fetchers import has_descriptions_in_listing
 from jobbuddy.models import Company
 from jobbuddy.registry import list_companies, lookup_by_name
 from jobbuddy.settings import Settings, get_settings, pg_conninfo_with_token
@@ -197,7 +198,6 @@ def sync_jobs(
             targets = [c for c in registry.values() if c.ats is not None]
 
         if "enrich" in run_phases:
-            from jobbuddy.fetchers import has_descriptions_in_listing
             slugs_to_embed = [
                 c.slug for c in targets
                 if c.ats and not has_descriptions_in_listing(c.ats)
@@ -250,6 +250,7 @@ def sync_jobs(
         research_phase = ResearchPhase(
             conninfo,
             display=display_state.research,
+            slugs=resolved_slugs,
         )
 
     def run_enrich() -> None:

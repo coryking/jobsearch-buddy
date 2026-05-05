@@ -588,38 +588,54 @@ class TestCompanyBios:
         cols = {r["column_name"] for r in rows}
         assert {"short_bio", "long_bio", "bio_researched_at", "bio_model"} <= cols
 
+    def _seeded_count(self, store) -> int:
+        row = store.conn.execute("SELECT COUNT(*) AS c FROM companies").fetchone()
+        return row["c"]
+
     def test_count_companies_needing_bio_counts_unfilled(self, store):
-        n = store.count_companies_needing_bio()
-        # All 6 test companies seeded, all start with NULL long_bio.
-        assert n == 6
+        assert store.count_companies_needing_bio() == self._seeded_count(store)
 
     def test_count_companies_needing_bio_excludes_filled(self, store):
+        baseline = self._seeded_count(store)
         store.update_company_bio("acme", short_bio="s", long_bio="l", model="gpt-5.4")
-        assert store.count_companies_needing_bio() == 5
+        assert store.count_companies_needing_bio() == baseline - 1
+
+    def test_count_companies_needing_bio_with_slug_filter(self, store):
+        assert store.count_companies_needing_bio(slugs=["acme"]) == 1
+        assert store.count_companies_needing_bio(slugs=["acme", "beta"]) == 2
+        assert store.count_companies_needing_bio(slugs=["nonexistent"]) == 0
+        store.update_company_bio("acme", short_bio="s", long_bio="l", model="m")
+        assert store.count_companies_needing_bio(slugs=["acme", "beta"]) == 1
 
     def test_get_companies_needing_bio_returns_slug_and_name(self, store):
         items = store.get_companies_needing_bio(limit=100)
-        assert len(items) == 6
-        # Items are TypedDicts with slug + name only.
-        first = items[0]
-        assert set(first.keys()) == {"slug", "name"}
-        slugs = {i["slug"] for i in items}
-        assert "acme" in slugs
+        assert len(items) == self._seeded_count(store)
+        assert all(set(i.keys()) == {"slug", "name"} for i in items)
+        assert "acme" in {i["slug"] for i in items}
 
     def test_get_companies_needing_bio_excludes_filled(self, store):
         store.update_company_bio("acme", short_bio="s", long_bio="l", model="gpt-5.4")
         slugs = {i["slug"] for i in store.get_companies_needing_bio(limit=100)}
         assert "acme" not in slugs
-        assert len(slugs) == 5
+        assert len(slugs) == self._seeded_count(store) - 1
 
     def test_get_companies_needing_bio_respects_limit(self, store):
         items = store.get_companies_needing_bio(limit=2)
         assert len(items) == 2
 
+    def test_get_companies_needing_bio_with_slug_filter(self, store):
+        items = store.get_companies_needing_bio(slugs=["acme"])
+        assert [i["slug"] for i in items] == ["acme"]
+
+        items = store.get_companies_needing_bio(slugs=["acme", "beta"])
+        assert sorted(i["slug"] for i in items) == ["acme", "beta"]
+
     def test_update_company_bio_writes_all_fields(self, store):
+        before = datetime.now(timezone.utc)
         store.update_company_bio(
             "acme", short_bio="short", long_bio="long prose", model="gpt-5.4"
         )
+        after = datetime.now(timezone.utc)
         row = store.conn.execute(
             "SELECT short_bio, long_bio, bio_researched_at, bio_model"
             " FROM companies WHERE slug = 'acme'"
@@ -627,7 +643,7 @@ class TestCompanyBios:
         assert row["short_bio"] == "short"
         assert row["long_bio"] == "long prose"
         assert row["bio_model"] == "gpt-5.4"
-        assert row["bio_researched_at"] is not None
+        assert before <= row["bio_researched_at"] <= after
 
     def test_update_company_bio_overwrites(self, store):
         store.update_company_bio("acme", short_bio="v1", long_bio="v1-long", model="m1")
@@ -638,3 +654,56 @@ class TestCompanyBios:
         assert row["short_bio"] == "v2"
         assert row["long_bio"] == "v2-long"
         assert row["bio_model"] == "m2"
+
+    def test_save_company_does_not_clobber_bios(self, store):
+        from jobbuddy.models import Company
+        store.update_company_bio("acme", short_bio="s", long_bio="l", model="m")
+        # Re-save the company without bios — bios must survive (research owns them).
+        store.save_company(Company(slug="acme", name="Acme Corp", ats="greenhouse", board="acme"))
+        row = store.conn.execute(
+            "SELECT short_bio, long_bio FROM companies WHERE slug = 'acme'"
+        ).fetchone()
+        assert row["short_bio"] == "s"
+        assert row["long_bio"] == "l"
+
+    def test_clear_company_bios_scoped(self, store):
+        store.update_company_bio("acme", short_bio="s", long_bio="l", model="m")
+        store.update_company_bio("beta", short_bio="s", long_bio="l", model="m")
+
+        cleared = store.clear_company_bios(slugs=["acme"])
+        assert cleared == 1
+
+        row = store.conn.execute(
+            "SELECT short_bio, long_bio, bio_model, bio_researched_at"
+            " FROM companies WHERE slug = 'acme'"
+        ).fetchone()
+        assert row["short_bio"] is None
+        assert row["long_bio"] is None
+        assert row["bio_model"] is None
+        assert row["bio_researched_at"] is None
+
+        # beta untouched
+        beta = store.conn.execute(
+            "SELECT long_bio FROM companies WHERE slug = 'beta'"
+        ).fetchone()
+        assert beta["long_bio"] == "l"
+
+    def test_clear_company_bios_global(self, store):
+        store.update_company_bio("acme", short_bio="s", long_bio="l", model="m")
+        store.update_company_bio("beta", short_bio="s", long_bio="l", model="m")
+        cleared = store.clear_company_bios()
+        # Touches every row regardless of bio state.
+        assert cleared == self._seeded_count(store)
+        n_with_bio = store.conn.execute(
+            "SELECT COUNT(*) AS c FROM companies WHERE long_bio IS NOT NULL"
+        ).fetchone()["c"]
+        assert n_with_bio == 0
+
+    def test_hydrate_company_round_trips_bios(self, store):
+        store.update_company_bio(
+            "acme", short_bio="short text", long_bio="long text", model="gpt-5.4"
+        )
+        company = store.get_company("acme")
+        assert company is not None
+        assert company.short_bio == "short text"
+        assert company.long_bio == "long text"

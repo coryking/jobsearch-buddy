@@ -125,38 +125,26 @@ class JobStore:
 
     def count_companies_needing_bio(self, *, slugs: list[str] | None = None) -> int:
         """Count companies with no researched long_bio. Optional slug filter."""
-        if slugs is not None:
-            row = self.conn.execute(
-                "SELECT COUNT(*) AS cnt FROM companies"
-                " WHERE long_bio IS NULL AND slug = ANY(%s)",
-                (slugs,),
-            ).fetchone()
-        else:
-            row = self.conn.execute(
-                "SELECT COUNT(*) AS cnt FROM companies WHERE long_bio IS NULL"
-            ).fetchone()
+        row = self.conn.execute(
+            """SELECT COUNT(*) AS cnt FROM companies
+               WHERE long_bio IS NULL
+                 AND (%s::text[] IS NULL OR slug = ANY(%s::text[]))""",
+            (slugs, slugs),
+        ).fetchone()
         return row["cnt"]
 
     def get_companies_needing_bio(
         self, limit: int = 50, *, slugs: list[str] | None = None,
     ) -> list[ResearchWorkItem]:
         """Return companies with no researched long_bio, slug + name only."""
-        if slugs is not None:
-            rows = self.conn.execute(
-                """SELECT slug, name FROM companies
-                   WHERE long_bio IS NULL AND slug = ANY(%s)
-                   ORDER BY slug
-                   LIMIT %s""",
-                (slugs, limit),
-            ).fetchall()
-        else:
-            rows = self.conn.execute(
-                """SELECT slug, name FROM companies
-                   WHERE long_bio IS NULL
-                   ORDER BY slug
-                   LIMIT %s""",
-                (limit,),
-            ).fetchall()
+        rows = self.conn.execute(
+            """SELECT slug, name FROM companies
+               WHERE long_bio IS NULL
+                 AND (%s::text[] IS NULL OR slug = ANY(%s::text[]))
+               ORDER BY slug
+               LIMIT %s""",
+            (slugs, slugs, limit),
+        ).fetchall()
         return [{"slug": r["slug"], "name": r["name"]} for r in rows]
 
     def update_company_bio(
@@ -172,6 +160,22 @@ class JobStore:
                WHERE slug = %s""",
             (short_bio, long_bio, model, slug),
         )
+
+    def clear_company_bios(self, *, slugs: list[str] | None = None) -> int:
+        """Clear researched bios. Returns row count touched.
+
+        With slugs=None, clears every company. The CLI guards against
+        accidental global clears; callers in code should pass slugs."""
+        result = self.conn.execute(
+            """UPDATE companies SET
+                short_bio = NULL,
+                long_bio = NULL,
+                bio_researched_at = NULL,
+                bio_model = NULL
+               WHERE %s::text[] IS NULL OR slug = ANY(%s::text[])""",
+            (slugs, slugs),
+        )
+        return result.rowcount
 
     # -------------------------------------------------------------------
     # Jobs

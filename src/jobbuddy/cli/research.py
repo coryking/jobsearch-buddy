@@ -22,17 +22,25 @@ def research_companies(
         False, "--force", "-f", help="Re-research even if a bio is already present",
     ),
 ):
-    """Fill long_bio + short_bio for companies via Azure Responses API.
+    """Run before sync if you want company context in short_jds.
 
-    Default mode is backfill: research every company where long_bio IS NULL.
-    Pass --company/-c (repeatable) to scope to specific companies. --force
-    clears existing bios first."""
+    Backfills any company missing a bio. Pass `-c/--company` (repeatable)
+    to scope to specific companies. `--force` clears existing bios first
+    — required to be paired with `-c` to avoid an unscoped global wipe."""
     from jobbuddy.registry import lookup_by_name
     from jobbuddy.settings import pg_conninfo_with_token
     from jobbuddy.store import JobStore
     from jobbuddy.sync import validate_sync_config
     from jobbuddy.sync.display import SyncDisplayState, create_live
     from jobbuddy.sync.research import ResearchPhase
+
+    if force and not company:
+        console.print(
+            "[red]--force requires --company/-c. Refusing to wipe all bios."
+            " Pass `--company X` (repeatable) to scope, or omit --force to"
+            " skip already-filled rows.[/red]"
+        )
+        raise SystemExit(1)
 
     try:
         validate_sync_config(phases={"research"})
@@ -56,39 +64,24 @@ def research_companies(
         store = JobStore(conninfo)
         try:
             if force:
-                store.conn.execute(
-                    "UPDATE companies SET long_bio = NULL, short_bio = NULL,"
-                    " bio_researched_at = NULL, bio_model = NULL"
-                    " WHERE slug = ANY(%s)",
-                    (target_slugs,),
-                )
+                store.clear_company_bios(slugs=target_slugs)
             else:
-                already = store.conn.execute(
-                    "SELECT slug FROM companies"
-                    " WHERE long_bio IS NOT NULL AND slug = ANY(%s)",
-                    (target_slugs,),
-                ).fetchall()
-                if already:
-                    filled = ", ".join(r["slug"] for r in already)
+                already_filled = {
+                    r["slug"]
+                    for r in store.conn.execute(
+                        "SELECT slug FROM companies"
+                        " WHERE long_bio IS NOT NULL AND slug = ANY(%s)",
+                        (target_slugs,),
+                    ).fetchall()
+                }
+                if already_filled:
                     console.print(
-                        f"[yellow]Already have bios: {filled}."
+                        f"[yellow]Already have bios: {', '.join(sorted(already_filled))}."
                         f" Use --force to re-research.[/yellow]"
                     )
-                    target_slugs = [
-                        s for s in target_slugs
-                        if s not in {r["slug"] for r in already}
-                    ]
+                    target_slugs = [s for s in target_slugs if s not in already_filled]
                     if not target_slugs:
                         return
-        finally:
-            store.close()
-    elif force:
-        store = JobStore(conninfo)
-        try:
-            store.conn.execute(
-                "UPDATE companies SET long_bio = NULL, short_bio = NULL,"
-                " bio_researched_at = NULL, bio_model = NULL"
-            )
         finally:
             store.close()
 

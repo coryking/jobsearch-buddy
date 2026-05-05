@@ -45,14 +45,17 @@ src/jobbuddy/
 ├── web.py              # Flask web UI for semantic search
 ├── templates/
 │   └── search.html     # Jinja2 template for web search UI
-├── sync/               # Sync pipeline (fetch → enrich → strip → embed)
-│   ├── __init__.py     # sync_jobs() orchestrator, SyncResult
+├── research.py         # research_company() — Azure Responses API + web_search
+├── sync/               # Sync pipeline (fetch → enrich → strip → embed + research)
+│   ├── __init__.py     # public surface (re-exports from orchestrator)
+│   ├── orchestrator.py # sync_jobs(), validate_sync_config(), SyncConfig
 │   ├── base.py         # WorkerPhase ABC — DB-polling, thread-pooled phase runner
 │   ├── display.py      # PhaseState, SyncDisplayState, Rich Live TUI renderer
 │   ├── fetch.py        # FetchPhase — parallel company fetching
 │   ├── enrich.py       # EnrichPhase — description enrichment for stub fetchers
 │   ├── strip.py        # StripPhase — LLM-based boilerplate removal (OpenAI-compatible)
-│   └── embed.py        # EmbedPhase — OpenAI-compatible batch embedding generation
+│   ├── embed.py        # EmbedPhase — OpenAI-compatible batch embedding generation
+│   └── research.py     # ResearchPhase — fills companies.short_bio + long_bio
 └── fetchers/           # Per-ATS scrapers — one file per platform (see Supported ATS Platforms)
     ├── base.py         # ATSFetcher ABC
     ├── __init__.py     # Fetcher registry + factory
@@ -63,6 +66,7 @@ tests/
 ├── test_search.py      # VectorSearch: ranking, limits, pgvector HNSW
 ├── test_embeddings.py  # Serialize/deserialize, embed functions
 ├── test_sync.py        # Sync orchestration: phases, error isolation
+├── test_research.py    # research_company: parsing, error paths, has_research
 └── test_settings.py    # Settings: defaults, env var overrides, singleton
 
 docs/
@@ -84,7 +88,8 @@ jsb-mcp                          # Run MCP server
 
 ```
 jsb migrate                                  # Apply pending database migrations
-jsb sync [PHASES...] [--company NAME] [--stale HOURS] [--force]  # Sync pipeline (phases: fetch, enrich, strip, embed)
+jsb sync [PHASES...] [--company NAME] [--stale HOURS] [--force]  # Sync pipeline (phases: fetch, enrich, strip, embed, research)
+jsb research-companies [--company NAME]... [--force]  # Fill companies.short_bio/long_bio (Azure Responses + web_search)
 jsb list-jobs [company] [-f FILTER]         # List cached jobs
 jsb search [--title T] [--location L] [--company C]  # Search cache
 jsb companies                               # List registered companies
@@ -133,21 +138,28 @@ Override defaults with env vars (prefix `JOBBUDDY_`) or a `.env` file:
 | `strip_model`              | `JOBBUDDY_STRIP_MODEL`               | `gpt-5-nano`                               |
 | `embedding_model`          | `JOBBUDDY_EMBEDDING_MODEL`           | `text-embedding-3-small`                   |
 | `strip_batch_size`         | `JOBBUDDY_STRIP_BATCH_SIZE`          | `50`                                       |
+| `research_model`           | `JOBBUDDY_RESEARCH_MODEL`            | `gpt-5.4`                                  |
+| `research_endpoint`        | `JOBBUDDY_RESEARCH_ENDPOINT`         | `None` *(Azure OpenAI resource root URL)*  |
+| `research_max_workers`     | `JOBBUDDY_RESEARCH_MAX_WORKERS`      | `4`                                        |
 
 ## Sync Pipeline
 
-The sync pipeline uses a **DB-as-queue** pattern with four phases:
+The sync pipeline uses a **DB-as-queue** pattern with five phases:
 
 1. **Fetch** — parallel company fetching via ThreadPoolExecutor
 2. **Enrich** — description enrichment for stub fetchers (Workday, Eightfold, etc.)
 3. **Strip** — LLM-based boilerplate removal via OpenAI-compatible API
 4. **Embed** — batch embedding generation via OpenAI-compatible API
+5. **Research** — Azure Responses API + web_search to fill `companies.short_bio` and `long_bio`
 
-`jsb sync` runs all four phases by default. Strip and embed require
-OpenAI credentials — either `JOBBUDDY_OPENAI_API_KEY` (local) or
-`JOBBUDDY_OPENAI_AZURE_API_VERSION` with managed identity (Azure).
-Sync fails fast at startup if neither is configured.
-Use `jsb sync fetch enrich` to run without OpenAI credentials.
+`jsb sync` runs all five phases by default. Strip and embed require
+OpenAI credentials (`JOBBUDDY_OPENAI_API_KEY` or
+`JOBBUDDY_OPENAI_AZURE_API_VERSION` with managed identity). Research
+requires `JOBBUDDY_RESEARCH_ENDPOINT` (or `JOBBUDDY_OPENAI_BASE_URL`)
+pointed at an Azure resource — bearer-token auth via managed identity.
+Sync fails fast at startup if a selected phase's credentials are missing.
+Use `jsb sync fetch enrich` to run without OpenAI/Azure credentials, or
+`jsb research-companies` to run only the research phase as a one-off.
 
 Preconditions (phase names, OpenAI key, company resolution) are validated
 up front by `validate_sync_config()` before any I/O. The orchestrator
@@ -156,7 +168,7 @@ up front by `validate_sync_config()` before any I/O. The orchestrator
 All phases update `PhaseState` objects directly for display. The fetch phase
 uses the same pattern as enrich/strip/embed — no event queue.
 
-`EnrichPhase` and `StripPhase` extend the `WorkerPhase` ABC (`sync/base.py`),
+`EnrichPhase`, `StripPhase`, and `ResearchPhase` extend the `WorkerPhase` ABC (`sync/base.py`),
 which provides: DB polling for work items, `ThreadPoolExecutor` parallelism,
 per-thread DB connections via a single-threaded `WriteQueue`, graceful shutdown
 via `threading.Event`, and display state updates. Phases poll the database

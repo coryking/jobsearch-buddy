@@ -41,7 +41,10 @@ mcp = FastMCP(
         "'I applied', 'log this', 'log my application', 'log my interview', "
         "'show my log', 'what have I applied to', 'what have I done with', "
         "'show my history', 'who have I talked to', 'follow up', 'any contacts at', "
-        "or user pastes a job listing URL.\n\n"
+        "or user pastes a job listing URL. "
+        "Also for company triage: 'tell me about [company]', 'what does [company] do', "
+        "'is [company] interesting', 'what kind of company is [company]' → "
+        "read the ats://companies resource for short_bio capsules.\n\n"
         "Tool routing:\n"
         "- Search/browse jobs (any or all companies) → search_jobs (reads from local cache)\n"
         "- Job details (one or many, by company+job_id) → get_job_post_details (cached, live fetch fallback)\n"
@@ -465,10 +468,12 @@ def get_log() -> str:
 
 @mcp.resource("ats://companies")
 def get_companies() -> str:
-    """Registered target companies — slug, name, ATS config, short_bio.
+    """Use when the user asks 'tell me about X', 'what does X do', or wants
+    to triage which companies are worth a closer look before searching jobs.
 
-    short_bio is a 60-100 word factual capsule (NPOV). Use it to decide
-    which companies are interesting before drilling into their job listings."""
+    Returns slug, name, ATS config, and a 60-100 word NPOV short_bio per
+    company. Bio may be null for unresearched companies — fall back to web
+    search for those."""
     rows = {
         slug: c.model_dump(include={"slug", "name", "ats", "board", "short_bio"})
         for slug, c in list_companies().items()
