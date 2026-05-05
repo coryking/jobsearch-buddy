@@ -4,11 +4,11 @@ Phases wired today:
 1. FetchPhase: parallel company fetching via ThreadPoolExecutor
 2. EnrichPhase: description enrichment for stub fetchers
 3. ResearchPhase: company bio research (requires Azure Responses API)
+4. DistillPhase: per-job structured-output LLM call -> short_jd,
+   description_normalized, salary (requires OpenAI credentials)
 
-DistillPhase is pending Unit 2 of the Phase 1 redesign plan. It will
-require OpenAI credentials; add it to VALID_PHASES and _OPENAI_PHASES at
-the same time as wiring the phase, otherwise validate_sync_config will
-silently skip the credential check.
+Distill runs after enrich+research join: it depends on description (from
+enrich) and reads companies.long_bio (from research) at on_phase_start().
 
 Phases use DB-as-queue: each polls PostgreSQL for work items and updates
 PhaseState objects for live display. Research is independent of the job
@@ -26,17 +26,15 @@ from jobbuddy.registry import list_companies, lookup_by_name
 from jobbuddy.settings import Settings, get_settings, pg_conninfo_with_token
 from jobbuddy.store import JobStore
 from jobbuddy.sync.display import SyncDisplayState
+from jobbuddy.sync.distill import DistillPhase
 from jobbuddy.sync.enrich import EnrichPhase
 from jobbuddy.sync.fetch import FetchPhase
 from jobbuddy.sync.research import ResearchPhase
 from jobbuddy.sync.types import SyncResult
 
 
-VALID_PHASES = {"fetch", "enrich", "research"}
-# Phases that require OpenAI credentials. Empty until Unit 2 wires in
-# "distill" -- add "distill" here at the same time as adding it to
-# VALID_PHASES, otherwise validate_sync_config silently skips the check.
-_OPENAI_PHASES: set[str] = set()
+VALID_PHASES = {"fetch", "enrich", "research", "distill"}
+_OPENAI_PHASES: set[str] = {"distill"}
 _RESEARCH_PHASES = {"research"}
 
 
@@ -214,5 +212,12 @@ def sync_jobs(
         t.start()
     for t in threads:
         t.join()
+
+    if "distill" in run_phases:
+        DistillPhase(
+            conninfo,
+            display=display_state.distill,
+            slugs=resolved_slugs,
+        ).run()
 
     return results

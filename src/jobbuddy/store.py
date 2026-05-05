@@ -13,7 +13,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Json
 
 from jobbuddy.models import Company, Job
-from jobbuddy.types import ResearchWorkItem
+from jobbuddy.types import DistillWorkItem, ResearchWorkItem
 
 log = logging.getLogger(__name__)
 
@@ -379,6 +379,87 @@ class JobStore:
                     [(desc, slug, job_id) for job_id, desc in descs.items()],
                     returning=False,
                 )
+
+    # -------------------------------------------------------------------
+    # Distill phase
+    # -------------------------------------------------------------------
+
+    def _distill_conditions(self, slugs: list[str] | None) -> tuple[str, list]:
+        """Stable column-presence predicate matching idx_jobs_needs_distill."""
+        conditions = [
+            "description IS NOT NULL",
+            "short_jd IS NULL",
+            "listing_status = 'active'",
+        ]
+        params: list = []
+        if slugs:
+            conditions.append("company_slug = ANY(%s)")
+            params.append(slugs)
+        return " AND ".join(conditions), params
+
+    def count_jobs_needing_distill(self, *, slugs: list[str] | None = None) -> int:
+        """Count active jobs with a description but no distilled short_jd."""
+        where, params = self._distill_conditions(slugs)
+        row = self.conn.execute(
+            f"SELECT COUNT(*) AS cnt FROM jobs WHERE {where}", params
+        ).fetchone()
+        return row["cnt"]
+
+    def get_jobs_needing_distill(
+        self, limit: int = 50, *, slugs: list[str] | None = None,
+    ) -> list[DistillWorkItem]:
+        """Return jobs needing distill, joined with company name for the prompt.
+
+        ORDER BY id is deterministic, so concurrent worker polls don't race
+        on different orderings of the same predicate result set (the bug
+        documented in the deleted sync/embed.py).
+        """
+        where, params = self._distill_conditions(slugs)
+        params.append(limit)
+        rows = self.conn.execute(
+            f"""SELECT j.id, j.company_slug, c.name AS company_name,
+                       j.job_id, j.title, j.location, j.salary, j.description
+                  FROM jobs j
+                  LEFT JOIN companies c ON c.slug = j.company_slug
+                 WHERE {where}
+                 ORDER BY j.id
+                 LIMIT %s""",
+            params,
+        ).fetchall()
+        return [
+            {
+                "id": r["id"],
+                "company_slug": r["company_slug"],
+                "company_name": r["company_name"] or r["company_slug"],
+                "job_id": r["job_id"],
+                "title": r["title"],
+                "location": r["location"],
+                "salary": r["salary"],
+                "description": r["description"],
+            }
+            for r in rows
+        ]
+
+    def update_job_distill(
+        self, job_pk: int, *,
+        short_jd: str,
+        description_normalized: str,
+        salary: str | None,
+    ) -> None:
+        """Persist distill outputs for one job. salary may be None.
+
+        salary is only overwritten when distill produced a value — the
+        existing structured-field salary (set by the fetcher) is preserved
+        when distill returns None.
+        """
+        self.conn.execute(
+            """UPDATE jobs SET
+                short_jd = %s,
+                description_normalized = %s,
+                salary = COALESCE(%s, salary)
+               WHERE id = %s""",
+            (short_jd, description_normalized, salary, job_pk),
+        )
 
     def get_job_by_ids(self, job_ids: list[int]) -> list[dict]:
         """Fetch jobs by surrogate key IDs."""

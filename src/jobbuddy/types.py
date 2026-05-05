@@ -29,3 +29,21 @@ class ResearchWorkItem(TypedDict):
 
     slug: str
     name: str
+
+
+class DistillWorkItem(TypedDict):
+    """One job to distill — returned by JobStore.get_jobs_needing_distill().
+
+    Carries everything the distill prompt needs: the JD body plus the
+    surrounding context (title, location, company name, structured salary
+    flag) used to construct the XML-tagged user message.
+    """
+
+    id: int
+    company_slug: str
+    company_name: str
+    job_id: str
+    title: str
+    location: str | None
+    salary: str | None
+    description: str

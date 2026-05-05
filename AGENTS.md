@@ -59,7 +59,7 @@ jsb-mcp                          # Run MCP server
 
 ```
 jsb migrate                                  # Apply pending database migrations
-jsb sync [PHASES...] [--company NAME] [--stale HOURS]  # Sync pipeline (phases: fetch, enrich, research; distill pending Unit 2)
+jsb sync [PHASES...] [--company NAME] [--stale HOURS]  # Sync pipeline (phases: fetch, enrich, research, distill)
 jsb research-companies [--company NAME]... [--force]  # Fill companies.short_bio/long_bio (Azure Responses + web_search)
 jsb list-jobs [company] [-f FILTER]         # List cached jobs
 jsb search [--title T] [--location L] [--company C]  # Search cache
@@ -113,30 +113,30 @@ Override defaults with env vars (prefix `JOBBUDDY_`) or a `.env` file:
 
 ## Sync Pipeline
 
-The sync pipeline uses a **DB-as-queue** pattern. Three phases are wired today;
-DistillPhase is pending Unit 2 of the Phase 1 redesign plan.
+The sync pipeline uses a **DB-as-queue** pattern. Four phases are wired:
 
 1. **Fetch** — parallel company fetching via ThreadPoolExecutor
 2. **Enrich** — description enrichment for stub fetchers (Workday, Eightfold, etc.)
 3. **Research** — Azure Responses API + web_search to fill `companies.short_bio`
    and `long_bio`. Independent of the job pipeline (polls companies, not jobs).
    The `long_bio` feeds the distill prompt as `<company_bio>` context.
-4. **Distill** *(Unit 2, pending)* — one structured-output LLM call per job;
-   will produce `short_jd`, `description_normalized`, and `salary` in a single
-   round trip. Schema columns and the polling index already exist (migration
-   011); the phase implementation does not.
+4. **Distill** — one structured-output LLM call per job, producing `short_jd`,
+   `description_normalized`, and `salary` in a single round trip. Polls the
+   `idx_jobs_needs_distill` predicate (`description IS NOT NULL AND short_jd
+   IS NULL AND listing_status = 'active'`).
 
-`jsb sync` runs all wired phases by default (currently `fetch enrich research`).
-Research requires an Azure Responses-API endpoint
-(`JOBBUDDY_RESEARCH_ENDPOINT` or `JOBBUDDY_OPENAI_BASE_URL`) — bearer-token
-auth via managed identity. Once distill ships it will additionally require
-OpenAI credentials (`JOBBUDDY_OPENAI_API_KEY` or
+`jsb sync` runs all wired phases by default. Distill runs sequentially after
+enrich+research join — it depends on description (from enrich) and reads
+`companies.long_bio` (from research) at `on_phase_start()`. Research requires
+an Azure Responses-API endpoint (`JOBBUDDY_RESEARCH_ENDPOINT` or
+`JOBBUDDY_OPENAI_BASE_URL`) with bearer-token auth via managed identity.
+Distill requires OpenAI credentials (`JOBBUDDY_OPENAI_API_KEY` or
 `JOBBUDDY_OPENAI_AZURE_API_VERSION` with managed identity). Sync fails fast
 at startup if a selected phase's credentials are missing.
 
 **Backfill ordering:** research must run before distill — distill consumes
 `long_bio` as `<company_bio>` context. Run `jsb research-companies` first,
-then `jsb sync distill` once Unit 2 ships.
+then `jsb sync distill`.
 
 Preconditions (phase names, OpenAI key, company resolution) are validated
 up front by `validate_sync_config()` before any I/O. The orchestrator
@@ -144,7 +144,7 @@ up front by `validate_sync_config()` before any I/O. The orchestrator
 
 All phases update `PhaseState` objects directly for display — no event queue.
 
-`EnrichPhase`, `ResearchPhase` (and the future `DistillPhase`) extend the
+`EnrichPhase`, `ResearchPhase`, and `DistillPhase` extend the
 `WorkerPhase` ABC (`sync/base.py`), which provides: DB polling for work items,
 `ThreadPoolExecutor` parallelism, DB writes via a single-threaded `WriteQueue`,
 graceful shutdown via `threading.Event`, and display state updates. Phases

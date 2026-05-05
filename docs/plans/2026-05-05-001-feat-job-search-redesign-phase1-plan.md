@@ -13,7 +13,7 @@ origin: docs/brainstorms/2026-05-05-job-search-redesign-requirements.md
 | Unit | Status | Notes |
 |------|--------|-------|
 | 1 — Schema migration | **Done** (commit `030c6ca`) | Folded with Unit 7. Migration 011 applied to test DB. Index named `idx_jobs_needs_distill`. |
-| 2 — `sync/distill.py` | **Pending** | Phase A (company-bio pipeline) merged in. `Company.long_bio` and `JobStore.update_company_bio` are available. Migration 012 already applied to prod. |
+| 2 — `sync/distill.py` | **Done** | `DistillPhase` wired into orchestrator. Reads `companies.long_bio` cache at phase start, calls strict-JSON-schema chat completions, writes `short_jd`/`description_normalized`/`salary` via `update_job_distill`. |
 | 3 — MCP surface rebuild | **Pending** | Depends on Unit 2. |
 | 4 — MCP tool descriptions | **Pending** | Depends on Unit 3. |
 | 5 — Eval harness rewrite | **Pending** | Depends on Unit 2. |
@@ -311,7 +311,7 @@ are gone; FTS column rebuilt over the new fields.
 
 ---
 
-- [ ] **Unit 2: `sync/distill.py` — three-field distill phase**
+- [x] **Unit 2: `sync/distill.py` — three-field distill phase**
 
 **Goal:** A new `WorkerPhase` polls jobs missing `short_jd`, calls the
 OpenAI-compatible API with `prompts/distill-v1.txt` and structured
