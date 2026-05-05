@@ -8,6 +8,23 @@ origin: docs/brainstorms/2026-05-05-job-search-redesign-requirements.md
 
 # Job Search Redesign — Phase 1 (Distill Pipeline + MCP Surface Rebuild)
 
+## Execution Status
+
+| Unit | Status | Notes |
+|------|--------|-------|
+| 1 — Schema migration | **Done** (commit `030c6ca`) | Folded with Unit 7. Migration 011 applied to test DB. Index named `idx_jobs_needs_distill`. |
+| 2 — `sync/distill.py` | **Pending** | Soft-blocked on Phase A merge (companies.long_bio). Not hard-blocked: `getattr(company, 'long_bio', None) or ""` works either way. |
+| 3 — MCP surface rebuild | **Pending** | Depends on Unit 2. |
+| 4 — MCP tool descriptions | **Pending** | Depends on Unit 3. |
+| 5 — Eval harness rewrite | **Pending** | Depends on Unit 2. |
+| 6 — Prompt tuning loop | **Pending** | Depends on Unit 5. Open-ended; probably its own session. |
+| 7 — Remove dead embedding stack | **Done** (commit `030c6ca`) | Folded with Unit 1 — the schema cascade forced it. |
+| Follow-up — SERP tuning | **Pending** | Per-company diversity, FTS-ranked pagination, ts_rank weight tuning. Deferred from Phase 1 by explicit decision. |
+
+**Naming change since plan was first written:** the LLM phase is now called **distill**, not "extract". Rationale in the Unit 1 commit message. References throughout the plan have been updated.
+
+**Phase 2 dependency surfaced during execution:** the distill prompt's `<company_bio>` slot will be fed by `companies.long_bio` from a separate "Phase A" branch (commit `3ae6f6d` on that branch adds the column + `Company.long_bio` attribute + `JobStore.update_company_bio`). Unit 2 will read `Company.long_bio` defensively; if the merge hasn't happened, the slot is empty and the prompt handles that.
+
 ## Overview
 
 Replace the embedding-dependent strip pipeline with a single structured-output
@@ -226,7 +243,7 @@ MCP surface around those artifacts plus PostgreSQL FTS.
 
 ## Implementation Units
 
-- [ ] **Unit 1: Schema migration — add distill fields, drop embedding stack**
+- [x] **Unit 1: Schema migration — add distill fields, drop embedding stack** *(shipped commit `030c6ca`, folded with Unit 7)*
 
 **Goal:** Schema reflects Phase 1's job-side design: `short_jd` and
 `description_normalized` exist on `jobs`; embedding tables and indexes
@@ -314,16 +331,25 @@ Replaces `sync/strip.py` in the orchestrator.
 - Reuse `WorkerPhase` ABC verbatim. Threadpool workers, write queue,
   graceful shutdown — no new infrastructure.
 - Construct the user message per the XML-tag schema declared at the
-  top of `prompts/distill-v1.txt`.
+  top of `prompts/distill-v1.txt`. The `<company_bio>` slot is fed
+  by `Company.long_bio` from the Phase A branch (commit `3ae6f6d`
+  on that branch). Read defensively:
+  `getattr(company, 'long_bio', None) or ""` — the prompt promises
+  to handle empty.
+- Cache `{slug → long_bio}` once at `on_phase_start()` to avoid
+  re-fetching companies per job. Bios change slowly; per-sync
+  staleness is fine.
 - Structured output: `response_format={"type": "json_schema",
   "json_schema": {...strict...}}` with three required fields, `salary`
-  nullable.
+  nullable. If Azure rejects nullable salary in strict mode, fall
+  back to `{"type": "string"}` with empty-string convention.
 - "Done" predicate: `short_jd IS NOT NULL` (stable, no hash). Avoids
   the Azure embedding-starvation churn class.
 - Failure mode: on parse error or API error, leave all three fields
-  null; next sync retries. Same posture as `sync/strip.py`.
-- Model defaults to `JOBBUDDY_DISTILL_MODEL` (new setting), default
-  `gpt-5-nano`.
+  null; next sync retries. Same posture as the deleted `sync/strip.py`.
+- Model defaults to `JOBBUDDY_DISTILL_MODEL` (default `gpt-5-nano`),
+  prompt version to `JOBBUDDY_DISTILL_PROMPT_VERSION` (default
+  `distill-v1`). Both already exist on `Settings`.
 
 **Execution note:** Implement test-first against a recorded
 structured-output fixture; the prompt is large and spec-driven, so
@@ -331,9 +357,11 @@ unit tests should pin the JSON-schema contract and the user-message
 input shape before wiring the live API.
 
 **Patterns to follow:**
-- `src/jobbuddy/sync/strip.py` — overall phase shape, threading,
-  display state updates.
-- `src/jobbuddy/sync/enrich.py` — DB-polling pattern.
+- `src/jobbuddy/sync/enrich.py` — DB-polling pattern; closest
+  remaining `WorkerPhase` example after Unit 1+7 deleted strip/embed.
+- The deleted `src/jobbuddy/sync/strip.py` (recoverable from git
+  history pre-`030c6ca`) is the most direct analog — same threadpool
+  + WriteQueue shape, same OpenAI-client init pattern.
 
 **Test scenarios:**
 - Happy path: Job with full inputs returns three fields populated and
@@ -571,7 +599,7 @@ eval until scores converge. The user explicitly flagged this:
 
 ---
 
-- [ ] **Unit 7: Remove dead embedding stack**
+- [x] **Unit 7: Remove dead embedding stack** *(shipped commit `030c6ca`, folded with Unit 1)*
 
 **Goal:** Code, tests, and CLI commands tied to job embeddings are
 gone. The repository is smaller and clearer.
