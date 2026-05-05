@@ -22,3 +22,4 @@ infrastructure/*.tfvars
 scratchpad/
 
 .compound-engineering/*.local.yaml
+.context/

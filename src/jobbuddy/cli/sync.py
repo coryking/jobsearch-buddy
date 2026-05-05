@@ -55,7 +55,7 @@ def sync(
             phases=phase_set,
         )
 
-    phase_order = ["fetch", "enrich", "extract"]
+    phase_order = ["fetch", "enrich", "distill"]
     filter_phases = (
         [p.capitalize() for p in sorted(config.phases, key=lambda p: phase_order.index(p) if p in phase_order else 99)]
         if phase_set else None
@@ -86,7 +86,7 @@ def _setup_logging() -> None:
 
 
 def _print_summary(
-    state,
+    state: "SyncDisplayState",
     results: list,
     ran_fetch: bool,
     interactive: bool,

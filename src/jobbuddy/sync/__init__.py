@@ -4,7 +4,7 @@ Orchestrates two phases:
 1. FetchPhase: parallel company fetching via ThreadPoolExecutor
 2. EnrichPhase: description enrichment for stub fetchers
 
-The third phase (ExtractPhase) is wired up by Unit 2.
+DistillPhase will be added by Unit 2 of the Phase 1 redesign plan.
 
 Phases use DB-as-queue: each polls PostgreSQL for work items and updates
 PhaseState objects for live display.
@@ -33,6 +33,9 @@ __all__ = ["sync_jobs", "validate_sync_config", "SyncConfig", "SyncResult", "VAL
 
 
 VALID_PHASES = {"fetch", "enrich"}
+# Phases that require OpenAI credentials. Empty until Unit 2 wires in "distill" —
+# add "distill" here at the same time as adding it to VALID_PHASES, otherwise
+# validate_sync_config silently skips the credential check.
 _OPENAI_PHASES: set[str] = set()
 
 
@@ -80,13 +83,7 @@ def validate_sync_config(
 
     targets: list[Company] = []
     if company_slugs:
-        for cs in company_slugs:
-            company = lookup_by_name(cs)
-            if not company:
-                raise ValueError(f"Unknown company: {cs}")
-            if not company.ats:
-                raise ValueError(f"No ATS configured for {company.name}")
-            targets.append(company)
+        targets = _resolve_company_targets(company_slugs)
 
     return SyncConfig(
         phases=resolved_phases,
@@ -121,9 +118,9 @@ def sync_jobs(
 ) -> list[SyncResult]:
     """Sync job listings from ATS boards into the PostgreSQL cache.
 
-    Fetch runs first; enrich and distill run concurrently after.
-    Each phase polls the DB for work; upstream_done events signal when it's
-    safe to stop polling (enrich_done -> distill).
+    Fetch runs first, then enrich. Each phase polls the DB for work; the
+    enrich_done event is reserved for the future DistillPhase (Unit 2) to
+    use as its upstream-done signal and currently has no consumer.
 
     Callers should use validate_sync_config() first to check preconditions.
     """

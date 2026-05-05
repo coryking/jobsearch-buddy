@@ -120,6 +120,58 @@ class TestUpsertAndQuery:
         rows = store.query_jobs(companies=["acme"])
         assert rows[0]["description"] == "enriched"
 
+    def test_description_change_nulls_distill_outputs(self, store):
+        """Re-upserting with a changed description NULLs short_jd and
+        description_normalized so the distill phase reprocesses the row.
+        """
+        store.upsert_jobs("acme", [make_job("1", description="v1 body")])
+        # Simulate the distill phase having populated its outputs.
+        store.conn.execute(
+            "UPDATE jobs SET short_jd = %s, description_normalized = %s "
+            "WHERE company_slug = %s AND job_id = %s",
+            ("capsule v1", "normalized v1", "acme", "1"),
+        )
+        store.upsert_jobs("acme", [make_job("1", description="v2 body")])
+        row = store.conn.execute(
+            "SELECT description, short_jd, description_normalized FROM jobs "
+            "WHERE company_slug = 'acme' AND job_id = '1'"
+        ).fetchone()
+        assert row["description"] == "v2 body"
+        assert row["short_jd"] is None
+        assert row["description_normalized"] is None
+
+    def test_unchanged_description_preserves_distill_outputs(self, store):
+        """Re-upserting with the same description preserves distill outputs."""
+        store.upsert_jobs("acme", [make_job("1", description="stable body")])
+        store.conn.execute(
+            "UPDATE jobs SET short_jd = %s, description_normalized = %s "
+            "WHERE company_slug = %s AND job_id = %s",
+            ("capsule", "normalized", "acme", "1"),
+        )
+        store.upsert_jobs("acme", [make_job("1", description="stable body")])
+        row = store.conn.execute(
+            "SELECT short_jd, description_normalized FROM jobs "
+            "WHERE company_slug = 'acme' AND job_id = '1'"
+        ).fetchone()
+        assert row["short_jd"] == "capsule"
+        assert row["description_normalized"] == "normalized"
+
+    def test_null_incoming_description_preserves_distill_outputs(self, store):
+        """Re-upsert with NULL description (stub re-list) doesn't blow away distill."""
+        store.upsert_jobs("acme", [make_job("1", description="body")])
+        store.conn.execute(
+            "UPDATE jobs SET short_jd = %s, description_normalized = %s "
+            "WHERE company_slug = %s AND job_id = %s",
+            ("capsule", "normalized", "acme", "1"),
+        )
+        store.upsert_jobs("acme", [make_job("1")])  # description=None
+        row = store.conn.execute(
+            "SELECT short_jd, description_normalized FROM jobs "
+            "WHERE company_slug = 'acme' AND job_id = '1'"
+        ).fetchone()
+        assert row["short_jd"] == "capsule"
+        assert row["description_normalized"] == "normalized"
+
     def test_surrogate_key_assigned(self, store):
         """Jobs get an integer surrogate key (id)."""
         store.upsert_jobs("acme", [make_job("1")])

@@ -35,7 +35,7 @@ def _validate_date(value: str | date | None) -> date | None:
 
 
 class JobStore:
-    """PostgreSQL persistence for jobs and embeddings.
+    """PostgreSQL persistence for job listings, sync bookkeeping, and activity log.
 
     Args:
         conninfo: psycopg connection string, or None for default from settings.
@@ -194,8 +194,8 @@ class JobStore:
                         ats_metadata = COALESCE(excluded.ats_metadata, jobs.ats_metadata),
                         last_seen = excluded.last_seen,
                         listing_status = 'active',
-                        -- Invalidate extract outputs when the description body changes,
-                        -- so the extract phase picks the row up again.
+                        -- Invalidate distill outputs when the description body changes,
+                        -- so the distill phase picks the row up again.
                         short_jd = CASE
                             WHEN excluded.description IS NOT NULL
                               AND excluded.description IS DISTINCT FROM jobs.description

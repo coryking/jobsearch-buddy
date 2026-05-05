@@ -99,13 +99,10 @@ class JobSearchResults(BaseModel):
             if co:
                 log_by_company.setdefault(co, []).append(entry)
 
-        has_distance = any("distance" in row for row in rows)
         has_metadata = any(_filter_metadata(row.get("ats_metadata")) for row in rows)
         headers = ["company", "title", "location", "posted", "job_id", "url", "salary", "team", "applied"]
         if has_metadata:
             headers.append("metadata")
-        if has_distance:
-            headers.append("similarity")
         job_list: list[JobRow] = [headers]
 
         for row in rows:
@@ -136,9 +133,6 @@ class JobSearchResults(BaseModel):
             if has_metadata:
                 meta = _filter_metadata(row.get("ats_metadata"))
                 entry.append(json.dumps(meta) if meta else "")
-            if has_distance:
-                dist = row.get("distance", 0)
-                entry.append(round(1 - dist / 2, 3))  # cosine distance [0,2] → similarity [0,1]
             job_list.append(entry)
 
         return cls(count=len(rows), company=company_slug, jobs=job_list)

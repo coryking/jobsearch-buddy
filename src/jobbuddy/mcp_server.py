@@ -1,8 +1,8 @@
 """MCP server for job search: browse openings, fetch job postings, and track applications.
 
-Scrapes ATS job boards (Greenhouse, Ashby, Lever, Workday, Rippling, Paylocity) for registered
-companies and maintains a CSV activity log for application tracking and WA unemployment
-audit compliance.
+Scrapes ATS job boards for registered companies (see AGENTS.md for the supported
+platform list) and records job-search activity in PostgreSQL for application
+tracking and WA unemployment audit compliance.
 """
 
 import json
@@ -305,7 +305,7 @@ def log_job_activity(
 
 @mcp.tool
 def search_jobs(
-    query: Annotated[str, Field(description="Search using PostgreSQL websearch syntax. Quote phrases for exact matching: '\"software engineer\" startup' boosts jobs with 'software engineer' in the title. Unquoted words match by meaning (semantic search). Supports: \"quoted phrases\", OR for alternatives, -word to exclude. Stemming is automatic (engineer matches engineering). Don't enumerate synonyms.")],
+    query: Annotated[str, Field(description="Search using PostgreSQL websearch_to_tsquery syntax. Matches by keyword with stemming (engineer matches engineering) over title, short_jd, description_normalized, location, and department. Quote phrases for exact matching: '\"software engineer\" startup'. Supports: \"quoted phrases\", OR for alternatives, -word to exclude. This is keyword search, not semantic search — use terms that actually appear in postings.")],
     companies: Annotated[list[str], Field(default=[], description="Company names or slugs to search within (e.g. brex, stripe, plaid). Omit to search across ALL cached companies.")] = [],
     exclude_companies: Annotated[list[str], Field(default=[], description="Company names or slugs to exclude from results (e.g. microsoft, walmart, boeing).")] = [],
     location_filter: Annotated[str, Field(default="", description="Case-insensitive substring match on location. Comma-separated for OR (e.g. 'seattle,remote', 'new york,NYC').")] = "",
@@ -318,20 +318,20 @@ def search_jobs(
     "what PM jobs does [company] have", "find me jobs like...", describes a role vaguely,
     or any request to browse or search job listings.
 
-    Results are ranked by hybrid search — combining semantic similarity (understands
-    meaning) with full-text keyword matching (boosts exact title matches). A job titled
-    "Software Engineer" that's also semantically relevant ranks higher than either
-    signal alone. No need to search twice or enumerate title variants.
+    Search is PostgreSQL full-text search (websearch_to_tsquery) over title, short_jd,
+    description_normalized, location, and department. This is keyword matching with
+    stemming — not semantic search. If the user's intent is vague (e.g. "fintech roles"),
+    pass concrete keywords likely to appear in postings. Quoted phrases are matched
+    exactly; unquoted words match individually with stemming.
 
-    Results are automatically diversified across employers — no single company dominates
-    even when it has thousands of matching listings.
+    Results are ordered by published_at DESC and diversified across employers via
+    round-robin so no single company dominates the result set.
 
     Company is optional — omit it to search across all cached companies.
-    Location uses substring matching. Pass the user's words as the query — don't
-    rewrite, summarize, or enumerate synonyms.
+    Location uses substring matching.
 
     Results include last_sync timestamp showing cache freshness, and "already applied"
-    markers cross-referenced with the application log. If cache is empty, tells user
+    markers cross-referenced with the activity log. If cache is empty, tells user
     to run `jsb sync`.
 
     Returns the company registry if the company name isn't found."""
