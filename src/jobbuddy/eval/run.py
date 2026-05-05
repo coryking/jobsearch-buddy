@@ -55,6 +55,25 @@ def _append_run_stats(csv_path: Path, row: dict) -> None:
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
 
 
+def _format_output_file(sample: "_DistillSample", llm_output: str) -> str:
+    """All-plaintext output for human inspection. Inputs at the top, the
+    parsed distill fields below. Raises on malformed JSON so the sample
+    surfaces as an error instead of writing a half-formatted file."""
+    import json
+    parsed = json.loads(llm_output)  # raises on malformed -- intentional
+    return (
+        f"=== TITLE ===\n{sample.title}\n\n"
+        f"=== COMPANY ===\n{sample.company_name} (slug: {sample.company_slug})\n\n"
+        f"=== LOCATION ===\n{sample.location or '(none)'}\n\n"
+        f"=== ATS-PROVIDED SALARY ===\n{sample.salary or '(none)'}\n\n"
+        f"=== COMPANY BIO ({len(sample.long_bio)} chars) ===\n{sample.long_bio}\n\n"
+        f"=== JOB DESCRIPTION ({len(sample.description)} chars) ===\n{sample.description}\n\n"
+        f"=== DISTILL: SHORT_JD ===\n{parsed.get('short_jd', '')}\n\n"
+        f"=== DISTILL: DESCRIPTION_NORMALIZED ===\n{parsed.get('description_normalized', '')}\n\n"
+        f"=== DISTILL: SALARY ===\n{parsed.get('salary') if parsed.get('salary') is not None else '(null)'}\n"
+    )
+
+
 def _filename_for(slug: str, job_id: str) -> str:
     """Stable per-job output filename. Re-runs overwrite the same file."""
     safe = _SLUG_RE.sub("-", job_id.lower()).strip("-")[:60] or "job"
@@ -173,7 +192,7 @@ def run(
     job_ids: Annotated[list[str], typer.Argument(help="ATS job_ids to evaluate. The company is derived from the DB join.")],
     run_name: Annotated[Optional[str], typer.Option(help="Name for this run (becomes output subdir). Default: {prompt_stem}-{model}")] = None,
     prompt: Annotated[Optional[Path], typer.Option(help="Path to prompt text file")] = None,
-    model: Annotated[Optional[str], typer.Option(help="Azure OpenAI model deployment name")] = None,
+    model: Annotated[Optional[list[str]], typer.Option("--model", "-m", help="Azure OpenAI model deployment name. Repeatable: --model gpt-5-mini --model DeepSeek-V3.2 runs both. Omit for interactive picker.")] = None,
     output: Annotated[Path, typer.Option(help="Base output directory for runs")] = Path("eval/data/runs"),
     workers: Annotated[int, typer.Option(help="Concurrent API workers")] = DEFAULT_WORKERS,
     force: Annotated[bool, typer.Option(help="Re-run all samples, ignoring existing outputs")] = False,
@@ -194,10 +213,10 @@ def run(
         prompts = pick_prompts(PROMPTS_DIR, output)
 
     # Resolve models once for all prompts
-    if model is None:
+    if not model:
         all_models = pick_models(prompts[0].stem, output)
     else:
-        all_models = [model]
+        all_models = model
 
     # Build one flat queue across all prompts × models × samples
     work_items: list[dict] = []
@@ -272,7 +291,7 @@ def _process_sample(
         assert usage is not None  # always present on successful completions
 
         out_file = output_dir / sample.filename
-        out_file.write_text(result_text, encoding="utf-8")
+        out_file.write_text(_format_output_file(sample, result_text), encoding="utf-8")
 
         reduction = ((input_chars - len(result_text)) / input_chars * 100) if input_chars else 0
 

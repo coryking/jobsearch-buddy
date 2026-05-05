@@ -28,6 +28,8 @@ class ModelConfig:
         return (input_tokens * self.input_cost_per_m + output_tokens * self.output_cost_per_m) / 1_000_000
 
 
+# Pricing source: ~/.claude/memory/azure_openai_playground_pricing.md
+# (cory-ai-playground-west3, GlobalStandard tier, fetched 2026-05-05)
 KNOWN_MODELS: dict[str, ModelConfig] = {
     "gpt-4.1-nano": ModelConfig(
         api_params={"temperature": 1.0},
@@ -35,7 +37,7 @@ KNOWN_MODELS: dict[str, ModelConfig] = {
     ),
     "gpt-4.1-mini": ModelConfig(
         deployment="gpt-41-mini", api_params={"temperature": 1.0},
-        input_cost_per_m=0.40, output_cost_per_m=1.60, rpm=5_000,
+        input_cost_per_m=0.70, output_cost_per_m=2.80, rpm=5_000,
     ),
     "gpt-5-nano": ModelConfig(
         api_params={"reasoning_effort": "low"},
@@ -53,22 +55,47 @@ KNOWN_MODELS: dict[str, ModelConfig] = {
     ),
     "gpt-5-mini": ModelConfig(
         api_params={"reasoning_effort": "low"},
-        input_cost_per_m=0.30, output_cost_per_m=1.00, rpm=1_000,
+        input_cost_per_m=0.45, output_cost_per_m=3.60, rpm=1_000,
+    ),
+    "gpt-5.4-mini": ModelConfig(
+        api_params={"reasoning_effort": "low"},
+        input_cost_per_m=1.50, output_cost_per_m=9.00, rpm=5_000,
+    ),
+    "gpt-5.4-mini-high": ModelConfig(
+        deployment="gpt-5.4-mini",
+        api_params={"reasoning_effort": "high"},
+        input_cost_per_m=1.50, output_cost_per_m=9.00, rpm=5_000,
+    ),
+    "gpt-5.4-nano-medium": ModelConfig(
+        deployment="gpt-5.4-nano",
+        api_params={"reasoning_effort": "medium"},
+        input_cost_per_m=0.20, output_cost_per_m=1.25, rpm=5_000,
+    ),
+    "gpt-5.4-nano-high": ModelConfig(
+        deployment="gpt-5.4-nano",
+        api_params={"reasoning_effort": "high"},
+        input_cost_per_m=0.20, output_cost_per_m=1.25, rpm=5_000,
     ),
     "DeepSeek-V3.2": ModelConfig(
-        api_params={"temperature": 1.0},
-        input_cost_per_m=0.28, output_cost_per_m=0.42, rpm=1_000,
+        api_params={"temperature": 1.0, "response_format": {"type": "json_object"}},
+        input_cost_per_m=0.62, output_cost_per_m=1.85, rpm=1_000,
     ),
     "DeepSeek-R1-0528": ModelConfig(
         api_params={"temperature": 1.0},
-        input_cost_per_m=0.55, output_cost_per_m=2.19, rpm=1_000,
+        # No public meter — likely serverless/managed, set to 0 (cost reports as None)
+        rpm=1_000,
     ),
     "grok-3-mini": ModelConfig(
         api_params={"temperature": 1.0},
-        input_cost_per_m=0.30, output_cost_per_m=0.50, rpm=1_000,
+        input_cost_per_m=0.25, output_cost_per_m=1.27, rpm=1_000,
     ),
     "grok-4-fast-non-reasoning": ModelConfig(
         api_params={"temperature": 1.0},
         input_cost_per_m=0.20, output_cost_per_m=0.50, rpm=1_000,
+    ),
+    "grok-4-fast-reasoning": ModelConfig(
+        api_params={"temperature": 1.0, "response_format": {"type": "json_object"}},
+        # grok-4-fast meter is shared across reasoning + non-reasoning variants
+        input_cost_per_m=0.20, output_cost_per_m=0.50, rpm=150,
     ),
 }
