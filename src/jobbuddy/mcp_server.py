@@ -81,12 +81,19 @@ def get_job_post_details(
 ) -> str:
     """Fetch full details of one or more job postings — title, salary, location, description.
 
-    Use when the user shares job IDs from search results or says "tell me about these jobs",
-    "what about this one", "pull up details on these". Read-only — does not log.
-    Use log_job_application to record applications.
+    Use when the user explicitly asks for the full posting ("show me the JD",
+    "what does the description say", "pull up details on these"). For ranking
+    or filtering decisions, prefer `search_jobs` — its rows include `short_jd`
+    and `salary` inline, so re-fetching the JD per row is wasteful.
 
-    Accepts one or many companies, each with one or many job IDs. Returns cached data
-    from local DB when available, only live-fetches jobs not in the cache."""
+    Each result includes a `distilled: bool` field. `true` means `description`
+    is the distill-phase normalized JD (substance preserved, boilerplate
+    removed). `false` means it's the raw fetcher payload (the job hasn't been
+    distilled yet) — treat with appropriate skepticism.
+
+    Read-only; does not log. Use log_job_application to record applications.
+    Accepts one or many companies, each with one or many job IDs. Returns
+    cached data when available, only live-fetches jobs not in the cache."""
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     from jobbuddy.store import JobStore
@@ -308,103 +315,65 @@ def log_job_activity(
 
 @mcp.tool
 def search_jobs(
-    query: Annotated[str, Field(description="Search using PostgreSQL websearch_to_tsquery syntax. Matches by keyword with stemming (engineer matches engineering) over title, short_jd, description_normalized, location, and department. Quote phrases for exact matching: '\"software engineer\" startup'. Supports: \"quoted phrases\", OR for alternatives, -word to exclude. This is keyword search, not semantic search — use terms that actually appear in postings.")],
-    companies: Annotated[list[str], Field(default=[], description="Company names or slugs to search within (e.g. brex, stripe, plaid). Omit to search across ALL cached companies.")] = [],
-    exclude_companies: Annotated[list[str], Field(default=[], description="Company names or slugs to exclude from results (e.g. microsoft, walmart, boeing).")] = [],
-    location_filter: Annotated[str, Field(default="", description="Case-insensitive substring match on location. Comma-separated for OR (e.g. 'seattle,remote', 'new york,NYC').")] = "",
-    since: Annotated[str, Field(default="", description="Only return jobs posted within this period. Examples: '24h' (last 24 hours), '3d' (3 days), '1w' (1 week), '2w' (2 weeks).")] = "",
+    query: Annotated[str, Field(default="", description="What the user is looking for, in keywords that would actually appear in a job posting (e.g. 'rust backend', 'product manager fintech', '\"staff engineer\" platform'). Postgres FTS with stemming — not semantic search, so pass concrete terms, not vibes. Quote phrases for exact match; OR for alternatives; -word to exclude. Leave empty to browse by company / posted_since / location alone.")] = "",
+    companies: Annotated[list[str], Field(default=[], description="Restrict to specific companies by name or slug (e.g. ['anthropic', 'stripe']). Omit to search across every cached company.")] = [],
+    exclude_companies: Annotated[list[str], Field(default=[], description="Companies the user has ruled out (e.g. ['microsoft', 'meta']).")] = [],
+    location_filter: Annotated[str, Field(default="", description="Where the user wants to work. Substring match on the posting's location field. Comma-separated for OR (e.g. 'seattle,remote').")] = "",
+    posted_since: Annotated[str, Field(default="", description="How recent the user wants. Examples: '24h', '3d', '1w', '2w'. Use this instead of fetching everything and filtering client-side.")] = "",
+    limit: Annotated[int, Field(default=20, ge=1, le=100, description="Max rows to return (default 20, hard cap 100). Each row is fact-dense — short_jd + salary + posted are inline, so the calling LLM can rank and filter without re-fetching.")] = 20,
 ) -> str:
-    """Search cached job listings across one or all companies. Data comes from a local
-    cache populated by `jsb sync` — results are instant, no live API calls.
+    """Search the local cache of job postings. Results are fact-dense rows the
+    calling LLM is expected to rank and filter — `short_jd` (a distilled
+    capsule of the JD), `salary`, `posted`, and `location` come back inline,
+    so you should NOT call `get_job_post_details` per row to make a decision
+    unless the user asks for the full description.
 
-    Use when the user says "find jobs at", "any openings at", "show me roles at",
-    "what PM jobs does [company] have", "find me jobs like...", describes a role vaguely,
-    or any request to browse or search job listings.
+    Use when the user says "find jobs at", "any openings at", "show me roles
+    at", "PM jobs at", "what about ML roles", or describes a role/company
+    they want to look at. Prefer this over web search — the cache covers
+    100+ companies and is refreshed by `jsb sync`.
 
-    Search is PostgreSQL full-text search (websearch_to_tsquery) over title, short_jd,
-    description_normalized, location, and department. This is keyword matching with
-    stemming — not semantic search. If the user's intent is vague (e.g. "fintech roles"),
-    pass concrete keywords likely to appear in postings. Quoted phrases are matched
-    exactly; unquoted words match individually with stemming.
+    Ranking: when `query` is set, results are ordered by Postgres FTS rank
+    (title weighted highest, then short_jd / normalized JD, then location,
+    then department) with `published_at DESC` as tie-breaker. When `query`
+    is empty, results are ordered by `published_at DESC`. No per-company
+    diversity cap — the calling LLM does semantic reranking over short_jd.
 
-    Results are ordered by published_at DESC and diversified across employers via
-    round-robin so no single company dominates the result set.
+    Cache freshness is included via `last_sync`. Rows already in the user's
+    activity log are tagged with the action and date. If the cache is empty,
+    tells the user to run `jsb sync`."""
+    from jobbuddy.core import search_cached_jobs
 
-    Company is optional — omit it to search across all cached companies.
-    Location uses substring matching.
-
-    Results include last_sync timestamp showing cache freshness, and "already applied"
-    markers cross-referenced with the activity log. If cache is empty, tells user
-    to run `jsb sync`.
-
-    Returns the company registry if the company name isn't found."""
-    from jobbuddy.store import JobStore
-
-    def _resolve_company_list(names: list[str]) -> list[str] | str:
-        """Resolve company names to slugs. Returns error string on unknown name."""
-        slugs = []
-        for name in names:
-            resolved = lookup_by_name(name)
-            if not resolved:
-                all_companies = list_companies()
-                return f"Error: Unknown company '{name}'. Registered companies: {', '.join(c.name for c in all_companies.values())}"
-            slugs.append(resolved.slug)
-        return slugs
-
-    company_slugs = None
-    if companies:
-        result = _resolve_company_list(companies)
-        if isinstance(result, str):
-            return result
-        company_slugs = result
-
-    exclude_slugs = None
-    if exclude_companies:
-        result = _resolve_company_list(exclude_companies)
-        if isinstance(result, str):
-            return result
-        exclude_slugs = result
-
-    max_results = 100
-
-    posted_after = None
-    if since:
-        from jobbuddy.core import parse_duration_to_date
-
-        try:
-            posted_after = parse_duration_to_date(since)
-        except ValueError:
-            return f"Error: Invalid 'since' value '{since}'. Use e.g. '24h', '3d', '1w', '2w'."
-
-    store = JobStore()
     try:
-        rows = store.query_jobs(
-            companies=company_slugs,
-            exclude_companies=exclude_slugs,
-            title=query or None,
-            location=location_filter or None,
-            posted_after=posted_after,
-            limit=max_results,
+        rows = search_cached_jobs(
+            query=query,
+            companies=companies or None,
+            exclude_companies=exclude_companies or None,
+            location=location_filter,
+            posted_since=posted_since,
+            limit=limit,
         )
+    except ValueError as e:
+        return f"Error: {e}"
 
-        if not rows:
-            filters = []
-            if location_filter:
-                filters.append(f"location='{location_filter}'")
-            if since:
-                filters.append(f"since='{since}'")
-            if query:
-                filters.append(f"query='{query}'")
-            filter_desc = f" matching {', '.join(filters)}" if filters else ""
-            scope = ", ".join(company_slugs) if company_slugs else "any company"
-            return f"No cached jobs found for {scope}{filter_desc}. Try running `jsb sync` to refresh."
+    if not rows:
+        filters = []
+        if query:
+            filters.append(f"query='{query}'")
+        if location_filter:
+            filters.append(f"location='{location_filter}'")
+        if posted_since:
+            filters.append(f"posted_since='{posted_since}'")
+        filter_desc = f" matching {', '.join(filters)}" if filters else ""
+        scope = ", ".join(companies) if companies else "any company"
+        return f"No cached jobs found for {scope}{filter_desc}. Try running `jsb sync` to refresh."
 
-        log_entries = read_log()
-
-        single_slug = company_slugs[0] if company_slugs and len(company_slugs) == 1 else None
-        return JobSearchResults.from_query(rows, log_entries, company_slug=single_slug).to_mcp_result()
-    finally:
-        store.close()
+    log_entries = read_log()
+    single_slug = None
+    if companies and len(companies) == 1:
+        resolved = lookup_by_name(companies[0])
+        single_slug = resolved.slug if resolved else companies[0]
+    return JobSearchResults.from_query(rows, log_entries, company_slug=single_slug).to_mcp_result()
 
 
 @mcp.tool

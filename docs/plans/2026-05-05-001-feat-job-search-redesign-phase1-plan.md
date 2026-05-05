@@ -14,7 +14,7 @@ origin: docs/brainstorms/2026-05-05-job-search-redesign-requirements.md
 |------|--------|-------|
 | 1 — Schema migration | **Done** (commit `030c6ca`) | Folded with Unit 7. Migration 011 applied to test DB. Index named `idx_jobs_needs_distill`. |
 | 2 — `sync/distill.py` | **Done** | `DistillPhase` wired into orchestrator. Reads `companies.long_bio` cache at phase start, calls strict-JSON-schema chat completions, writes `short_jd`/`description_normalized`/`salary` via `update_job_distill`. |
-| 3 — MCP surface rebuild | **Pending** | Depends on Unit 2. |
+| 3 — MCP surface rebuild | **Done** | `JobStore.search_jobs_fts` (FTS+ts_rank, no diversity cap), `core.search_cached_jobs` shared helper, `JobSearchResults` includes `short_jd` column, MCP `search_jobs` renamed `since`→`posted_since` and gained `limit` (default 20, cap 100), `get_job_post_details` exposes `distilled: bool`, CLI `jsb search` switched to `--query`/`--posted-since`. Tests: `tests/test_search.py` (15 cases). |
 | 4 — MCP tool descriptions | **Pending** | Depends on Unit 3. |
 | 5 — Eval harness rewrite | **Pending** | Depends on Unit 2. |
 | 6 — Prompt tuning loop | **Pending** | Depends on Unit 5. Open-ended; probably its own session. |
@@ -397,7 +397,7 @@ input shape before wiring the live API.
 
 ---
 
-- [ ] **Unit 3: MCP tool surface — extend `search_jobs`, swap
+- [x] **Unit 3: MCP tool surface — extend `search_jobs`, swap
   `get_job_post_details`**
 
 **Goal:** MCP consumers see the new behavior. `search_jobs` returns

@@ -102,7 +102,8 @@ class JobSearchResults(BaseModel):
                 log_by_company.setdefault(co, []).append(entry)
 
         has_metadata = any(_filter_metadata(row.get("ats_metadata")) for row in rows)
-        headers = ["company", "title", "location", "posted", "job_id", "url", "salary", "team", "applied"]
+        headers = ["company", "title", "location", "posted", "job_id", "url",
+                   "salary", "team", "short_jd", "applied"]
         if has_metadata:
             headers.append("metadata")
         job_list: list[JobRow] = [headers]
@@ -130,6 +131,7 @@ class JobSearchResults(BaseModel):
                 row["url"] or "",
                 row["salary"] or "",
                 row["team"] or row["department"] or "",
+                row.get("short_jd") or "",
                 applied,
             ]
             if has_metadata:
@@ -229,6 +231,10 @@ class CompactJob(BaseModel):
     salary: str | None = None
     description: str | None = None
     metadata: dict | None = None
+    # True when `description` is the distill-phase output. False when it's
+    # the raw fetcher payload. Lets the calling LLM decide whether to trust
+    # the description as fact-dense or treat it as raw boilerplate.
+    distilled: bool = False
 
     def model_dump(self, **kwargs) -> dict:
         kwargs.setdefault("exclude_none", True)
@@ -237,7 +243,10 @@ class CompactJob(BaseModel):
     @classmethod
     def from_result(cls, result: FetchResult) -> "CompactJob":
         meta = _filter_metadata(result.job.ats_metadata)
-        return cls(company=result.company.name, metadata=meta, **result.job.model_dump())
+        return cls(
+            company=result.company.name, metadata=meta, distilled=False,
+            **result.job.model_dump(),
+        )
 
     @classmethod
     def from_db_row(cls, row: dict, company_name: str) -> "CompactJob":
@@ -247,7 +256,8 @@ class CompactJob(BaseModel):
         to the raw description for jobs that haven't been distilled yet.
         """
         meta = _filter_metadata(row.get("ats_metadata"))
-        desc = row.get("description_normalized") or row.get("description")
+        normalized = row.get("description_normalized")
+        desc = normalized or row.get("description")
         return cls(
             title=row["title"],
             company=company_name,
@@ -261,6 +271,7 @@ class CompactJob(BaseModel):
             salary=row.get("salary"),
             description=desc,
             metadata=meta,
+            distilled=normalized is not None,
         )
 
 
