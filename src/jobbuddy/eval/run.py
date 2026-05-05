@@ -1,12 +1,18 @@
-"""Run a prompt+model combination against all samples.
+"""Run a prompt+model combination against an explicit list of jobs.
 
 Self-contained LLM client -- reads OpenAI credentials from settings,
-calls the API, measures timing, writes stripped output + run_stats.csv.
+calls the API, measures timing, writes prompt output + run_stats.csv.
+
+The caller passes a fixed list of `job_id`s (the ATS-side job identifiers).
+Each id is looked up in the production DB; the company is derived from the
+join. Companies must already have a `long_bio` -- the distill prompt
+needs that as `<company_bio>` context.
 """
 
 from __future__ import annotations
 
 import csv
+import re
 import statistics
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -27,6 +33,7 @@ import humanize
 
 from jobbuddy.eval.models import KNOWN_MODELS, ModelConfig
 from jobbuddy.eval.utils import PROMPTS_DIR, pick_models, pick_prompts
+from jobbuddy.store import JobStore
 
 
 _CSV_COLUMNS = [
@@ -43,6 +50,105 @@ def _append_run_stats(csv_path: Path, row: dict) -> None:
         if write_header:
             writer.writeheader()
         writer.writerow(row)
+
+
+_SLUG_RE = re.compile(r"[^a-z0-9]+")
+
+
+def _filename_for(slug: str, job_id: str) -> str:
+    """Stable per-job output filename. Re-runs overwrite the same file."""
+    safe = _SLUG_RE.sub("-", job_id.lower()).strip("-")[:60] or "job"
+    return f"{slug}-{safe}.txt"
+
+
+@dataclass
+class _DistillSample:
+    """One job + its company bio, ready to feed into the distill prompt."""
+    company_slug: str
+    company_name: str
+    long_bio: str
+    job_id: str
+    title: str
+    location: str | None
+    salary: str | None
+    description: str
+
+    @property
+    def filename(self) -> str:
+        return _filename_for(self.company_slug, self.job_id)
+
+    def user_message(self) -> str:
+        ats_salary = "true" if self.salary else "false"
+        return (
+            f"<title>{self.title}</title>\n"
+            f"<company>{self.company_name}</company>\n"
+            f"<location>{self.location or ''}</location>\n"
+            f"<ats_provided_salary>{ats_salary}</ats_provided_salary>\n"
+            f"<company_bio>\n{self.long_bio}\n</company_bio>\n"
+            f"<job_description>\n{self.description}\n</job_description>"
+        )
+
+
+def _load_samples(job_ids: list[str]) -> list[_DistillSample]:
+    """Look up the given ATS job_ids in the DB. Each row's company must
+    already have a long_bio. Raises typer.Exit on any miss so the eval
+    fails loudly rather than silently producing fewer samples than asked."""
+    store = JobStore()
+    try:
+        rows = store.conn.execute(
+            """SELECT j.job_id, j.title, j.location, j.salary, j.description,
+                      j.listing_status,
+                      c.slug AS company_slug, c.name AS company_name, c.long_bio
+               FROM jobs j
+               JOIN companies c ON c.slug = j.company_slug
+               WHERE j.job_id = ANY(%s)""",
+            [list(job_ids)],
+        ).fetchall()
+    finally:
+        store.close()
+
+    by_id: dict[str, list[dict]] = {}
+    for r in rows:
+        by_id.setdefault(r["job_id"], []).append(dict(r))
+
+    samples: list[_DistillSample] = []
+    problems: list[str] = []
+    for jid in job_ids:
+        matches = by_id.get(jid, [])
+        if not matches:
+            problems.append(f"  {jid}: not in DB")
+            continue
+        if len(matches) > 1:
+            slugs = ", ".join(m["company_slug"] for m in matches)
+            problems.append(f"  {jid}: ambiguous (matches {slugs})")
+            continue
+        job = matches[0]
+        if job["description"] is None:
+            problems.append(f"  {jid} ({job['company_slug']}): no description")
+            continue
+        if job["long_bio"] is None:
+            problems.append(
+                f"  {jid} ({job['company_slug']}): company has no long_bio "
+                f"(run `jsb research-companies --company {job['company_slug']}` first)"
+            )
+            continue
+        samples.append(_DistillSample(
+            company_slug=job["company_slug"],
+            company_name=job["company_name"],
+            long_bio=job["long_bio"],
+            job_id=job["job_id"],
+            title=job["title"],
+            location=job["location"],
+            salary=job["salary"],
+            description=job["description"],
+        ))
+
+    if problems:
+        print("Cannot run eval -- problems with the requested job_ids:")
+        for p in problems:
+            print(p)
+        raise typer.Exit(1)
+    return samples
 
 
 @dataclass
@@ -64,25 +170,18 @@ class _SampleResult:
 
 
 def run(
+    job_ids: Annotated[list[str], typer.Argument(help="ATS job_ids to evaluate. The company is derived from the DB join.")],
     run_name: Annotated[Optional[str], typer.Option(help="Name for this run (becomes output subdir). Default: {prompt_stem}-{model}")] = None,
     prompt: Annotated[Optional[Path], typer.Option(help="Path to prompt text file")] = None,
     model: Annotated[Optional[str], typer.Option(help="Azure OpenAI model deployment name")] = None,
-    samples: Annotated[Path, typer.Option(help="Samples directory")] = Path("eval/data/samples"),
     output: Annotated[Path, typer.Option(help="Base output directory for runs")] = Path("eval/data/runs"),
     workers: Annotated[int, typer.Option(help="Concurrent API workers")] = DEFAULT_WORKERS,
     force: Annotated[bool, typer.Option(help="Re-run all samples, ignoring existing outputs")] = False,
 ) -> None:
-    """Run strip eval: prompt+model against samples."""
-    if not samples.exists():
-        print(f"Samples directory not found: {samples}")
-        raise typer.Exit(1)
-
-    sample_files = sorted(
-        f for f in samples.glob("*.txt")
-        if f.name != "sample_manifest.json"
-    )
-    if not sample_files:
-        print(f"No .txt samples found in {samples}")
+    """Run distill eval: prompt+model against an explicit list of jobs from the DB."""
+    samples = _load_samples(job_ids)
+    if not samples:
+        print("No samples loaded.")
         raise typer.Exit(1)
 
     # Resolve prompt(s): explicit --prompt → single, else checkbox picker
@@ -112,8 +211,8 @@ def run(
             name = run_name if run_name else f"{prompt_file.stem}-{m}"
             output_dir = output / name
             output_dir.mkdir(parents=True, exist_ok=True)
-            for i, sample_file in enumerate(sample_files, 1):
-                if not force and (output_dir / sample_file.name).exists():
+            for i, sample in enumerate(samples, 1):
+                if not force and (output_dir / sample.filename).exists():
                     skipped += 1
                     continue
                 work_items.append({
@@ -121,7 +220,7 @@ def run(
                     "config": config,
                     "run_name": name,
                     "output_dir": output_dir,
-                    "sample_file": sample_file,
+                    "sample": sample,
                     "prompt_text": prompt_text,
                     "index": i,
                 })
@@ -133,7 +232,7 @@ def run(
         print("All samples already completed!")
         raise typer.Exit(0)
 
-    _run_all(work_items, sample_files, all_models, output, workers)
+    _run_all(work_items, samples, all_models, output, workers)
 
 
 def _process_sample(
@@ -141,17 +240,19 @@ def _process_sample(
     model: str,
     config: ModelConfig,
     prompt_text: str,
-    sample_file: Path,
+    sample: _DistillSample,
     output_dir: Path,
     run_name: str,
     index: int,
     running_items: set[str],
 ) -> _SampleResult:
-    """Process a single sample file. Runs in a worker thread."""
-    key = f"{model}:{sample_file.name}"
+    """Process a single sample. Runs in a worker thread."""
+    key = f"{model}:{sample.filename}"
     running_items.add(key)
-    description = sample_file.read_text(encoding="utf-8")
-    input_chars = len(description)
+    user_message = sample.user_message()
+    # input_chars tracks the JD body, the strip-eval convention -- keeps
+    # reduction% comparable across prompts even as <company_bio> grows.
+    input_chars = len(sample.description)
 
     start = time.monotonic()
     try:
@@ -159,7 +260,7 @@ def _process_sample(
             model=config.resolve_deployment(model),
             messages=[
                 {"role": "system", "content": prompt_text},
-                {"role": "user", "content": f"<job_description>\n{description}\n</job_description>"},
+                {"role": "user", "content": user_message},
             ],
             **config.api_params,
         )
@@ -170,7 +271,7 @@ def _process_sample(
         usage = response.usage
         assert usage is not None  # always present on successful completions
 
-        out_file = output_dir / sample_file.name
+        out_file = output_dir / sample.filename
         out_file.write_text(result_text, encoding="utf-8")
 
         reduction = ((input_chars - len(result_text)) / input_chars * 100) if input_chars else 0
@@ -183,7 +284,7 @@ def _process_sample(
             model=model,
             run_name=run_name,
             index=index,
-            filename=sample_file.name,
+            filename=sample.filename,
             input_chars=input_chars,
             output_chars=len(result_text),
             prompt_tokens=usage.prompt_tokens,
@@ -201,7 +302,7 @@ def _process_sample(
             model=model,
             run_name=run_name,
             index=index,
-            filename=sample_file.name,
+            filename=sample.filename,
             input_chars=input_chars,
             output_chars=None,
             prompt_tokens=None,
@@ -216,7 +317,7 @@ def _process_sample(
 
 def _run_all(
     work_items: list[dict],
-    sample_files: list[Path],
+    samples: list[_DistillSample],
     models: list[str],
     output_base: Path,
     workers: int,
@@ -233,7 +334,7 @@ def _run_all(
         if deployment != m:
             params_str = f"deployment={deployment}, {params_str}"
         console.print(f"  {m} ({params_str})")
-    console.print(f"{len(work_items)} total items ({len(sample_files)} samples x {len(run_name_set)} runs), workers={workers}")
+    console.print(f"{len(work_items)} total items ({len(samples)} samples x {len(run_name_set)} runs), workers={workers}")
 
     from jobbuddy.openai_client import create_openai_client
     client = create_openai_client(timeout=60.0)
@@ -326,10 +427,10 @@ def _run_all(
                 future = executor.submit(
                     _process_sample,
                     client, item["model"], item["config"], item["prompt_text"],
-                    item["sample_file"], item["output_dir"], item["run_name"],
+                    item["sample"], item["output_dir"], item["run_name"],
                     item["index"], running_items,
                 )
-                key = f"{item['model']}:{item['sample_file'].name}"
+                key = f"{item['model']}:{item['sample'].filename}"
                 futures[future] = key
 
             for future in as_completed(futures):
