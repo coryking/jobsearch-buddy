@@ -136,6 +136,7 @@ class DistillPhase(WorkerPhase["DistillWorkItem"]):
 
         response = self._client.chat.completions.create(
             model=settings.distill_model,
+            reasoning_effort=settings.distill_reasoning_effort,
             messages=[
                 {"role": "system", "content": self._system_prompt},
                 {"role": "user", "content": user_msg},

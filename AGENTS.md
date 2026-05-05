@@ -105,8 +105,9 @@ Override defaults with env vars (prefix `JOBBUDDY_`) or a `.env` file:
 | `openai_api_key`           | `JOBBUDDY_OPENAI_API_KEY`            | `None` *(required for the distill phase)*  |
 | `openai_base_url`          | `JOBBUDDY_OPENAI_BASE_URL`           | `None` *(omit for api.openai.com)*         |
 | `openai_azure_api_version` | `JOBBUDDY_OPENAI_AZURE_API_VERSION`  | `None` *(if set, uses AzureOpenAI client)* |
-| `distill_model`            | `JOBBUDDY_DISTILL_MODEL`             | `gpt-5-nano`                               |
-| `distill_prompt_version`   | `JOBBUDDY_DISTILL_PROMPT_VERSION`    | `distill-v1`                               |
+| `distill_model`            | `JOBBUDDY_DISTILL_MODEL`             | `gpt-5.4-nano`                             |
+| `distill_reasoning_effort` | `JOBBUDDY_DISTILL_REASONING_EFFORT`  | `high`                                     |
+| `distill_prompt_version`   | `JOBBUDDY_DISTILL_PROMPT_VERSION`    | `distill-v3.1`                             |
 | `research_model`           | `JOBBUDDY_RESEARCH_MODEL`            | `gpt-5.4`                                  |
 | `research_endpoint`        | `JOBBUDDY_RESEARCH_ENDPOINT`         | `None` *(Azure OpenAI resource root URL)*  |
 | `research_max_workers`     | `JOBBUDDY_RESEARCH_MAX_WORKERS`      | `4`                                        |
