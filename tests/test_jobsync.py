@@ -246,23 +246,16 @@ class TestJobSyncListJobs:
         assert jobs == []
 
     def test_x_origin_header_set(self):
-        """Requests include the x-origin header."""
-        fetcher = make_jobsync_fetcher()
-        single_page = {
-            "featured_jobs": [],
-            "jobs": [],
-            "pagination": {
-                "has_more_pages": False,
-                "page": 1,
-                "page_size": 10,
-                "total": 0,
-                "total_pages": 0,
-            },
-        }
-        fetcher.client.get.return_value = mock_get_response(single_page)
-        fetcher.list_jobs()
-
+        """Construction wires the x-origin / Origin / Referer headers from
+        the configured origin_host. Inspects the real client created by
+        ``__init__`` rather than the MagicMock the helper substitutes for
+        request mocking."""
+        fetcher = JobSyncFetcher(
+            "alaskaair", "Alaska Airlines", origin_host="careers.alaskaair.com",
+        )
         assert fetcher.client.headers["x-origin"] == "careers.alaskaair.com"
+        assert fetcher.client.headers["Origin"] == "https://careers.alaskaair.com"
+        assert fetcher.client.headers["Referer"] == "https://careers.alaskaair.com/"
 
     def test_team_from_company_exact(self):
         """company_exact maps to the team field."""
