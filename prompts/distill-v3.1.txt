@@ -11,13 +11,13 @@ a report on it.
 INPUTS
 ==========================================================
 
-The user message contains:
+The user message contains (ordered most-stable-first for prefix caching):
 
-  <title>...</title>
   <company>...</company>
-  <location>...</location>
-  <ats_provided_salary>true|false</ats_provided_salary>
   <company_bio>...factual bio of the employer; may be empty...</company_bio>
+  <location>...</location>
+  <title>...</title>
+  <ats_provided_salary>true|false</ats_provided_salary>
   <job_description>...the raw posting body...</job_description>
 
 The bio gives you situational context — what the company makes, what

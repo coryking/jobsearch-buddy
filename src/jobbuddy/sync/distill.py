@@ -61,14 +61,20 @@ def load_distill_prompt(version: str) -> str:
 
 
 def build_user_message(item: DistillWorkItem, *, company_bio: str) -> str:
-    """Construct the XML-tagged user message defined in prompts/distill-v1.txt."""
+    """Construct the XML-tagged user message for the distill prompt.
+
+    Field order is deliberate for prefix-cache stacking, most-stable first:
+    company and bio are identical across all jobs at one company; location
+    is identical across many jobs at one site (SF office, factory, store).
+    The [system_prompt + company + bio + location] prefix becomes cacheable
+    when sync processes jobs grouped by company+location."""
     ats_provided = "true" if (item["salary"] or "").strip() else "false"
     return (
-        f"<title>{item['title']}</title>\n"
         f"<company>{item['company_name']}</company>\n"
-        f"<location>{item['location'] or ''}</location>\n"
-        f"<ats_provided_salary>{ats_provided}</ats_provided_salary>\n"
         f"<company_bio>{company_bio}</company_bio>\n"
+        f"<location>{item['location'] or ''}</location>\n"
+        f"<title>{item['title']}</title>\n"
+        f"<ats_provided_salary>{ats_provided}</ats_provided_salary>\n"
         f"<job_description>\n{item['description']}\n</job_description>"
     )
 
@@ -145,7 +151,11 @@ class DistillPhase(WorkerPhase["DistillWorkItem"]):
         )
 
         if response.usage:
-            self.display.add_to_info_counter(response.usage.total_tokens)
+            cached = 0
+            details = getattr(response.usage, "prompt_tokens_details", None)
+            if details is not None:
+                cached = getattr(details, "cached_tokens", 0) or 0
+            self.display.add_to_info_counter(response.usage.total_tokens, cached=cached)
             self.display.token_rate.record(response.usage.total_tokens)
 
         content = response.choices[0].message.content or ""

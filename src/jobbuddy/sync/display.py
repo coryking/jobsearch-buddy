@@ -106,6 +106,7 @@ class PhaseState:
     active_workers: int = 0
     max_workers: int = 0
     _info_counter: int = field(default=0, repr=False)
+    _cached_counter: int = field(default=0, repr=False)
     _info_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     _active_details: dict[str, str] = field(default_factory=dict, repr=False)
     _active_details_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
@@ -137,11 +138,21 @@ class PhaseState:
         with self._active_details_lock:
             return [self._active_details[k] for k in sorted(self._active_details)]
 
-    def add_to_info_counter(self, n: int, label: str = " tok") -> None:
-        """Thread-safe accumulator. Updates the info display string."""
+    def add_to_info_counter(self, n: int, label: str = " tok", cached: int = 0) -> None:
+        """Thread-safe accumulator. Updates the info display string.
+
+        `cached` counts input tokens served from the prefix cache (Azure /
+        OpenAI usage.prompt_tokens_details.cached_tokens). When nonzero, the
+        info string includes the cache hit rate so operators can see whether
+        prefix-cache optimization is paying off."""
         with self._info_lock:
             self._info_counter += n
-            self.info = f"{humanize.metric(self._info_counter)}{label}"
+            self._cached_counter += cached
+            if self._cached_counter > 0 and self._info_counter > 0:
+                pct = self._cached_counter / self._info_counter * 100
+                self.info = f"{humanize.metric(self._info_counter)}{label} ({pct:.0f}% cached)"
+            else:
+                self.info = f"{humanize.metric(self._info_counter)}{label}"
 
     def record_error(self) -> None:
         self.errors += 1

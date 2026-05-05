@@ -38,7 +38,8 @@ from jobbuddy.store import JobStore
 
 _CSV_COLUMNS = [
     "filename", "input_chars", "output_chars", "prompt_tokens",
-    "completion_tokens", "reasoning_tokens", "total_tokens", "elapsed_seconds",
+    "cached_tokens", "completion_tokens", "reasoning_tokens", "total_tokens",
+    "elapsed_seconds",
 ]
 
 
@@ -97,13 +98,15 @@ class _DistillSample:
         return _filename_for(self.company_slug, self.job_id)
 
     def user_message(self) -> str:
+        # Field order is deliberate for prefix-cache stacking, most-stable
+        # first. Mirrors sync/distill.py's build_user_message in production.
         ats_salary = "true" if self.salary else "false"
         return (
-            f"<title>{self.title}</title>\n"
             f"<company>{self.company_name}</company>\n"
-            f"<location>{self.location or ''}</location>\n"
-            f"<ats_provided_salary>{ats_salary}</ats_provided_salary>\n"
             f"<company_bio>\n{self.long_bio}\n</company_bio>\n"
+            f"<location>{self.location or ''}</location>\n"
+            f"<title>{self.title}</title>\n"
+            f"<ats_provided_salary>{ats_salary}</ats_provided_salary>\n"
             f"<job_description>\n{self.description}\n</job_description>"
         )
 
@@ -180,6 +183,7 @@ class _SampleResult:
     input_chars: int
     output_chars: int | None
     prompt_tokens: int | None
+    cached_tokens: int
     completion_tokens: int | None
     reasoning_tokens: int
     total_tokens: int | None
@@ -299,6 +303,13 @@ def _process_sample(
         if usage.completion_tokens_details:
             reasoning_tokens = getattr(usage.completion_tokens_details, "reasoning_tokens", 0) or 0
 
+        # Cached tokens: Azure / OpenAI surface this on prompt_tokens_details.
+        # 0 means no cache hit (cold call); otherwise the count of input
+        # tokens served from the prefix cache at ~10% of normal price.
+        cached_tokens = 0
+        if getattr(usage, "prompt_tokens_details", None):
+            cached_tokens = getattr(usage.prompt_tokens_details, "cached_tokens", 0) or 0
+
         return _SampleResult(
             model=model,
             run_name=run_name,
@@ -307,6 +318,7 @@ def _process_sample(
             input_chars=input_chars,
             output_chars=len(result_text),
             prompt_tokens=usage.prompt_tokens,
+            cached_tokens=cached_tokens,
             completion_tokens=usage.completion_tokens,
             reasoning_tokens=reasoning_tokens,
             total_tokens=usage.total_tokens,
@@ -325,6 +337,7 @@ def _process_sample(
             input_chars=input_chars,
             output_chars=None,
             prompt_tokens=None,
+            cached_tokens=0,
             completion_tokens=None,
             reasoning_tokens=0,
             total_tokens=None,
@@ -471,6 +484,7 @@ def _run_all(
                         "input_chars": result.input_chars,
                         "output_chars": result.output_chars,
                         "prompt_tokens": result.prompt_tokens,
+                        "cached_tokens": result.cached_tokens,
                         "completion_tokens": result.completion_tokens,
                         "reasoning_tokens": result.reasoning_tokens,
                         "total_tokens": result.total_tokens,
