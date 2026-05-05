@@ -11,6 +11,9 @@ build/
 wheels/
 .claude/worktrees/
 .claude/tmp/
+.claude/*.lock
+.compound-engineering/*.local.yaml
+!.compound-engineering/*.local.example.yaml
 .cursor/
 .pytest_cache/
 eval/data/
@@ -22,5 +25,4 @@ infrastructure/*.tfvars
 scratchpad/
 .context/
 
-.compound-engineering/*.local.yaml
 .context/
