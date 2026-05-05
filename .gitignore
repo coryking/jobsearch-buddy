@@ -20,3 +20,5 @@ infrastructure/terraform.tfstate
 infrastructure/terraform.tfstate.backup
 infrastructure/*.tfvars
 scratchpad/
+
+.compound-engineering/*.local.yaml
