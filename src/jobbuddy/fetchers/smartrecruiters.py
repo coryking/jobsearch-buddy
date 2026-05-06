@@ -45,15 +45,29 @@ def _build_location(loc: dict) -> str:
 
 def _extract_description(job_ad: dict) -> str | None:
     sections = job_ad.get("sections", {})
-    parts = []
-    for key in ("jobDescription", "qualifications", "additionalInformation"):
+
+    def _section_text(key: str) -> str:
         section = sections.get(key, {})
-        html = section.get("text", "")
-        if html:
-            text = strip_html(html) if "<" in html else html.strip()
-            if text:
-                parts.append(text)
-    return "\n\n".join(parts) if parts else None
+        html = section.get("text", "") if isinstance(section, dict) else ""
+        if not html:
+            return ""
+        return strip_html(html) if "<" in html else html.strip()
+
+    parts = [
+        text for text in
+        (_section_text(k) for k in ("jobDescription", "qualifications", "additionalInformation"))
+        if text
+    ]
+    if parts:
+        return "\n\n".join(parts)
+
+    # Fallback: some tenants (Canva) put the entire job ad — role
+    # responsibilities, qualifications, the whole thing — into
+    # companyDescription and leave the dedicated sections empty. Skipping
+    # companyDescription on principle would make those rows permanently
+    # NULL. Only use it when nothing else is populated.
+    company = _section_text("companyDescription")
+    return company or None
 
 
 class SmartRecruitersFetcher(ATSFetcher):
