@@ -100,19 +100,23 @@ def sync(
 
 
 def _configure_logging(*, verbose: bool) -> None:
-    """Default INFO with timestamps. -v drops jobbuddy loggers to DEBUG."""
+    """Root at WARNING, jobbuddy at INFO (DEBUG with -v).
+
+    Default behavior: only `jobbuddy.*` loggers emit INFO; everything
+    else (azure.*, httpx, openai, psycopg, ...) is silenced unless they
+    log at WARNING+. With -v, jobbuddy drops to DEBUG and third-party
+    libs are unmuzzled to INFO so HTTP/SDK chatter is visible during
+    investigation.
+    """
     logging.basicConfig(
-        level=logging.INFO,
+        level=logging.WARNING,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
-    # Quiet down noisy third-party libs unless the user really wants DEBUG.
-    if not verbose:
-        logging.getLogger("httpx").setLevel(logging.WARNING)
-        logging.getLogger("httpcore").setLevel(logging.WARNING)
-        logging.getLogger("openai").setLevel(logging.WARNING)
-        logging.getLogger("urllib3").setLevel(logging.WARNING)
-    else:
+    if verbose:
+        logging.getLogger().setLevel(logging.INFO)
         logging.getLogger("jobbuddy").setLevel(logging.DEBUG)
+    else:
+        logging.getLogger("jobbuddy").setLevel(logging.INFO)
 
 
 def _log_summary(state, results, *, ran_fetch: bool) -> None:
