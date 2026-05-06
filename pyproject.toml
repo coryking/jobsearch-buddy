@@ -40,6 +40,11 @@ packages = ["src/jobbuddy"]
 testpaths = ["tests"]
 pythonpath = ["tests"]
 
+[tool.pyright]
+include = ["src/jobbuddy"]
+pythonVersion = "3.12"
+typeCheckingMode = "standard"
+
 [dependency-groups]
 dev = [
     "basedpyright>=1.38.1",

@@ -1,7 +1,7 @@
 """Oracle HCM Cloud (Oracle Recruiting Cloud) fetcher."""
 
 from jobbuddy.fetchers.base import ATSFetcher, ProgressCallback, RetryCallback
-from jobbuddy.models import Job, strip_html
+from jobbuddy.models import Job, parse_published_at, strip_html
 
 PAGE_SIZE = 25
 MAX_RESULTS = 75  # cap per keyword query — relevancy drops fast past ~50 results
@@ -75,7 +75,7 @@ class OracleHCMFetcher(ATSFetcher):
             location=item.get("PrimaryLocation", ""),
             url=self._job_url(job_id),
             apply_url=self._job_url(job_id),
-            published_at=item.get("PostedDate"),
+            published_at=parse_published_at(item.get("PostedDate")),
             department=item.get("Category"),
         )
 
@@ -175,8 +175,6 @@ class OracleHCMFetcher(ATSFetcher):
         description = "\n\n".join(desc_parts) or None
 
         posted = detail.get("ExternalPostedStartDate") or detail.get("PostedDate")
-        if posted and "T" in str(posted):
-            posted = str(posted)[:10]
 
         job_url = self._job_url(job_id)
         return Job(
@@ -185,7 +183,7 @@ class OracleHCMFetcher(ATSFetcher):
             location=detail.get("PrimaryLocation", ""),
             url=job_url,
             apply_url=job_url,
-            published_at=posted,
+            published_at=parse_published_at(posted),
             department=detail.get("Category"),
             description=description,
         )

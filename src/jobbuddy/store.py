@@ -7,9 +7,10 @@ on (company_slug, job_id).
 import json
 import logging
 from datetime import date, datetime, timezone
+from typing import LiteralString
 
 import psycopg
-from psycopg.rows import dict_row
+from psycopg.rows import DictRow, dict_row
 from psycopg.types.json import Json
 
 from jobbuddy.models import Company, Job
@@ -58,14 +59,14 @@ class JobStore:
     # Connection + Schema
     # -------------------------------------------------------------------
 
-    def _connect(self, conninfo: str | None) -> psycopg.Connection:
+    def _connect(self, conninfo: str | None) -> psycopg.Connection[DictRow]:
         if conninfo is None:
             from jobbuddy.settings import pg_conninfo_with_token
             conninfo = pg_conninfo_with_token()
 
-        conn = psycopg.connect(conninfo, autocommit=True)
-        conn.row_factory = dict_row
-        return conn
+        return psycopg.Connection[DictRow].connect(
+            conninfo, autocommit=True, row_factory=dict_row,
+        )
 
     # -------------------------------------------------------------------
     # Companies
@@ -126,6 +127,7 @@ class JobStore:
                  AND (%s::text[] IS NULL OR slug = ANY(%s::text[]))""",
             (slugs, slugs),
         ).fetchone()
+        assert row is not None  # COUNT(*) always returns one row
         return row["cnt"]
 
     def get_companies_needing_bio(
@@ -585,9 +587,9 @@ class JobStore:
     # Distill phase
     # -------------------------------------------------------------------
 
-    def _distill_conditions(self, slugs: list[str] | None) -> tuple[str, list]:
+    def _distill_conditions(self, slugs: list[str] | None) -> tuple[LiteralString, list]:
         """Stable column-presence predicate matching idx_jobs_needs_distill."""
-        conditions = [
+        conditions: list[LiteralString] = [
             "description IS NOT NULL",
             "short_jd IS NULL",
             "listing_status = 'active'",
@@ -604,6 +606,7 @@ class JobStore:
         row = self.conn.execute(
             f"SELECT COUNT(*) AS cnt FROM jobs WHERE {where}", params
         ).fetchone()
+        assert row is not None  # COUNT(*) always returns one row
         return row["cnt"]
 
     def get_jobs_needing_distill(
@@ -706,9 +709,9 @@ class JobStore:
         location: str | None = None,
         posted_after: str | None = None,
         include_removed: bool = False,
-    ) -> tuple[list[str], list]:
+    ) -> tuple[list[LiteralString], list]:
         """Build WHERE conditions and params for job search filters."""
-        conditions: list[str] = []
+        conditions: list[LiteralString] = []
         params: list = []
 
         if not include_removed:
@@ -733,8 +736,8 @@ class JobStore:
         if location:
             terms = [t.strip() for t in location.split(",") if t.strip()]
             if terms:
-                or_clauses = ["j.location ILIKE %s"] * len(terms)
-                conditions.append(f"({' OR '.join(or_clauses)})")
+                or_clauses: list[LiteralString] = ["j.location ILIKE %s"] * len(terms)
+                conditions.append("(" + " OR ".join(or_clauses) + ")")
                 params.extend(f"%{t}%" for t in terms)
 
         return conditions, params
@@ -874,6 +877,7 @@ class JobStore:
                RETURNING *""",
             (row_date, company, role, job_id, action, person, location, status, url, notes),
         ).fetchone()
+        assert row is not None  # INSERT ... RETURNING * always yields the inserted row
         return self._activity_row_to_dict(row)
 
     def read_activity_log(self) -> list[dict]:
@@ -924,13 +928,14 @@ class JobStore:
     # CSV Migration
     # -------------------------------------------------------------------
 
-    def _migrate_csv_activity_log(self, conn: psycopg.Connection) -> None:
+    def _migrate_csv_activity_log(self, conn: psycopg.Connection[DictRow]) -> None:
         """One-time CSV activity log import. Called by `jsb migrate` only.
 
         Dead code path from normal JobStore usage — only invoked explicitly
         by the migrate CLI command.
         """
         row = conn.execute("SELECT COUNT(*) AS cnt FROM activity_log").fetchone()
+        assert row is not None  # COUNT(*) always returns one row
         if row["cnt"] > 0:
             return
 

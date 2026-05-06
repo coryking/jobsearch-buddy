@@ -1,11 +1,14 @@
 """Sync pipeline command with phase selection."""
 
 import logging
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 import typer
 
 from jobbuddy.cli import app, console
+
+if TYPE_CHECKING:
+    from jobbuddy.sync.display import SyncDisplayState
 
 log = logging.getLogger(__name__)
 

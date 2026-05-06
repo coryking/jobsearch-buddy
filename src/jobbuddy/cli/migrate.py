@@ -3,7 +3,7 @@
 import sys
 
 import psycopg
-from psycopg.rows import dict_row
+from psycopg.rows import DictRow, dict_row
 
 from jobbuddy.cli import app, console
 
@@ -15,8 +15,9 @@ def migrate():
     from jobbuddy.settings import pg_conninfo_with_token
     from jobbuddy.store import JobStore
 
-    conn = psycopg.connect(pg_conninfo_with_token(), autocommit=True)
-    conn.row_factory = dict_row
+    conn = psycopg.Connection[DictRow].connect(
+        pg_conninfo_with_token(), autocommit=True, row_factory=dict_row,
+    )
     try:
         # Show state before applying
         all_files = sorted(f.name for f in MIGRATIONS_DIR.glob("*.sql"))

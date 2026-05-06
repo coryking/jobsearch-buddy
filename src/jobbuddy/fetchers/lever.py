@@ -68,7 +68,7 @@ class LeverFetcher(ATSFetcher):
         created_ms = j.get("createdAt")
         published_at = None
         if created_ms:
-            published_at = datetime.fromtimestamp(created_ms / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
+            published_at = datetime.fromtimestamp(created_ms / 1000, tz=timezone.utc).date()
 
         return Job(
             id=j["id"],

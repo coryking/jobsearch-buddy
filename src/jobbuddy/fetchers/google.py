@@ -12,7 +12,7 @@ import json
 import logging
 import re
 import urllib.parse
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 import httpx
 
@@ -71,12 +71,11 @@ def build_description(entry: list) -> str | None:
     return "\n\n".join(parts) if parts else None
 
 
-def parse_timestamp(ts: list | None) -> str | None:
+def parse_timestamp(ts: list | None) -> date | None:
     if not ts or not ts[0]:
         return None
     try:
-        dt = datetime.fromtimestamp(ts[0], tz=timezone.utc)
-        return dt.strftime("%Y-%m-%d")
+        return datetime.fromtimestamp(ts[0], tz=timezone.utc).date()
     except (ValueError, OSError, TypeError):
         return None
 

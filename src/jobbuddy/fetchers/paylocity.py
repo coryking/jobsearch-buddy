@@ -4,7 +4,7 @@ import json
 import re
 
 from jobbuddy.fetchers.base import ATSFetcher, ProgressCallback, RetryCallback
-from jobbuddy.models import Job, strip_html
+from jobbuddy.models import Job, parse_published_at, strip_html
 
 
 def _base_url(ats_prefix: str = "") -> str:
@@ -67,7 +67,7 @@ class PaylocityFetcher(ATSFetcher):
             location=location,
             url=url,
             apply_url=url,
-            published_at=_parse_date(j.get("PublishedDate")),
+            published_at=parse_published_at(j.get("PublishedDate")),
             department=j.get("HiringDepartment"),
             description=description.strip() if description else None,
         )
@@ -142,11 +142,6 @@ class PaylocityFetcher(ATSFetcher):
         if description and "<" in description:
             description = strip_html(description)
 
-        # Date
-        date_posted = ld.get("datePosted", "")
-        if date_posted:
-            date_posted = date_posted[:10]  # YYYY-MM-DD
-
         # Org name for potential auto-registration
         org = ld.get("hiringOrganization", {})
         if org and isinstance(org, dict) and not self.name:
@@ -158,15 +153,9 @@ class PaylocityFetcher(ATSFetcher):
             location=location,
             url=url,
             apply_url=url,
-            published_at=date_posted or None,
+            published_at=parse_published_at(ld.get("datePosted")),
             salary=salary,
             description=description.strip() if description else None,
         )
 
 
-def _parse_date(date_str: str | None) -> str | None:
-    """Parse ISO date string to YYYY-MM-DD."""
-    if not date_str:
-        return None
-    # PublishedDate comes as ISO 8601 e.g. "2026-01-15T18:51:33"
-    return date_str[:10] if len(date_str) >= 10 else date_str

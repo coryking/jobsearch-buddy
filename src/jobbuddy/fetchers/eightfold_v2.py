@@ -77,7 +77,7 @@ class EightfoldV2Fetcher(ATSFetcher):
         posted_ts = pos.get("t_create")
         published_at = None
         if posted_ts:
-            published_at = datetime.fromtimestamp(posted_ts, tz=timezone.utc).strftime("%Y-%m-%d")
+            published_at = datetime.fromtimestamp(posted_ts, tz=timezone.utc).date()
 
         url = f"{self.base_url}/careers/job/{pos_id}"
         return Job(
@@ -154,7 +154,7 @@ class EightfoldV2Fetcher(ATSFetcher):
         posted_ts = data.get("t_create")
         published_at = None
         if posted_ts:
-            published_at = datetime.fromtimestamp(posted_ts, tz=timezone.utc).strftime("%Y-%m-%d")
+            published_at = datetime.fromtimestamp(posted_ts, tz=timezone.utc).date()
 
         url = f"{self.base_url}/careers/job/{job_id}"
         description = data.get("job_description", "")

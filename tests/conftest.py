@@ -61,6 +61,34 @@ def block_prod_db():
     settings_mod._settings = None
 
 
+@pytest.fixture(scope="session", autouse=True)
+def block_external_http():
+    """Categorically prevent tests from making real outbound HTTP.
+
+    Tests that exercise OpenAI/Azure/ATS calls must mock their clients
+    (MagicMock, monkeypatch, etc). If a test forgets, this guard raises
+    immediately instead of letting the request hit the real internet —
+    where a default httpx timeout (5s connect, 60s+ for slow APIs) can
+    silently turn a test suite into a 4-minute mystery.
+    """
+    import httpx
+
+    def _refuse(request: httpx.Request, *_, **__):
+        raise RuntimeError(
+            f"Test tried to make a real HTTP request: {request.method} {request.url}. "
+            f"Mock the client (MagicMock / monkeypatch) — see existing patterns in "
+            f"test_distill.py, test_research.py, test_find_companies.py."
+        )
+
+    sync_orig = httpx.HTTPTransport.handle_request
+    async_orig = httpx.AsyncHTTPTransport.handle_async_request
+    httpx.HTTPTransport.handle_request = _refuse  # type: ignore[method-assign]
+    httpx.AsyncHTTPTransport.handle_async_request = _refuse  # type: ignore[method-assign]
+    yield
+    httpx.HTTPTransport.handle_request = sync_orig  # type: ignore[method-assign]
+    httpx.AsyncHTTPTransport.handle_async_request = async_orig  # type: ignore[method-assign]
+
+
 # ---------------------------------------------------------------------------
 # Shared helpers (not fixtures — plain functions importable by test modules)
 # ---------------------------------------------------------------------------
@@ -136,19 +164,24 @@ def ensure_pg_schema():
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture(autouse=True)
-def clean_test_data():
-    """Clean child tables between tests. Companies persist from session setup."""
+@pytest.fixture(scope="session")
+def _admin_conn():
+    """One psycopg connection reused for cross-test cleanup. Per-test
+    open/close cost dominated total suite runtime — see clean_test_data."""
     conn = psycopg.connect(TEST_CONNINFO, autocommit=True)
-    conn.execute("DELETE FROM jobs")
-    conn.execute("DELETE FROM sync_status")
-    conn.execute("DELETE FROM activity_log")
-    conn.execute(
+    yield conn
+    conn.close()
+
+
+@pytest.fixture(autouse=True)
+def clean_test_data(_admin_conn):
+    """Clean child tables between tests. Companies persist from session setup."""
+    _admin_conn.execute("TRUNCATE jobs, sync_status, activity_log RESTART IDENTITY")
+    _admin_conn.execute(
         "UPDATE companies SET short_bio = NULL, long_bio = NULL,"
         " bio_researched_at = NULL, bio_model = NULL,"
         " bio_embedding = NULL, bio_embedding_updated_at = NULL"
     )
-    conn.close()
 
 
 @pytest.fixture

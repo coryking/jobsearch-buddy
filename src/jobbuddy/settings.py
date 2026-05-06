@@ -10,13 +10,15 @@ for Azure Entra auth happens at connection time via get_azure_token().
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional, TypeAlias
 
 from platformdirs import user_data_dir
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _APP_NAME = "jobsearch-buddy"
+
+ReasoningEffort: TypeAlias = Literal["minimal", "low", "medium", "high"]
 
 
 class Settings(BaseSettings):
@@ -41,7 +43,7 @@ class Settings(BaseSettings):
     openai_base_url: Optional[str] = None
     openai_azure_api_version: Optional[str] = None  # If set, uses AzureOpenAI client
     distill_model: str = "gpt-5.4-nano"
-    distill_reasoning_effort: str = "high"
+    distill_reasoning_effort: ReasoningEffort = "high"
     distill_prompt_version: str = "distill-v3.1"
 
     research_model: str = "gpt-5.4"

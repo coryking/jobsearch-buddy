@@ -14,6 +14,7 @@ and has already hit its complexity budget.
 
 import logging
 from pathlib import Path
+from typing import LiteralString, cast
 
 import psycopg
 import psycopg.rows
@@ -33,7 +34,7 @@ class MigrationError(Exception):
         super().__init__(str(cause))
 
 
-def apply_migrations(conn: psycopg.Connection) -> list[str]:
+def apply_migrations(conn: psycopg.Connection[psycopg.rows.DictRow]) -> list[str]:
     """Apply any pending migrations. Returns list of newly applied filenames.
 
     Requires autocommit=True on the connection so each migration file gets
@@ -63,7 +64,8 @@ def apply_migrations(conn: psycopg.Connection) -> list[str]:
         log.info("Applying migration: %s", f.name)
         try:
             with conn.transaction():
-                conn.execute(sql)
+                # Migration SQL is loaded from files under our control, never user input.
+                conn.execute(cast(LiteralString, sql))
                 conn.execute(
                     "INSERT INTO schema_migrations (filename) VALUES (%s)",
                     (f.name,),

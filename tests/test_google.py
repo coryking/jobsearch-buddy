@@ -1,6 +1,7 @@
 """Tests for the Google Careers fetcher."""
 
 import json
+from datetime import date
 
 import httpx
 import pytest
@@ -93,7 +94,7 @@ def test_build_location_empty():
 # ---------------------------------------------------------------------------
 
 def test_parse_timestamp_valid():
-    assert parse_timestamp([1777024853, 467000000]) == "2026-04-24"
+    assert parse_timestamp([1777024853, 467000000]) == date(2026, 4, 24)
 
 
 def test_parse_timestamp_none():

@@ -5,9 +5,9 @@ import io
 import json
 import re
 from collections import Counter
-from datetime import date
+from datetime import date, datetime, timezone
 from html.parser import HTMLParser
-from typing import Any
+from typing import Any, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -15,6 +15,36 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 # ats_metadata keys worth surfacing to LLM consumers (MCP output).
 # Other keys (e.g. Workday's ext_path) are internal plumbing.
 _MCP_METADATA_KEYS = {"displayJobId", "workLocationOption", "efcustomTextWorkSite", "efcustomTextRoletype", "efcustomTextEmploymentType"}
+
+
+PublishedAt: TypeAlias = date | None
+"""When a job was first posted. Date-only by design — see Deferred Smell #5
+(fetchers truncate timestamps to date)."""
+
+
+def parse_published_at(value: Any) -> PublishedAt:
+    """Coerce ATS-supplied date-ish values into PublishedAt.
+
+    Accepts: None, date, datetime, ISO-8601 string ("2026-03-04",
+    "2026-03-04T18:30:00Z"), or epoch seconds (int/float). Anything
+    unparseable returns None — fetchers should never blow up on a
+    malformed PostedDate.
+    """
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if isinstance(value, (int, float)):
+        try:
+            return datetime.fromtimestamp(value, tz=timezone.utc).date()
+        except (ValueError, OSError, OverflowError):
+            return None
+    try:
+        return date.fromisoformat(str(value)[:10])
+    except (ValueError, TypeError):
+        return None
 
 
 def _filter_metadata(raw: dict | str | None) -> dict[str, Any] | None:
@@ -38,7 +68,7 @@ class Job(BaseModel):
     location: str
     url: str
     apply_url: str
-    published_at: date | None = None
+    published_at: PublishedAt = None
     department: str | None = None
     team: str | None = None
     salary: str | None = None
@@ -225,7 +255,7 @@ class CompactJob(BaseModel):
     url: str
     apply_url: str | None = None
     id: str
-    published_at: date | None = None
+    published_at: PublishedAt = None
     department: str | None = None
     team: str | None = None
     salary: str | None = None
