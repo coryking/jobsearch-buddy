@@ -113,10 +113,11 @@ class DistillPhase(WorkerPhase["DistillWorkItem"]):
         )
         # Cache {slug → long_bio} once. Bios change slowly; per-sync staleness
         # is fine and avoids re-fetching per job.
-        reader = self._get_reader()
-        rows = reader.conn.execute(
-            "SELECT slug, COALESCE(long_bio, '') AS long_bio FROM companies"
-        ).fetchall()
+        rows = self._run_reader_query(
+            lambda r: r.conn.execute(
+                "SELECT slug, COALESCE(long_bio, '') AS long_bio FROM companies"
+            ).fetchall()
+        )
         self._company_bios = {r["slug"]: r["long_bio"] for r in rows}
 
     def item_key(self, item: DistillWorkItem) -> int:
@@ -126,11 +127,15 @@ class DistillPhase(WorkerPhase["DistillWorkItem"]):
         return f"{item['company_slug']}/{item['job_id']} ({item['title']})"
 
     def count_remaining(self) -> int:
-        return self._get_reader().count_jobs_needing_distill(slugs=self._slugs)
+        return self._run_reader_query(
+            lambda r: r.count_jobs_needing_distill(slugs=self._slugs)
+        )
 
     def poll_work(self, batch_size: int) -> list[DistillWorkItem]:
-        return self._get_reader().get_jobs_needing_distill(
-            limit=batch_size, slugs=self._slugs,
+        return self._run_reader_query(
+            lambda r: r.get_jobs_needing_distill(
+                limit=batch_size, slugs=self._slugs,
+            )
         )
 
     def process_item(self, item: DistillWorkItem) -> None:

@@ -66,11 +66,15 @@ class ResearchPhase(WorkerPhase["ResearchWorkItem"]):
         return f"{item['slug']} ({item['name']})"
 
     def count_remaining(self) -> int:
-        return self._get_reader().count_companies_needing_bio(slugs=self._slugs)
+        return self._run_reader_query(
+            lambda r: r.count_companies_needing_bio(slugs=self._slugs)
+        )
 
     def poll_work(self, batch_size: int) -> list[ResearchWorkItem]:
-        return self._get_reader().get_companies_needing_bio(
-            limit=batch_size, slugs=self._slugs,
+        return self._run_reader_query(
+            lambda r: r.get_companies_needing_bio(
+                limit=batch_size, slugs=self._slugs,
+            )
         )
 
     def process_item(self, item: ResearchWorkItem) -> None:

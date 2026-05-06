@@ -64,7 +64,9 @@ class EnrichPhase(WorkerPhase["EnrichWorkItem"]):
                 continue
             fetcher = self._get_fetcher(slug)
             cols = fetcher.enrichment_fills
-            needing = self._get_reader().get_jobs_needing_enrichment(slug, cols)
+            needing = self._run_reader_query(
+                lambda r, s=slug, c=cols: r.get_jobs_needing_enrichment(s, c)
+            )
             if not needing:
                 continue
             job_ids = [j["job_id"] for j in needing]
