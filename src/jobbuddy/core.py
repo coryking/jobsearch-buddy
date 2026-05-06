@@ -133,18 +133,42 @@ def find_companies(
     def _round(v):
         return None if v is None else round(float(v), 4)
 
+    results = [
+        {
+            "slug": r["slug"],
+            "name": r["name"],
+            "short_bio": r["short_bio"],
+            "vec_score": _round(r["vec_score"]),
+            "fts_score": _round(r["fts_score"]),
+            "rrf_score": _round(r["rrf_score"]),
+        }
+        for r in rows
+    ]
+
+    # Audit log so a few weeks of real traffic answer the open Phase 2
+    # questions: is the coverage_floor calibrated correctly, and does the
+    # FTS arm earn its keep on real queries (the deferred tuning question
+    # from issue #41)? The `extra` dict makes structured-log scrapers
+    # happy; the formatted message is for grep.
+    top_slugs = [r["slug"] for r in results[:3]]
+    log.info(
+        "find_companies q=%r top_vec=%s top_fts=%s top_slugs=%s "
+        "coverage_hint=%s n=%d",
+        query, _round(top_vec), _round(top_fts), top_slugs,
+        bool(coverage_hint), len(results),
+        extra={
+            "find_companies_query": query,
+            "find_companies_top_vec": _round(top_vec),
+            "find_companies_top_fts": _round(top_fts),
+            "find_companies_top_rrf": results[0]["rrf_score"] if results else None,
+            "find_companies_top_slugs": top_slugs,
+            "find_companies_coverage_hint": bool(coverage_hint),
+            "find_companies_result_count": len(results),
+        },
+    )
+
     return {
-        "results": [
-            {
-                "slug": r["slug"],
-                "name": r["name"],
-                "short_bio": r["short_bio"],
-                "vec_score": _round(r["vec_score"]),
-                "fts_score": _round(r["fts_score"]),
-                "rrf_score": _round(r["rrf_score"]),
-            }
-            for r in rows
-        ],
+        "results": results,
         "coverage_hint": coverage_hint,
     }
 
