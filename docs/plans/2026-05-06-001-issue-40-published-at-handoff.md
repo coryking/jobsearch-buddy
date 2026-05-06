@@ -1,6 +1,43 @@
 # Issue #40 — `published_at` backfill: handoff for completion
 
-**Status:** code merged to main; data not yet backfilled; NOT NULL migration not yet applied. Issue stays open until the runbook below has been executed.
+**Status:** Step 1 (sync enrich) executed for all stub-fetcher tenants. Two parser-variant fixes were required mid-run (see "Update 2026-05-06" below) and are now landed. Steps 2 (Avature sitemap backfill) and 3 (NOT NULL migration) still pending.
+
+## Current state of active rows missing `published_at`
+
+| Company | ATS | Active missing pubdate | Path to fix |
+|---|---|---:|---|
+| tesla | (excluded, ats=NULL) | 5911 | Out of scope per operator decision; do not include in this issue |
+| bloomberg | avature | 501 | Step 2 (sitemap backfill script) |
+| zoom | workday | 131 | Step 2 fallback (`last_seen::date`) — Workday's `enrichment_fills=(description,)` so enrich won't fill it |
+| broad-institute | avature | 41 | Step 2 (sitemap backfill script) |
+| northropgrumman / intel / salesforce / singlestore / nvidia / hp | workday/eightfold/greenhouse | 1–4 each | Step 2 fallback |
+
+Excluding Tesla, **~681 active rows** still need `published_at`. The migration's `last_seen::date` UPDATE will catch all of them as a safety net even if Step 2 is skipped — but Step 2 recovers ~543 *real* dates from Avature sitemaps that scrape-date can't.
+
+## Update 2026-05-06: parser-variant fixes during step 1 execution
+
+When Step 1 was first run, the enrich phase reported "924 items, 13 done, 0 errors" and exited — looking like it had completed cleanly. Investigation revealed the phase was silently terminating because most fetchers were returning empty payloads (no exception, just `{}`), and the display counter only advanced on non-empty payloads, so the run *appeared* complete while real progress was zero. Five distinct parser bugs were fixed:
+
+| Tenant shape | Cause | Fix | Commits |
+|---|---|---|---|
+| **TalentBrew JSON-LD** (Boeing) | JSON-LD `description` field embeds raw tabs/newlines without escaping; strict `json.loads` rejects | `strict=False` | `8135dcd` |
+| **TalentBrew microdata** (Amtrak) | No JSON-LD at all; uses `<meta itemprop="datePosted">` + `<span itemprop="description">` schema.org HTML microdata | Added microdata fallback parser | `8135dcd` |
+| **TalentBrew v3 HTML** (Disney) | No JSON-LD or microdata; description in `<div class="ats-description">`, posted date in visible "Date posted: Apr. 24, 2026" label | Added v3 fallback parser; `dateutil` for the visible date variants | `8135dcd`, `2cc6351`, `bf3f321` |
+| **SuccessFactors span variant** (Amtrak / EY / Gulfstream / Paccar) | Existing extractor only matched `<div class="jobdescription">`; these tenants ship `<span class="jobdescription">` | Added span fallback after the div path | `ab6d301` |
+| **SmartRecruiters layout abuse** (Canva) | Canva stuffs the entire job ad — role responsibilities, qualifications, all of it — into `companyDescription` and leaves the dedicated sections empty. Existing parser intentionally skipped `companyDescription` to avoid boilerplate pollution | Use `companyDescription` only as a last-resort fallback when the three standard sections are all empty | `200aee5` |
+
+Plus: hand-rolled date regexes/strptime in `talentbrew.py` and `successfactors.py` were replaced with `dateutil.parser` (`bf3f321`). `python-dateutil` is now a direct dependency.
+
+## Tooling improvements that came out of this debug session
+
+These aren't issue #40 deliverables, but they prevent the same class of silent-failure bug going forward and are worth knowing about:
+
+- **404 → `listing_status = 'removed'`** (`86567dc`). When an ATS detail page 404s, the row was previously logged WARNING and re-enriched on every subsequent run. Now it's marked removed (with `removed_at` set by the existing trigger) and logged INFO once. Stops permanent re-fetch loops on dead URLs.
+- **Per-job outcome instrumentation** (`8135dcd`, `cdce104`). `fetch_enrichments` now emits exactly one outcome per job (`filled` / `filled_partial` / `empty` / `gone` / `error`), each with a callback. `outcome=empty` (request succeeded, parser extracted nothing) logs WARNING — silent parse failures are now loud.
+- **MDC-style log context** (`cdce104`). `jobbuddy.logctx.bind(company=..., ats=..., job_id=..., url=...)` sets context-local vars that flow into every LogRecord via a factory. Format string prefixes `[disney/talentbrew]` and suffixes `(job=… url=…)`. Net effect: a parse failure now shows you the exact URL to curl, without each log call having to remember to pass it.
+- **Per-company DB-state delta in phase summary** (`bac7560`). Phase end logs `pending=N→M advanced=N-M` per slug, querying the same `get_jobs_needing_enrichment` predicate that drove `count_remaining`. If the parser-side `filled` counter ever disagrees with the actual DB advancement, the parser is lying and rows are looping — now visible at a glance.
+
+The combined effect: when Step 2's script runs (or any future enrich variant breaks), the operator gets immediate, specific feedback rather than a clean-looking "phase complete" log that hides zero progress.
 
 ## What's already shipped
 
@@ -28,7 +65,16 @@ Five commits landed in branch `issue-40-published-at` (now merged to `main`):
 
 Run in this order. Each step depends on the previous. Don't skip step 1 — it's the only thing that gets real `datePosted` values onto the existing 21k TalentBrew rows; `last_seen::date` is a quality-floor fallback that's strictly worse.
 
-### Step 1: Run a full sync to backfill real source dates
+### Step 1: Run a full sync to backfill real source dates ✅ done
+
+Originally: "re-fetches detail pages for ~21k rows" (Walgreens, Citi, etc.). This actually shipped in an earlier sync — those tenants were already at 0 missing `published_at` before Step 1 was re-run. The 2026-05-06 work cleaned up the remaining stub-fetcher tenants whose parsers were silently empty (Boeing, Amtrak, EY, Gulfstream, Paccar, Disney, Canva) — see the parser-variant fix table at the top of this doc. After fixes:
+
+- TalentBrew tenants now at 0 missing across the board
+- SuccessFactors tenants now at 0 missing
+- SmartRecruiters / Canva at 0 missing
+- Workday tenants don't have `published_at` in `enrichment_fills` so enrich won't fill it; remaining ~140 active rows are handled by Step 2's safety-net fallback
+
+Re-run the command if you want to verify it's a no-op:
 
 ```bash
 jsb sync           # or: jsb sync enrich   (only the enrich phase if you want to scope down)
