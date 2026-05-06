@@ -223,34 +223,44 @@ class SuccessFactorsFetcher(ATSFetcher):
         raise ValueError(f"Job ID {job_id} not found on {self.name}.")
 
     def _extract_description(self, html: str) -> str | None:
-        """Extract job description from a detail page's jobdescription div.
+        """Extract job description from a detail page.
 
-        Handles nested <div> tags by counting open/close pairs to find the
-        balanced closing tag, rather than stopping at the first </div>.
+        SuccessFactors career sites use one of two markups:
+          - `<div class="jobdescription">` — handle nested <div> tags by
+            counting open/close pairs.
+          - `<span class="jobdescription">` (Amtrak, EY, Gulfstream, Paccar) —
+            spans don't nest so a non-greedy match to `</span>` is enough.
         """
         marker = '<div class="jobdescription">'
         start = html.find(marker)
-        if start == -1:
-            return None
-        inner_start = start + len(marker)
+        if start != -1:
+            inner_start = start + len(marker)
+            depth = 1
+            pos = inner_start
+            while depth > 0 and pos < len(html):
+                next_open = html.find("<div", pos)
+                next_close = html.find("</div>", pos)
+                if next_close == -1:
+                    break
+                if next_open != -1 and next_open < next_close:
+                    depth += 1
+                    pos = next_open + 4
+                else:
+                    depth -= 1
+                    if depth == 0:
+                        return strip_html(html[inner_start:next_close])
+                    pos = next_close + 6
+            return strip_html(html[inner_start:])
 
-        depth = 1
-        pos = inner_start
-        while depth > 0 and pos < len(html):
-            next_open = html.find("<div", pos)
-            next_close = html.find("</div>", pos)
-            if next_close == -1:
-                break
-            if next_open != -1 and next_open < next_close:
-                depth += 1
-                pos = next_open + 4
-            else:
-                depth -= 1
-                if depth == 0:
-                    return strip_html(html[inner_start:next_close])
-                pos = next_close + 6
-
-        return strip_html(html[inner_start:])
+        span_match = re.search(
+            r'<span[^>]*class="[^"]*\bjobdescription\b[^"]*"[^>]*>(.*?)</span>',
+            html,
+            re.DOTALL,
+        )
+        if span_match:
+            body = strip_html(span_match.group(1))
+            return body or None
+        return None
 
     def fetch_description(self, job_id: str, metadata: dict | None = None) -> str | None:
         """Fetch description from the job detail page."""

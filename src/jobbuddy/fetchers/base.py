@@ -187,28 +187,31 @@ class ATSFetcher(ABC):
                 )
             except httpx.HTTPStatusError as e:
                 if e.response.status_code == 404:
-                    log.debug("enrichment outcome job=%s outcome=gone", job_id)
+                    log.debug("enrichment outcome ats=%s job=%s outcome=gone", self.ats_type, job_id)
                     log.info("Listing no longer active for %s (404)", job_id)
                     if on_gone:
                         on_gone(job_id)
                 else:
-                    log.debug("enrichment outcome job=%s outcome=error reason=%s", job_id, e)
+                    log.debug("enrichment outcome ats=%s job=%s outcome=error reason=%s",
+                              self.ats_type, job_id, e)
                     log.warning("Failed to fetch enrichment for %s: %s", job_id, e)
                     if on_error:
                         on_error(job_id)
             except Exception as e:
-                log.debug("enrichment outcome job=%s outcome=error reason=%s", job_id, e)
+                log.debug("enrichment outcome ats=%s job=%s outcome=error reason=%s",
+                          self.ats_type, job_id, e)
                 log.warning("Failed to fetch enrichment for %s: %s", job_id, e)
                 if on_error:
                     on_error(job_id)
             else:
                 if payload:
-                    log.debug("enrichment outcome job=%s outcome=filled cols=%s",
-                              job_id, sorted(payload.keys()))
+                    log.debug("enrichment outcome ats=%s job=%s outcome=filled cols=%s",
+                              self.ats_type, job_id, sorted(payload.keys()))
                     if on_fetched:
                         on_fetched(job_id, payload)
                 else:
-                    log.debug("enrichment outcome job=%s outcome=empty", job_id)
+                    log.debug("enrichment outcome ats=%s job=%s outcome=empty",
+                              self.ats_type, job_id)
                     if on_empty:
                         on_empty(job_id)
 
