@@ -151,10 +151,14 @@ def find_companies_cmd(
 
     buf = io.StringIO()
     writer = csv.writer(buf)
-    writer.writerow(["Score", "Slug", "Name", "Short Bio"])
+    writer.writerow(["RRF", "Vec", "FTS", "Slug", "Name", "Short Bio"])
     for r in result["results"]:
+        def _fmt(v):
+            return f"{v:.3f}" if v is not None else "—"
         writer.writerow([
-            f"{r['score']:.3f}",
+            _fmt(r["rrf_score"]),
+            _fmt(r["vec_score"]),
+            _fmt(r["fts_score"]),
             r["slug"],
             r["name"],
             (r["short_bio"] or "").replace("\n", " "),

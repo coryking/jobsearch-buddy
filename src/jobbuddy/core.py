@@ -59,13 +59,24 @@ def find_companies(
     limit: int = 20,
     coverage_floor: float = 0.35,
 ) -> dict:
-    """Vector-search registered companies by `long_bio` against `query`.
+    """Hybrid search over registered companies — vector + FTS, fused via RRF.
 
-    Returns `{"results": [{slug, name, short_bio, score}], "coverage_hint": str | None}`.
-    `score` is cosine similarity in [-1, 1]; absolute scores are not
-    portable across queries — the calling LLM uses relative drop-off, the
-    floor here only triggers `coverage_hint` when the top match is weak
-    enough that the cache likely doesn't contain the entity named.
+    Returns `{"results": [{slug, name, short_bio, vec_score, fts_score,
+    rrf_score}], "coverage_hint": str | None}`.
+
+    - `vec_score`: cosine similarity in [-1, 1] when the vector arm
+      surfaced this row, else None. Useful for vibe queries.
+    - `fts_score`: Postgres ts_rank when the FTS arm surfaced this row,
+      else None. Useful for exact-name lookups where the vector arm scores
+      poorly because the query is too short to carry semantic signal.
+    - `rrf_score`: fused rank score. Used for ordering only; absolute
+      values aren't portable across queries — the LLM uses relative
+      drop-off, not a threshold.
+
+    `coverage_hint` is set when neither arm produced a strong match:
+    `max(top vec_score, top fts_score) < coverage_floor`. That tells the
+    LLM the cache likely doesn't contain the entity named and a web
+    search is the right fallback.
 
     Always returns top-N rows when any embeddings exist; never returns
     empty just because the query is unusual. Raises ValueError when query
@@ -83,23 +94,35 @@ def find_companies(
 
     store = JobStore()
     try:
-        rows = store.find_companies_by_vector(embedding, limit=limit)
+        rows = store.find_companies(embedding, query, limit=limit)
     finally:
         store.close()
 
     if not rows:
         raise ValueError(
             "No company embeddings in cache. Run `jsb research-companies`"
-            " then `jsb sync company_embeddings`."
+            " to fill bios + embeddings."
         )
 
-    top_score = rows[0]["score"]
+    top_vec = max((r["vec_score"] for r in rows if r["vec_score"] is not None), default=None)
+    top_fts = max((r["fts_score"] for r in rows if r["fts_score"] is not None), default=None)
+
+    # Coverage hint fires only when *both* arms missed: vector below floor
+    # AND no FTS match at all. ts_rank is bounded differently than cosine
+    # similarity, and any FTS hit means the query's tokens literally appear
+    # in some company's name+short_bio — that's positive evidence of cache
+    # coverage even when the score is small.
     coverage_hint = None
-    if top_score < coverage_floor:
+    vec_weak = top_vec is None or top_vec < coverage_floor
+    fts_missed = top_fts is None or top_fts <= 0
+    if vec_weak and fts_missed:
         coverage_hint = (
             "Top match is weak — the cache may not contain the entity you"
             " named. For exact-name lookups, fall back to web search."
         )
+
+    def _round(v):
+        return None if v is None else round(float(v), 4)
 
     return {
         "results": [
@@ -107,7 +130,9 @@ def find_companies(
                 "slug": r["slug"],
                 "name": r["name"],
                 "short_bio": r["short_bio"],
-                "score": round(float(r["score"]), 4),
+                "vec_score": _round(r["vec_score"]),
+                "fts_score": _round(r["fts_score"]),
+                "rrf_score": _round(r["rrf_score"]),
             }
             for r in rows
         ],

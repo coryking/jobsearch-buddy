@@ -201,6 +201,73 @@ def _render_top_k(rows: list[dict], limit: int) -> None:
     console.print(table)
 
 
+@search_debug_app.command("companies")
+def companies(
+    query: str = typer.Argument(..., help="Vibe / theme query (e.g. 'AI-as-product startups')"),
+    limit: int = typer.Option(20, "--limit", "-n", help="Top-K to display (matches MCP default)"),
+):
+    """Show top-K plus per-arm contribution stats for the hybrid company search.
+
+    Surfaces what `find_companies` actually returns: vec_score, fts_score,
+    rrf_score side by side. Useful for tuning the coverage_hint floor and
+    spotting cases where one arm is doing all the work.
+    """
+    from jobbuddy.core import find_companies
+
+    try:
+        result = find_companies(query, limit=limit)
+    except ValueError as e:
+        console.print(f"[red]{e}[/red]")
+        raise SystemExit(1)
+
+    rows = result["results"]
+    if not rows:
+        console.print("[yellow]No companies returned[/yellow]")
+        raise SystemExit(0)
+
+    vec_only = sum(1 for r in rows if r["vec_score"] is not None and r["fts_score"] is None)
+    fts_only = sum(1 for r in rows if r["fts_score"] is not None and r["vec_score"] is None)
+    both = sum(1 for r in rows if r["vec_score"] is not None and r["fts_score"] is not None)
+    top_vec = max((r["vec_score"] for r in rows if r["vec_score"] is not None), default=None)
+    top_fts = max((r["fts_score"] for r in rows if r["fts_score"] is not None), default=None)
+
+    console.print(f"\n[bold]Query:[/bold] {query!r}  [dim](top-{limit})[/dim]")
+    console.print(
+        f"[bold]Arm contribution:[/bold] vec-only={vec_only}  fts-only={fts_only}  both={both}"
+    )
+    console.print(
+        f"  top vec_score: {top_vec:.4f}" if top_vec is not None else "  top vec_score: —"
+    )
+    console.print(
+        f"  top fts_score: {top_fts:.4f}" if top_fts is not None else "  top fts_score: —"
+    )
+    if result["coverage_hint"]:
+        console.print(f"[yellow]coverage_hint:[/yellow] {result['coverage_hint']}")
+
+    table = Table(title=f"Top {len(rows)} (what the LLM sees)",
+                  show_header=True, header_style="bold")
+    table.add_column("#", justify="right", style="dim")
+    table.add_column("RRF", justify="right")
+    table.add_column("Vec", justify="right")
+    table.add_column("FTS", justify="right")
+    table.add_column("Slug")
+    table.add_column("Name")
+
+    def _fmt(v):
+        return f"{v:.3f}" if v is not None else "—"
+
+    for i, r in enumerate(rows, 1):
+        table.add_row(
+            str(i),
+            _fmt(r["rrf_score"]),
+            _fmt(r["vec_score"]),
+            _fmt(r["fts_score"]),
+            r["slug"],
+            r["name"][:40],
+        )
+    console.print(table)
+
+
 def _render_company_concentration(rows: list[dict]) -> None:
     if not rows:
         return

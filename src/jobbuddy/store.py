@@ -227,24 +227,86 @@ class JobStore:
             (embedding, slug),
         )
 
-    def find_companies_by_vector(
-        self, embedding: str, *, limit: int = 20,
-    ) -> list[dict]:
-        """Cosine-similarity search over companies.bio_embedding.
+    # Reciprocal Rank Fusion constant. k=60 is the canonical default from
+    # Cormack et al. (2009); larger k softens the weight of top ranks.
+    _RRF_K = 60
 
-        Returns rows with `slug`, `name`, `short_bio`, and `score`
-        (cosine similarity in [-1, 1] — higher is better). Companies without
-        an embedding are excluded. The HNSW index on bio_embedding handles
-        ordering; LIMIT keeps result sets small.
+    def find_companies(
+        self, embedding: str, query: str, *, limit: int = 20,
+    ) -> list[dict]:
+        """Hybrid company search: vector ∪ FTS, fused via Reciprocal Rank Fusion.
+
+        Vector arm: cosine similarity over `bio_embedding` (handles vibe
+        queries — "AI-as-product startups").
+        FTS arm: websearch_to_tsquery over `name + short_bio` (handles
+        exact-name lookups — "Stripe", "Mirabel AI" — that vector alone
+        scores poorly because short queries have weak semantic signal).
+        Fusion: RRF with k=60. Each arm fetches LIMIT*3 candidates so the
+        merge has room to surface rows ranked highly by only one arm.
+
+        Returns rows with `slug`, `name`, `short_bio`, plus three scores:
+        - `vec_score`: cosine similarity in [-1, 1], or NULL if vector arm
+          missed this row
+        - `fts_score`: ts_rank, or NULL if FTS arm missed this row
+        - `rrf_score`: fused rank score (sums to ~0.03 max with k=60)
+
+        At 693 companies the FTS arm runs as a sequential scan with inline
+        to_tsvector — no GIN index needed. Add the index when row count
+        grows past where seq scan stays fast.
         """
+        candidate_pool = max(limit * 3, 30)
         rows = self.conn.execute(
-            """SELECT slug, name, short_bio,
-                      1 - (bio_embedding <=> %s::vector) AS score
-                 FROM companies
-                WHERE bio_embedding IS NOT NULL
-                ORDER BY bio_embedding <=> %s::vector
-                LIMIT %s""",
-            (embedding, embedding, limit),
+            """
+            WITH vec AS (
+                SELECT slug,
+                       1 - (bio_embedding <=> %(embedding)s::vector) AS vec_score,
+                       ROW_NUMBER() OVER (
+                           ORDER BY bio_embedding <=> %(embedding)s::vector
+                       ) AS vec_rank
+                  FROM companies
+                 WHERE bio_embedding IS NOT NULL
+                 ORDER BY bio_embedding <=> %(embedding)s::vector
+                 LIMIT %(pool)s
+            ),
+            fts AS (
+                SELECT slug,
+                       ts_rank(
+                           to_tsvector('english', coalesce(name, '') || ' ' || coalesce(short_bio, '')),
+                           websearch_to_tsquery('english', %(query)s)
+                       ) AS fts_score,
+                       ROW_NUMBER() OVER (
+                           ORDER BY ts_rank(
+                               to_tsvector('english', coalesce(name, '') || ' ' || coalesce(short_bio, '')),
+                               websearch_to_tsquery('english', %(query)s)
+                           ) DESC
+                       ) AS fts_rank
+                  FROM companies
+                 WHERE to_tsvector('english', coalesce(name, '') || ' ' || coalesce(short_bio, ''))
+                       @@ websearch_to_tsquery('english', %(query)s)
+                 LIMIT %(pool)s
+            ),
+            fused AS (
+                SELECT COALESCE(v.slug, f.slug) AS slug,
+                       v.vec_score, f.fts_score,
+                       COALESCE(1.0 / (%(k)s + v.vec_rank), 0)
+                       + COALESCE(1.0 / (%(k)s + f.fts_rank), 0) AS rrf_score
+                  FROM vec v
+                  FULL OUTER JOIN fts f ON v.slug = f.slug
+            )
+            SELECT c.slug, c.name, c.short_bio,
+                   fused.vec_score, fused.fts_score, fused.rrf_score
+              FROM fused
+              JOIN companies c ON c.slug = fused.slug
+             ORDER BY fused.rrf_score DESC
+             LIMIT %(limit)s
+            """,
+            {
+                "embedding": embedding,
+                "query": query,
+                "pool": candidate_pool,
+                "k": self._RRF_K,
+                "limit": limit,
+            },
         ).fetchall()
         return [dict(r) for r in rows]
 
