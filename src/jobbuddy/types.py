@@ -31,6 +31,16 @@ class ResearchWorkItem(TypedDict):
     name: str
 
 
+class EmbedWorkItem(TypedDict):
+    """One company bio to embed — returned by JobStore.get_companies_needing_embedding().
+
+    Carries `long_bio` so the embed worker doesn't re-read the row.
+    """
+
+    slug: str
+    long_bio: str
+
+
 class DistillWorkItem(TypedDict):
     """One job to distill — returned by JobStore.get_jobs_needing_distill().
 

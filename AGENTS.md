@@ -60,6 +60,7 @@ jsb-mcp                          # Run MCP server
 ```
 jsb migrate                                  # Apply pending database migrations
 jsb sync [PHASES...] [--company NAME] [--stale HOURS]  # Sync pipeline (phases: fetch, enrich, research, distill)
+jsb find-companies "<query>" [--limit N]    # Vector-search companies by long_bio
 jsb research-companies [--company NAME]... [--force]  # Fill companies.short_bio/long_bio (Azure Responses + web_search)
 jsb list-jobs [company] [-f FILTER]         # List cached jobs
 jsb search [--title T] [--location L] [--company C]  # Search cache
@@ -111,6 +112,7 @@ Override defaults with env vars (prefix `JOBBUDDY_`) or a `.env` file:
 | `research_model`           | `JOBBUDDY_RESEARCH_MODEL`            | `gpt-5.4`                                  |
 | `research_endpoint`        | `JOBBUDDY_RESEARCH_ENDPOINT`         | `None` *(Azure OpenAI resource root URL)*  |
 | `research_max_workers`     | `JOBBUDDY_RESEARCH_MAX_WORKERS`      | `4`                                        |
+| `embedding_model`          | `JOBBUDDY_EMBEDDING_MODEL`           | `text-embedding-3-small`                   |
 
 ## Sync Pipeline
 
@@ -119,8 +121,14 @@ The sync pipeline uses a **DB-as-queue** pattern. Four phases are wired:
 1. **Fetch** — parallel company fetching via ThreadPoolExecutor
 2. **Enrich** — description enrichment for stub fetchers (Workday, Eightfold, etc.)
 3. **Research** — Azure Responses API + web_search to fill `companies.short_bio`
-   and `long_bio`. Independent of the job pipeline (polls companies, not jobs).
-   The `long_bio` feeds the distill prompt as `<company_bio>` context.
+   and `long_bio`, then immediately embed `long_bio` with
+   `text-embedding-3-small` into `bio_embedding vector(1536)` for the
+   `find_companies` MCP tool. Bio + embedding are paired in one step so a
+   research run leaves the company queryable by find_companies. Independent
+   of the job pipeline (polls companies, not jobs). Requires both
+   `JOBBUDDY_RESEARCH_ENDPOINT` (Azure Responses) and an OpenAI key
+   (`JOBBUDDY_OPENAI_API_KEY` / `JOBBUDDY_OPENAI_AZURE_API_VERSION`) —
+   the latter is used by the inline embedding call.
 4. **Distill** — one structured-output LLM call per job, producing `short_jd`,
    `description_normalized`, and `salary` in a single round trip. Polls the
    `idx_jobs_needs_distill` predicate (`description IS NOT NULL AND short_jd

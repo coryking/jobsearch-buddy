@@ -386,6 +386,53 @@ def search_jobs(
 
 
 @mcp.tool
+def find_companies(
+    query: Annotated[str, Field(description=(
+        "What kind of company the user is asking about — described in their"
+        " own words. Vibe queries handled well: 'companies that ship AI as"
+        " product', 'climate-tech with hardware', 'fintech for SMBs'."
+        " Exact-name lookups (e.g. 'Stripe', 'Mirabel AI') work but the"
+        " result may be weak if the entity isn't in the cache; check"
+        " coverage_hint."
+    ))],
+    limit: Annotated[int, Field(default=20, ge=1, le=100, description=(
+        "Max companies to return (default 20, hard cap 100). Each row is"
+        " a slug + name + short_bio + cosine score, ~140 tokens of bio per"
+        " row."
+    ))] = 20,
+) -> str:
+    """Find registered companies by vibe / theme. Use BEFORE search_jobs
+    when the user describes companies rather than naming them — e.g.
+    'companies that work on internet privacy', 'AI-as-product startups',
+    'biotech in the Bay Area'. Then pass the returned slugs to
+    search_jobs(companies=[...]) to scope the job search.
+
+    Returns top-N companies ranked by cosine similarity over the
+    researched `long_bio`. `score` is similarity in [-1, 1]; absolute
+    scores aren't portable across queries — use relative drop-off to pick
+    a cutoff. A `coverage_hint` may be present at the top level when the
+    top score is weak; in that case the cache likely doesn't contain the
+    entity the user named, and a web search is the right fallback.
+
+    Trigger phrases: 'companies that do X', 'who builds Y', 'startups
+    working on Z', 'AI-first companies', 'climate companies', 'find me
+    companies like'. For 'tell me about [exact name]' or 'what does
+    [company] do', prefer the ats://companies resource — it's a direct
+    lookup, no embedding round-trip.
+
+    Returns short_bio (~140 tokens), not long_bio. The LLM is filtering,
+    not reading deeply; use the slug to fetch jobs via search_jobs."""
+    from jobbuddy.core import find_companies as core_find_companies
+
+    try:
+        result = core_find_companies(query, limit=limit)
+    except ValueError as e:
+        return f"Error: {e}"
+
+    return json.dumps(result, indent=2)
+
+
+@mcp.tool
 def review_activity_log(
     company: Annotated[str, Field(default="", description="Company name or slug to filter by. Omit for summary of all companies.")] = "",
 ) -> str:

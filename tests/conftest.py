@@ -145,7 +145,8 @@ def clean_test_data():
     conn.execute("DELETE FROM activity_log")
     conn.execute(
         "UPDATE companies SET short_bio = NULL, long_bio = NULL,"
-        " bio_researched_at = NULL, bio_model = NULL"
+        " bio_researched_at = NULL, bio_model = NULL,"
+        " bio_embedding = NULL, bio_embedding_updated_at = NULL"
     )
     conn.close()
 

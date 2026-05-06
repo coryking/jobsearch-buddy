@@ -132,6 +132,36 @@ def list_jobs(
     print(buf.getvalue(), end="")
 
 
+@app.command(name="find-companies")
+def find_companies_cmd(
+    query: str = typer.Argument(..., help="Vibe / theme query (e.g. 'companies that ship AI as product')"),
+    limit: int = typer.Option(20, "--limit", "-n", help="Max rows (default 20, cap 100)"),
+):
+    """Vector-search companies by long_bio. Mirrors the `find_companies` MCP tool."""
+    from jobbuddy.core import find_companies
+
+    try:
+        result = find_companies(query, limit=min(limit, 100))
+    except ValueError as e:
+        console.print(f"[red]{e}[/red]")
+        raise SystemExit(1)
+
+    if result["coverage_hint"]:
+        console.print(f"[yellow]{result['coverage_hint']}[/yellow]")
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["Score", "Slug", "Name", "Short Bio"])
+    for r in result["results"]:
+        writer.writerow([
+            f"{r['score']:.3f}",
+            r["slug"],
+            r["name"],
+            (r["short_bio"] or "").replace("\n", " "),
+        ])
+    print(buf.getvalue(), end="")
+
+
 @app.command()
 def search(
     query: Optional[str] = typer.Option(None, "--query", "-q", help="Postgres FTS query over title, short_jd, description_normalized, location, department"),

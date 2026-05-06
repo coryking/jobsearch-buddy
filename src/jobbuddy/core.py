@@ -53,6 +53,68 @@ def resolve_company_slugs(names: list[str]) -> list[str]:
     return slugs
 
 
+def find_companies(
+    query: str,
+    *,
+    limit: int = 20,
+    coverage_floor: float = 0.35,
+) -> dict:
+    """Vector-search registered companies by `long_bio` against `query`.
+
+    Returns `{"results": [{slug, name, short_bio, score}], "coverage_hint": str | None}`.
+    `score` is cosine similarity in [-1, 1]; absolute scores are not
+    portable across queries — the calling LLM uses relative drop-off, the
+    floor here only triggers `coverage_hint` when the top match is weak
+    enough that the cache likely doesn't contain the entity named.
+
+    Always returns top-N rows when any embeddings exist; never returns
+    empty just because the query is unusual. Raises ValueError when query
+    is empty, limit < 1, or the cache has no embeddings yet.
+    """
+    from jobbuddy.embeddings import embed_text
+    from jobbuddy.store import JobStore
+
+    if not query or not query.strip():
+        raise ValueError("find_companies requires a non-empty query")
+    if limit < 1:
+        raise ValueError("limit must be >= 1")
+
+    embedding, _tokens = embed_text(query)
+
+    store = JobStore()
+    try:
+        rows = store.find_companies_by_vector(embedding, limit=limit)
+    finally:
+        store.close()
+
+    if not rows:
+        raise ValueError(
+            "No company embeddings in cache. Run `jsb research-companies`"
+            " then `jsb sync company_embeddings`."
+        )
+
+    top_score = rows[0]["score"]
+    coverage_hint = None
+    if top_score < coverage_floor:
+        coverage_hint = (
+            "Top match is weak — the cache may not contain the entity you"
+            " named. For exact-name lookups, fall back to web search."
+        )
+
+    return {
+        "results": [
+            {
+                "slug": r["slug"],
+                "name": r["name"],
+                "short_bio": r["short_bio"],
+                "score": round(float(r["score"]), 4),
+            }
+            for r in rows
+        ],
+        "coverage_hint": coverage_hint,
+    }
+
+
 def search_cached_jobs(
     *,
     query: str = "",
