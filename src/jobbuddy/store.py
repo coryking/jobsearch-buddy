@@ -242,48 +242,20 @@ class JobStore:
                         listing_status)
                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'active')
                        ON CONFLICT(company_slug, job_id) DO UPDATE SET
-                        title = excluded.title,
-                        location = excluded.location,
-                        url = excluded.url,
-                        -- A NULL from the fetcher (stub re-sync, sitemap
-                        -- miss) preserves the existing date. A real date
-                        -- from the fetcher wins. Brand-new rows where the
-                        -- fetcher has no signal land NULL here and get
-                        -- backfilled from last_seen by a separate pass
-                        -- before the NOT NULL migration locks the column.
-                        published_at = COALESCE(excluded.published_at, jobs.published_at),
-                        department = excluded.department,
-                        team = excluded.team,
-                        salary = COALESCE(excluded.salary, jobs.salary),
-                        description = COALESCE(excluded.description, jobs.description),
-                        ats_metadata = COALESCE(excluded.ats_metadata, jobs.ats_metadata),
+                        -- Pure-insert model: a row's content (title, location,
+                        -- description, salary, dates, etc.) is fixed at first
+                        -- insert. Only operational state mutates here:
+                        --   last_seen      -- bumped every sync
+                        --   listing_status -- back to 'active' if we'd marked it removed
+                        -- The manage_removed_at trigger clears removed_at on
+                        -- the listing_status flip back to 'active'. Filling
+                        -- NULLs the fetcher couldn't produce (descriptions on
+                        -- stub fetchers, posted dates on TalentBrew/Avature)
+                        -- is the enrich phase's job, via update_enrichment.
                         last_seen = excluded.last_seen,
-                        listing_status = 'active',
-                        -- Invalidate distill outputs when the description body changes,
-                        -- so the distill phase picks the row up again.
-                        short_jd = CASE
-                            WHEN excluded.description IS NOT NULL
-                              AND excluded.description IS DISTINCT FROM jobs.description
-                            THEN NULL
-                            ELSE jobs.short_jd
-                        END,
-                        description_normalized = CASE
-                            WHEN excluded.description IS NOT NULL
-                              AND excluded.description IS DISTINCT FROM jobs.description
-                            THEN NULL
-                            ELSE jobs.description_normalized
-                        END
-                       WHERE (jobs.title, jobs.location, jobs.url, jobs.published_at,
-                              jobs.department, jobs.team, jobs.salary, jobs.description,
-                              jobs.ats_metadata, jobs.listing_status)
-                             IS DISTINCT FROM
-                             (excluded.title, excluded.location, excluded.url,
-                              COALESCE(excluded.published_at, jobs.published_at),
-                              excluded.department, excluded.team,
-                              COALESCE(excluded.salary, jobs.salary),
-                              COALESCE(excluded.description, jobs.description),
-                              COALESCE(excluded.ats_metadata, jobs.ats_metadata),
-                              'active')""",
+                        listing_status = 'active'
+                       WHERE jobs.last_seen IS DISTINCT FROM excluded.last_seen
+                          OR jobs.listing_status <> 'active'""",
                     upsert_params,
                     returning=False,
                 )

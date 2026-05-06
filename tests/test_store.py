@@ -70,13 +70,17 @@ class TestUpsertAndQuery:
         rows = store.query_jobs()
         assert len(rows) == 2
 
-    def test_upsert_replaces_on_resync(self, store):
+    def test_upsert_locks_content_at_first_insert(self, store):
+        """Pure-insert model: a job's content (title, location, etc.) is
+        fixed at first insert. Re-syncing with different values does NOT
+        overwrite — fixes for fetcher parsing bugs require an explicit
+        backfill, not a side-effect of routine sync."""
         store.upsert_jobs("acme", [make_job("1", "PM", "Seattle")])
         store.upsert_jobs("acme", [make_job("1", "PM Updated", "NYC")])
         rows = store.query_jobs(companies=["acme"])
         assert len(rows) == 1
-        assert rows[0]["title"] == "PM Updated"
-        assert rows[0]["location"] == "NYC"
+        assert rows[0]["title"] == "PM"
+        assert rows[0]["location"] == "Seattle"
 
     def test_upsert_marks_removed_jobs(self, store):
         store.upsert_jobs("acme", [make_job("1"), make_job("2")])
@@ -147,17 +151,18 @@ class TestUpsertAndQuery:
         ).fetchone()
         assert row["published_at"] == original
 
-    def test_upsert_overwrites_published_at_with_real_value(self, store):
-        """When a fetcher learns the real posted date (e.g. TalentBrew
-        enrich pulls JSON-LD datePosted on a previously-scrape-dated row),
-        the new real date wins."""
+    def test_upsert_locks_published_at_at_first_insert(self, store):
+        """Under pure-insert, a published_at set on first insert is fixed.
+        Re-syncing with a different date does NOT overwrite. The enrich
+        phase fills NULLs via update_enrichment; that's the only
+        sanctioned path for filling a posted date post-insert."""
         from datetime import date
         store.upsert_jobs("acme", [make_job("1", published_at=date(2026, 1, 1))])
         store.upsert_jobs("acme", [make_job("1", published_at=date(2026, 3, 15))])
         row = store.conn.execute(
             "SELECT published_at FROM jobs WHERE job_id = '1'"
         ).fetchone()
-        assert row["published_at"] == date(2026, 3, 15)
+        assert row["published_at"] == date(2026, 1, 1)
 
     def test_upsert_preserves_salary_on_null_resync(self, store):
         """Rippling moving to stub mode means list_jobs() returns salary=None
@@ -170,12 +175,12 @@ class TestUpsertAndQuery:
         ).fetchone()
         assert row["salary"] == "$200k-$300k"
 
-    def test_description_change_nulls_distill_outputs(self, store):
-        """Re-upserting with a changed description NULLs short_jd and
-        description_normalized so the distill phase reprocesses the row.
-        """
+    def test_description_locked_at_first_insert(self, store):
+        """Pure-insert: re-syncing with a different description does NOT
+        overwrite, and therefore does NOT invalidate distill outputs.
+        Distill runs exactly once per (slug, job_id) lifetime — a
+        meaningful description change requires explicit backfill."""
         store.upsert_jobs("acme", [make_job("1", description="v1 body")])
-        # Simulate the distill phase having populated its outputs.
         store.conn.execute(
             "UPDATE jobs SET short_jd = %s, description_normalized = %s "
             "WHERE company_slug = %s AND job_id = %s",
@@ -186,9 +191,9 @@ class TestUpsertAndQuery:
             "SELECT description, short_jd, description_normalized FROM jobs "
             "WHERE company_slug = 'acme' AND job_id = '1'"
         ).fetchone()
-        assert row["description"] == "v2 body"
-        assert row["short_jd"] is None
-        assert row["description_normalized"] is None
+        assert row["description"] == "v1 body"
+        assert row["short_jd"] == "capsule v1"
+        assert row["description_normalized"] == "normalized v1"
 
     def test_unchanged_description_preserves_distill_outputs(self, store):
         """Re-upserting with the same description preserves distill outputs."""

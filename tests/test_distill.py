@@ -331,9 +331,13 @@ def test_update_job_distill_preserves_existing_salary_when_distill_returns_null(
     assert row["salary"] == "$ats-provided"
 
 
-def test_distill_outputs_invalidated_when_description_body_changes(store):
-    """Regression: upsert_jobs nulls short_jd / description_normalized when the
-    description body changes, so the distill phase picks the row up again."""
+def test_distill_outputs_locked_under_pure_insert(store):
+    """Pure-insert upsert: a re-sync with a different description does
+    NOT overwrite the stored description and does NOT invalidate distill
+    outputs. Distill runs exactly once per (slug, job_id) pair. A
+    meaningful description change requires explicit backfill (e.g.
+    `UPDATE jobs SET description = NULL ... ` to release the row back
+    into the distill queue)."""
     store.upsert_jobs("acme", [
         make_job(id="job-1", description="original body"),
     ])
@@ -348,4 +352,10 @@ def test_distill_outputs_invalidated_when_description_body_changes(store):
     store.upsert_jobs("acme", [
         make_job(id="job-1", description="updated body"),
     ])
-    assert store.count_jobs_needing_distill() == 1
+    # No re-distill: description stays "original body" and short_jd is preserved.
+    assert store.count_jobs_needing_distill() == 0
+    row = store.conn.execute(
+        "SELECT description, short_jd FROM jobs WHERE id = %s", (pk,)
+    ).fetchone()
+    assert row["description"] == "original body"
+    assert row["short_jd"] == "x"
