@@ -29,13 +29,13 @@ def jobs(
     pool: int = typer.Option(200, "--pool", help="Candidate pool size for stats (independent of --limit)"),
 ):
     """Show top-K plus ranker-quality stats for a query."""
-    from jobbuddy.core import parse_duration_to_date, search_cached_jobs
+    from jobbuddy.core import parse_duration_to_date, search_jobs
     from jobbuddy.store import JobStore
 
     posted_after = parse_duration_to_date(posted_since) if posted_since else None
 
     try:
-        rows = search_cached_jobs(
+        rows = search_jobs(
             query=query,
             location=location or "",
             posted_since=posted_since or "",

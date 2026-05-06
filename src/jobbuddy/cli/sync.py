@@ -19,7 +19,7 @@ def sync(
     company: Optional[list[str]] = typer.Option(None, "--company", "-c", help="Sync specific companies (repeatable)"),
     stale: Optional[float] = typer.Option(None, "--stale", "-s", help="Skip companies synced within N hours"),
 ):
-    """Sync job listings from ATS boards into the local cache.
+    """Sync job listings from ATS boards into PostgreSQL.
 
     Run specific phases by passing them as arguments:
 

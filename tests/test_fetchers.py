@@ -152,13 +152,13 @@ class TestRetryRequest:
 
 
 # ---------------------------------------------------------------------------
-# fetch_descriptions retry integration
+# fetch_enrichments retry integration
 # ---------------------------------------------------------------------------
 
 
-class TestFetchDescriptionsRetry:
-    def test_fetch_descriptions_retries_429(self):
-        """fetch_descriptions uses _retry_request for 429 retries."""
+class TestFetchEnrichmentsRetry:
+    def test_fetch_enrichments_retries_429(self):
+        """fetch_enrichments uses _retry_request for 429 retries."""
         fetcher = StubFetcher()
         fetcher.enrich_delay = 0
 
@@ -167,30 +167,45 @@ class TestFetchDescriptionsRetry:
         response_429.headers = {}
         err = httpx.HTTPStatusError("rate limited", request=MagicMock(), response=response_429)
 
-        fetcher.fetch_description = MagicMock(side_effect=[err, "description"])
+        fetcher.fetch_enrichment = MagicMock(side_effect=[err, {"description": "description"}])
 
         on_retry = MagicMock()
-        results = fetcher.fetch_descriptions(["j1"], on_retry=on_retry)
+        results = fetcher.fetch_enrichments(["j1"], on_retry=on_retry)
 
-        assert results["j1"] == "description"
+        assert results["j1"] == {"description": "description"}
         assert on_retry.call_count == 1
 
-    def test_fetch_descriptions_calls_on_retry(self):
-        """on_retry callback is called during fetch_descriptions retries."""
+    def test_fetch_enrichments_calls_on_retry(self):
+        """on_retry callback is called during fetch_enrichments retries."""
         fetcher = StubFetcher()
         fetcher.enrich_delay = 0
 
         err = httpx.ReadTimeout("timeout")
-        fetcher.fetch_description = MagicMock(side_effect=[err, "desc"])
+        fetcher.fetch_enrichment = MagicMock(side_effect=[err, {"description": "desc"}])
 
         retry_events = []
-        results = fetcher.fetch_descriptions(
+        results = fetcher.fetch_enrichments(
             ["j1"],
             on_retry=lambda a, ma, w, r: retry_events.append((a, ma, w, r)),
         )
-        assert results["j1"] == "desc"
+        assert results["j1"] == {"description": "desc"}
         assert len(retry_events) == 1
         assert retry_events[0][0] == 1  # attempt
+
+    def test_fetch_enrichments_skips_on_fetched_for_empty_payload(self):
+        """A detail page that yields no extractable fields returns an
+        empty dict; on_fetched must not fire so update_enrichment isn't
+        called with a no-op write."""
+        fetcher = StubFetcher()
+        fetcher.enrich_delay = 0
+        fetcher.fetch_enrichment = MagicMock(return_value={})
+
+        calls = []
+        fetcher.fetch_enrichments(
+            ["j1"],
+            on_fetched=lambda jid, p: calls.append((jid, p)),
+        )
+        assert calls == []
 
 
 # ---------------------------------------------------------------------------

@@ -15,6 +15,8 @@ import logging
 import re
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import date
+from typing import Any
 from urllib.parse import urlencode
 
 from jobbuddy.fetchers.base import ATSFetcher, JobList, ProgressCallback, RetryCallback
@@ -52,10 +54,31 @@ _SEARCH_DEFAULTS = {
 _RECORDS_PER_PAGE = 20
 
 
+_DATE_RE = re.compile(r"^(\d{4})-(\d{1,2})-(\d{1,2})$")
+
+
+def _parse_loose_date(raw: str) -> date | None:
+    """Parse a JSON-LD datePosted that may be non-zero-padded ('2026-4-25').
+
+    date.fromisoformat is strict on padding; TalentBrew tenants like Walgreens
+    emit unpadded values, so we accept both.
+    """
+    if not raw:
+        return None
+    m = _DATE_RE.match(raw.strip())
+    if not m:
+        return None
+    try:
+        return date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    except ValueError:
+        return None
+
+
 class TalentBrewFetcher(ATSFetcher):
     ats_type = "talentbrew"
     descriptions_in_listing = False
     enrich_delay = 0.0
+    enrichment_fills = ("description", "published_at")
 
     def __init__(
         self,
@@ -229,9 +252,14 @@ class TalentBrewFetcher(ATSFetcher):
                 return j
         raise ValueError(f"Job ID {job_id} not found on {self.name}.")
 
-    def _extract_description_from_html(self, html: str) -> str | None:
-        """Extract job description from a detail page's JSON-LD or HTML."""
-        # Try JSON-LD first
+    def _parse_detail_page(self, html: str) -> dict[str, Any]:
+        """Parse a TalentBrew detail page's JSON-LD JobPosting block.
+
+        Returns {"description": str | None, "published_at": date | None}.
+        Both keys are always present; either may be None if the page doesn't
+        provide that field (or no JSON-LD at all). The first JSON-LD block
+        with "@type": "JobPosting" wins; malformed blocks are skipped.
+        """
         ld_pattern = re.compile(
             r'<script[^>]*type="application/ld\+json"[^>]*>(.*?)</script>',
             re.DOTALL,
@@ -239,22 +267,33 @@ class TalentBrewFetcher(ATSFetcher):
         for match in ld_pattern.finditer(html):
             try:
                 data = json.loads(match.group(1))
-                if data.get("@type") == "JobPosting" and data.get("description"):
-                    return strip_html(data["description"])
             except (json.JSONDecodeError, TypeError):
                 continue
+            if not isinstance(data, dict) or data.get("@type") != "JobPosting":
+                continue
 
-        return None
+            desc_raw = data.get("description")
+            description = strip_html(desc_raw) if isinstance(desc_raw, str) and desc_raw else None
+
+            posted_raw = data.get("datePosted")
+            published_at = _parse_loose_date(posted_raw) if isinstance(posted_raw, str) else None
+
+            return {"description": description, "published_at": published_at}
+
+        return {"description": None, "published_at": None}
 
     def fetch_description(self, job_id: str, metadata: dict | None = None) -> str | None:
         """Fetch description from the job detail page."""
+        return self.fetch_enrichment(job_id, metadata).get("description")
+
+    def fetch_enrichment(self, job_id: str, metadata: dict | None = None) -> dict[str, Any]:
+        """Fetch description AND posted date from the JSON-LD on a single
+        detail-page request. The JSON-LD parse already produces both, so we
+        get published_at for free here."""
         self._require_config()
 
-        # We need the URL. If we have it from a prior listing, great.
-        # Otherwise we have to search for it.
         url = (metadata or {}).get("url")
         if not url:
-            # Try to find the job in the listing
             jobs = self.list_jobs()
             for j in jobs:
                 if j.id == job_id:
@@ -262,9 +301,11 @@ class TalentBrewFetcher(ATSFetcher):
                     break
 
         if not url:
-            log.warning("No URL found for job %s, cannot fetch description", job_id)
-            return None
+            log.warning("No URL found for job %s, cannot fetch enrichment", job_id)
+            return {}
 
         resp = self._retry_request(lambda: self.client.get(url))
         resp.raise_for_status()
-        return self._extract_description_from_html(resp.text)
+        parsed = self._parse_detail_page(resp.text)
+        # Strip None values so the write path only updates columns we have data for.
+        return {k: v for k, v in parsed.items() if v is not None}

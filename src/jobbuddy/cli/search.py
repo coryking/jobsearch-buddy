@@ -62,11 +62,11 @@ def companies_add(
 
 @app.command(name="list-jobs")
 def list_jobs(
-    company: Optional[str] = typer.Argument(None, help="Company name or slug (omit for all cached jobs)"),
+    company: Optional[str] = typer.Argument(None, help="Company name or slug (omit to list across all companies)"),
     filter: Optional[str] = typer.Option(None, "--filter", "-f", help="Keyword search across title and description (full-text search with stemming)"),
     since: Optional[str] = typer.Option(None, "--since", "-s", help="Only show jobs posted within this period (e.g. 24h, 3d, 1w, 2w)"),
 ):
-    """List open jobs from cache. Omit company for all cached jobs."""
+    """List open jobs. Omit company to list across all companies."""
     from jobbuddy.store import JobStore
 
     posted_after = parse_since(since) if since else None
@@ -77,8 +77,8 @@ def list_jobs(
         console.print("[yellow]Cannot connect to database. Check pg_service.conf.[/yellow]")
         raise SystemExit(1)
 
-    if not store.cache_exists():
-        console.print("[yellow]No cached data. Run 'jsb sync' to populate.[/yellow]")
+    if not store.has_any_jobs():
+        console.print("[yellow]No jobs in the database. Run 'jsb sync' to populate.[/yellow]")
         store.close()
         raise SystemExit(0)
 
@@ -92,10 +92,9 @@ def list_jobs(
             raise SystemExit(1)
         company_slug = resolved.slug
 
-        # Show cache freshness
         statuses = store.get_sync_status(company_slug)
         if statuses:
-            console.print(f"[dim]Cache from: {statuses[0]['last_sync']}[/dim]")
+            console.print(f"[dim]Last synced: {statuses[0]['last_sync']}[/dim]")
 
     try:
         rows = store.query_jobs(
@@ -114,7 +113,7 @@ def list_jobs(
     if company_slug:
         console.print(f"[dim]{company_slug} -- {len(rows)} jobs[/dim]")
     else:
-        console.print(f"[dim]{len(rows)} cached jobs[/dim]")
+        console.print(f"[dim]{len(rows)} jobs[/dim]")
 
     buf = io.StringIO()
     writer = csv.writer(buf)
@@ -176,15 +175,15 @@ def search(
     posted_since: Optional[str] = typer.Option(None, "--posted-since", "-s", help="Only show jobs posted within this period (e.g. 24h, 3d, 1w, 2w)"),
     limit: int = typer.Option(50, "--limit", "-n", help="Max rows to return"),
 ):
-    """Search cached jobs across all companies (CLI parity with the search_jobs MCP tool)."""
-    from jobbuddy.core import search_cached_jobs
+    """Search jobs across all companies (CLI parity with the search_jobs MCP tool)."""
+    from jobbuddy.core import search_jobs
 
     exclude_list = None
     if exclude:
         exclude_list = [s.strip() for s in exclude.split(",") if s.strip()]
 
     try:
-        rows = search_cached_jobs(
+        rows = search_jobs(
             query=query or "",
             companies=[company] if company else None,
             exclude_companies=exclude_list,

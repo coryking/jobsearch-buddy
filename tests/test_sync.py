@@ -197,13 +197,14 @@ class TestEnrichment:
 
         mock_fetcher = MagicMock()
         mock_fetcher.descriptions_in_listing = False
+        mock_fetcher.enrichment_fills = ("description",)
 
         def fake_fetch(job_ids, *, metadata=None, on_fetched=None, on_retry=None):
             for jid, desc in [("1", "PM description"), ("2", "SWE description")]:
                 if on_fetched:
-                    on_fetched(jid, desc)
+                    on_fetched(jid, {"description": desc})
 
-        mock_fetcher.fetch_descriptions.side_effect = fake_fetch
+        mock_fetcher.fetch_enrichments.side_effect = fake_fetch
         mock_get_fetcher.return_value = mock_fetcher
 
         from jobbuddy.sync.display import PhaseState
@@ -238,7 +239,7 @@ class TestEnrichment:
             display=PhaseState("Enrich"), max_workers=1,
         ).run()
 
-        mock_fetcher.fetch_descriptions.assert_not_called()
+        mock_fetcher.fetch_enrichments.assert_not_called()
 
     @patch("jobbuddy.sync.enrich.get_fetcher")
     def test_enrichment_skips_already_described_jobs(self, mock_get_fetcher, pg_conninfo):
@@ -248,13 +249,14 @@ class TestEnrichment:
 
         mock_fetcher = MagicMock()
         mock_fetcher.descriptions_in_listing = False
+        mock_fetcher.enrichment_fills = ("description",)
 
         def fake_fetch(job_ids, *, metadata=None, on_fetched=None, on_retry=None):
             for jid in job_ids:
                 if on_fetched:
-                    on_fetched(jid, "description")
+                    on_fetched(jid, {"description": "description"})
 
-        mock_fetcher.fetch_descriptions.side_effect = fake_fetch
+        mock_fetcher.fetch_enrichments.side_effect = fake_fetch
         mock_get_fetcher.return_value = mock_fetcher
 
         from jobbuddy.sync.display import PhaseState
@@ -264,14 +266,14 @@ class TestEnrichment:
             pg_conninfo, slugs=["workday-co"], targets=[company],
             display=PhaseState("Enrich"), max_workers=1,
         ).run()
-        assert mock_fetcher.fetch_descriptions.call_count == 1
+        assert mock_fetcher.fetch_enrichments.call_count == 1
 
-        mock_fetcher.fetch_descriptions.reset_mock()
+        mock_fetcher.fetch_enrichments.reset_mock()
         EnrichPhase(
             pg_conninfo, slugs=["workday-co"], targets=[company],
             display=PhaseState("Enrich"), max_workers=1,
         ).run()
-        mock_fetcher.fetch_descriptions.assert_not_called()
+        mock_fetcher.fetch_enrichments.assert_not_called()
 
     @patch("jobbuddy.sync.enrich.get_fetcher")
     def test_enrichment_failure_isolated(self, mock_get_fetcher, pg_conninfo):
@@ -281,7 +283,8 @@ class TestEnrichment:
 
         mock_fetcher = MagicMock()
         mock_fetcher.descriptions_in_listing = False
-        mock_fetcher.fetch_descriptions.side_effect = Exception("Network error")
+        mock_fetcher.enrichment_fills = ("description",)
+        mock_fetcher.fetch_enrichments.side_effect = Exception("Network error")
         mock_get_fetcher.return_value = mock_fetcher
 
         from jobbuddy.sync.display import PhaseState
@@ -302,13 +305,14 @@ class TestEnrichment:
 
         mock_fetcher = MagicMock()
         mock_fetcher.descriptions_in_listing = False
+        mock_fetcher.enrichment_fills = ("description",)
 
         def fake_fetch(job_ids, *, metadata=None, on_fetched=None, on_retry=None):
             for jid in job_ids:
                 if on_fetched:
-                    on_fetched(jid, f"desc-{jid}")
+                    on_fetched(jid, {"description": f"desc-{jid}"})
 
-        mock_fetcher.fetch_descriptions.side_effect = fake_fetch
+        mock_fetcher.fetch_enrichments.side_effect = fake_fetch
         mock_get_fetcher.return_value = mock_fetcher
 
         from jobbuddy.sync.display import PhaseState
@@ -334,14 +338,15 @@ class TestEnrichment:
         captured_metadata = {}
         mock_fetcher = MagicMock()
         mock_fetcher.descriptions_in_listing = False
+        mock_fetcher.enrichment_fills = ("description",)
 
         def fake_fetch(job_ids, *, metadata=None, on_fetched=None, on_retry=None):
             captured_metadata.update(metadata or {})
             for jid in job_ids:
                 if on_fetched:
-                    on_fetched(jid, "description")
+                    on_fetched(jid, {"description": "description"})
 
-        mock_fetcher.fetch_descriptions.side_effect = fake_fetch
+        mock_fetcher.fetch_enrichments.side_effect = fake_fetch
         mock_get_fetcher.return_value = mock_fetcher
 
         from jobbuddy.sync.display import PhaseState
@@ -362,13 +367,14 @@ class TestEnrichment:
 
         mock_fetcher = MagicMock()
         mock_fetcher.descriptions_in_listing = False
+        mock_fetcher.enrichment_fills = ("description",)
 
         def fake_fetch(job_ids, *, metadata=None, on_fetched=None, on_retry=None):
             if on_fetched:
-                on_fetched("1", "first description")
+                on_fetched("1", {"description": "first description"})
             raise Exception("Network died mid-batch")
 
-        mock_fetcher.fetch_descriptions.side_effect = fake_fetch
+        mock_fetcher.fetch_enrichments.side_effect = fake_fetch
         mock_get_fetcher.return_value = mock_fetcher
 
         from jobbuddy.sync.display import PhaseState

@@ -1,13 +1,46 @@
-"""Rippling ATS fetcher."""
+"""Rippling ATS fetcher.
+
+The Rippling list endpoint (/board/{board}/jobs) returns only
+{department, name, url, uuid, workLocation} — no description, no createdOn,
+no payRangeDetails. Those fields live only on the detail endpoint
+(/board/{board}/jobs/{uuid}), so this is a stub fetcher: list_jobs() emits
+stubs, and the enrich phase fetches each detail page individually for
+description + published_at + salary.
+"""
+
+import logging
+from datetime import date
+from typing import Any
 
 from jobbuddy.fetchers.base import ATSFetcher, ProgressCallback, RetryCallback
 from jobbuddy.models import Job, strip_html
 
+log = logging.getLogger(__name__)
+
 _BASE = "https://api.rippling.com/platform/api/ats/v1"
+
+
+def _parse_created_on(raw: str | None) -> date | None:
+    """Parse Rippling's createdOn ISO timestamp into a date.
+
+    Format is `YYYY-MM-DDTHH:MM:SS.fff[+-]HH:MM`. We only want the date part.
+    Pydantic would coerce the truncated ISO string, but doing it here keeps
+    the field type honest and surfaces malformed payloads at fetch time
+    instead of at Job construction.
+    """
+    if not raw:
+        return None
+    try:
+        return date.fromisoformat(raw[:10])
+    except ValueError:
+        log.warning("Rippling createdOn unparseable: %r", raw)
+        return None
 
 
 class RipplingFetcher(ATSFetcher):
     ats_type = "rippling"
+    descriptions_in_listing = False
+    enrichment_fills = ("description", "published_at")
 
     def _parse_job(self, j: dict) -> Job:
         """Parse a Rippling job response into a Job."""
@@ -58,7 +91,7 @@ class RipplingFetcher(ATSFetcher):
             location=location,
             url=url,
             apply_url=url,
-            published_at=j.get("createdOn", "")[:10] if j.get("createdOn") else None,
+            published_at=_parse_created_on(j.get("createdOn")),
             department=department or None,
             team=None,
             salary=salary,
@@ -78,3 +111,17 @@ class RipplingFetcher(ATSFetcher):
             raise ValueError(f"Job ID {job_id} not found on {self.board} board.")
         resp.raise_for_status()
         return self._parse_job(resp.json())
+
+    def fetch_enrichment(self, job_id: str, metadata: dict | None = None) -> dict[str, Any]:
+        """Fetch description, published_at, and salary from a single detail
+        endpoint request. Avoids the wasted work of pulling the full job and
+        throwing away everything but the description."""
+        job = self.fetch_job(job_id)
+        payload: dict[str, Any] = {}
+        if job.description is not None:
+            payload["description"] = job.description
+        if job.published_at is not None:
+            payload["published_at"] = job.published_at
+        if job.salary is not None:
+            payload["salary"] = job.salary
+        return payload

@@ -75,12 +75,12 @@ def find_companies(
 
     `coverage_hint` is set when neither arm produced a strong match:
     `max(top vec_score, top fts_score) < coverage_floor`. That tells the
-    LLM the cache likely doesn't contain the entity named and a web
-    search is the right fallback.
+    LLM the named entity may not be a registered company and a web search
+    is the right fallback.
 
     Always returns top-N rows when any embeddings exist; never returns
     empty just because the query is unusual. Raises ValueError when query
-    is empty, limit < 1, or the cache has no embeddings yet.
+    is empty, limit < 1, or no company embeddings exist yet.
     """
     from jobbuddy.embeddings import embed_text
     from jobbuddy.store import JobStore
@@ -106,7 +106,7 @@ def find_companies(
 
     if not rows:
         raise ValueError(
-            "No company embeddings in cache. Run `jsb research-companies`"
+            "No company embeddings yet. Run `jsb research-companies`"
             " to fill bios + embeddings."
         )
 
@@ -116,18 +116,18 @@ def find_companies(
     # Coverage hint fires only when *both* arms missed: vector below floor
     # AND no FTS match at all. ts_rank is bounded differently than cosine
     # similarity, and any FTS hit means the query's tokens literally appear
-    # in some company's name+short_bio — that's positive evidence of cache
-    # coverage even when the score is small.
+    # in some company's name+short_bio — that's positive evidence the
+    # entity is registered, even when the score is small.
     # The FTS CTE's WHERE already guarantees only real matches reach this
-    # row, so any non-None fts_score is positive evidence of cache coverage
-    # — even ts_rank == 0.0 (which can occur on very short docs).
+    # row, so any non-None fts_score is positive evidence of registration —
+    # even ts_rank == 0.0 (which can occur on very short docs).
     coverage_hint = None
     vec_weak = top_vec is None or top_vec < coverage_floor
     fts_missed = top_fts is None
     if vec_weak and fts_missed:
         coverage_hint = (
-            "Top match is weak — the cache may not contain the entity you"
-            " named. For exact-name lookups, fall back to web search."
+            "Top match is weak — the named entity may not be a registered"
+            " company. For exact-name lookups, fall back to web search."
         )
 
     def _round(v):
@@ -173,7 +173,7 @@ def find_companies(
     }
 
 
-def search_cached_jobs(
+def search_jobs(
     *,
     query: str = "",
     companies: list[str] | None = None,
@@ -182,7 +182,7 @@ def search_cached_jobs(
     posted_since: str = "",
     limit: int = 20,
 ) -> list[dict]:
-    """Search the cached job listings — shared entry point for CLI and MCP.
+    """Search stored job listings — shared entry point for CLI and MCP.
 
     Resolves company names to slugs, parses the duration filter, and delegates
     to JobStore.search_jobs_fts. Raises ValueError on unknown company or bad

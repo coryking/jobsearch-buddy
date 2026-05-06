@@ -1,6 +1,6 @@
-"""Tests for the Phase 1 search surface.
+"""Tests for the search surface.
 
-Covers JobStore.search_jobs_fts and core.search_cached_jobs — the path that
+Covers JobStore.search_jobs_fts and core.search_jobs — the path that
 both `jsb search` and the `search_jobs` MCP tool sit on top of.
 """
 
@@ -26,7 +26,7 @@ def _seed_distilled(store, slug: str, job_id: str, *, title: str, short_jd: str,
         """INSERT INTO jobs (company_slug, job_id, title, location, url,
                              published_at, salary, description, short_jd,
                              description_normalized, last_seen, listing_status)
-           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now(), 'active')""",
+           VALUES (%s, %s, %s, %s, %s, COALESCE(%s, CURRENT_DATE), %s, %s, %s, %s, now(), 'active')""",
         (slug, job_id, title, location, f"https://example.com/{job_id}",
          published_at, salary, "raw body", short_jd,
          description_normalized or short_jd),
@@ -191,13 +191,13 @@ class TestSearchJobsFts:
         assert [r["job_id"] for r in rows] == ["raw"]
 
 
-class TestCoreSearchCachedJobs:
+class TestCoreSearchJobs:
     def test_unknown_company_raises_value_error(self, store):
-        from jobbuddy.core import search_cached_jobs
+        from jobbuddy.core import search_jobs
         with pytest.raises(ValueError, match="Unknown company"):
-            search_cached_jobs(companies=["nonexistent-co"])
+            search_jobs(companies=["nonexistent-co"])
 
     def test_invalid_posted_since_raises_value_error(self, store):
-        from jobbuddy.core import search_cached_jobs
+        from jobbuddy.core import search_jobs
         with pytest.raises(ValueError, match="Invalid duration"):
-            search_cached_jobs(posted_since="garbage")
+            search_jobs(posted_since="garbage")
