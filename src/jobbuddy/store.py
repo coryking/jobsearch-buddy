@@ -358,6 +358,8 @@ class JobStore:
         rows = self.conn.execute(sql, params).fetchall()
         return [{k: v for k, v in dict(row).items() if k != "rn"} for row in rows]
 
+    PER_COMPANY_CAP_DEFAULT = 3
+
     def search_jobs_fts(
         self,
         *,
@@ -368,6 +370,7 @@ class JobStore:
         posted_after: str | None = None,
         include_removed: bool = False,
         limit: int = 20,
+        per_company_cap: int | None = PER_COMPANY_CAP_DEFAULT,
     ) -> list[dict]:
         """Phase 1 search: FTS over fts_vector with deterministic ranking.
 
@@ -375,7 +378,11 @@ class JobStore:
           (published_at DESC NULLS LAST, company_slug, job_id).
         - When `query` is empty: pure published_at DESC NULLS LAST,
           tie-break on (company_slug, job_id).
-        - No per-company diversity cap (a deferred SERP-tuning concern).
+        - Per-company cap: keeps the top N rows per company in the result
+          set so a single dominant employer (Carvana auto-body, Anduril
+          robotics) doesn't crowd cross-employer evidence out of the
+          fixed-size top-K. Skipped when the caller already scoped to a
+          single company or passes None.
         - Returns rows including short_jd, salary, published_at — the
           fact-dense shape the calling LLM filters on.
         """
@@ -385,33 +392,74 @@ class JobStore:
             include_removed=include_removed,
         )
 
+        # Three ORDER BY contexts:
+        #  - `order_window`: inside row_number() OVER. Cannot use the `rank`
+        #    alias (window evaluation precedes SELECT-list aliasing in PG).
+        #    Must repeat the full ts_rank() expression and use `j.` prefixes.
+        #  - `order_inner`: top-level ORDER BY of the cap-less query. Can use
+        #    the `rank` alias. Uses `j.` prefixes for unambiguous join columns.
+        #  - `order_outer`: ORDER BY over the CTE result in the cap path.
+        #    Uses unqualified column names since CTE columns are flat.
+        ts_rank_expr = "ts_rank(j.fts_vector, websearch_to_tsquery('english', %s))"
         select_extra = ""
-        order_by = "j.published_at DESC NULLS LAST, j.company_slug, j.job_id"
+        order_window = "j.published_at DESC NULLS LAST, j.company_slug, j.job_id"
+        order_inner = order_window
+        order_outer = "published_at DESC NULLS LAST, company_slug, job_id"
         if query:
-            # Reuse the same tsquery already bound to params via _build_filter_conditions
-            select_extra = (
-                ", ts_rank(j.fts_vector, websearch_to_tsquery('english', %s)) AS rank"
-            )
-            params.insert(0, query)  # bound to the SELECT-list %s
-            order_by = (
-                "rank DESC, j.published_at DESC NULLS LAST, "
-                "j.company_slug, j.job_id"
-            )
+            select_extra = f", {ts_rank_expr} AS rank"
+            params.insert(0, query)  # bound to the SELECT-list ts_rank
+            order_window = f"{ts_rank_expr} DESC, " + order_window
+            order_inner = "rank DESC, " + order_inner
+            order_outer = "rank DESC, " + order_outer
 
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
-        params.append(limit)
 
-        sql = f"""
-            SELECT j.*, s.last_sync, c.name AS company_name{select_extra}
-              FROM jobs j
-              LEFT JOIN sync_status s ON j.company_slug = s.company_slug
-              LEFT JOIN companies c ON j.company_slug = c.slug
-              {where}
-              ORDER BY {order_by}
-              LIMIT %s
-        """
+        # Skip the cap when the caller explicitly scoped to one company —
+        # the user wants depth there, not breadth.
+        apply_cap = (
+            per_company_cap is not None
+            and per_company_cap > 0
+            and not (companies and len(companies) == 1)
+        )
+
+        if apply_cap:
+            sql = f"""
+                WITH ranked AS (
+                    SELECT j.*, s.last_sync, c.name AS company_name{select_extra},
+                           row_number() OVER (
+                               PARTITION BY j.company_slug
+                               ORDER BY {order_window}
+                           ) AS company_rn
+                      FROM jobs j
+                      LEFT JOIN sync_status s ON j.company_slug = s.company_slug
+                      LEFT JOIN companies c ON j.company_slug = c.slug
+                      {where}
+                )
+                SELECT * FROM ranked
+                 WHERE company_rn <= %s
+                 ORDER BY {order_outer}
+                 LIMIT %s
+            """
+            # When `query` is set, the OVER clause's ts_rank expression needs
+            # its own bound copy of the query (right after the SELECT-list one
+            # we already inserted, before the WHERE-clause params).
+            if query:
+                params.insert(1, query)
+            params.extend([per_company_cap, limit])
+        else:
+            sql = f"""
+                SELECT j.*, s.last_sync, c.name AS company_name{select_extra}
+                  FROM jobs j
+                  LEFT JOIN sync_status s ON j.company_slug = s.company_slug
+                  LEFT JOIN companies c ON j.company_slug = c.slug
+                  {where}
+                  ORDER BY {order_inner}
+                  LIMIT %s
+            """
+            params.append(limit)
+
         rows = self.conn.execute(sql, params).fetchall()
-        return [dict(r) for r in rows]
+        return [{k: v for k, v in dict(r).items() if k != "company_rn"} for r in rows]
 
     def get_jobs_needing_descriptions(self, slug: str) -> list[dict]:
         """Return active jobs with NULL description for a company."""
