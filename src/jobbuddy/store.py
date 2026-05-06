@@ -240,29 +240,18 @@ class JobStore:
                        (company_slug, job_id, title, location, url, published_at,
                         department, team, salary, description, ats_metadata, last_seen,
                         listing_status)
-                       VALUES (%s, %s, %s, %s, %s,
-                               COALESCE(%s, CURRENT_DATE),
-                               %s, %s, %s, %s, %s, %s, 'active')
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'active')
                        ON CONFLICT(company_slug, job_id) DO UPDATE SET
                         title = excluded.title,
                         location = excluded.location,
                         url = excluded.url,
-                        -- Universal scrape-date fallback: VALUES coerced a
-                        -- NULL param to CURRENT_DATE so new INSERTs land a
-                        -- date. For the UPDATE-on-conflict path, an
-                        -- excluded value equal to CURRENT_DATE on a row
-                        -- that already carries a real date is the
-                        -- "fetcher had no signal" case — keep the existing
-                        -- date rather than clobbering it with today.
-                        -- (A fetcher genuinely reporting today's date for
-                        -- an already-dated row is a contradiction in
-                        -- practice — the row was created in the past.)
-                        published_at = CASE
-                            WHEN excluded.published_at = CURRENT_DATE
-                              AND jobs.published_at IS NOT NULL
-                            THEN jobs.published_at
-                            ELSE excluded.published_at
-                        END,
+                        -- A NULL from the fetcher (stub re-sync, sitemap
+                        -- miss) preserves the existing date. A real date
+                        -- from the fetcher wins. Brand-new rows where the
+                        -- fetcher has no signal land NULL here and get
+                        -- backfilled from last_seen by a separate pass
+                        -- before the NOT NULL migration locks the column.
+                        published_at = COALESCE(excluded.published_at, jobs.published_at),
                         department = excluded.department,
                         team = excluded.team,
                         salary = COALESCE(excluded.salary, jobs.salary),
@@ -289,12 +278,7 @@ class JobStore:
                               jobs.ats_metadata, jobs.listing_status)
                              IS DISTINCT FROM
                              (excluded.title, excluded.location, excluded.url,
-                              CASE
-                                  WHEN excluded.published_at = CURRENT_DATE
-                                    AND jobs.published_at IS NOT NULL
-                                  THEN jobs.published_at
-                                  ELSE excluded.published_at
-                              END,
+                              COALESCE(excluded.published_at, jobs.published_at),
                               excluded.department, excluded.team,
                               COALESCE(excluded.salary, jobs.salary),
                               COALESCE(excluded.description, jobs.description),
@@ -485,20 +469,30 @@ class JobStore:
                     returning=False,
                 )
 
+    # Per-column write expression for update_enrichment. Most columns are
+    # written directly (a non-NULL fetched value is authoritative). For
+    # published_at we use COALESCE(jobs.x, %s) so a real existing date is
+    # never clobbered by a re-enrich — posted dates don't change in
+    # practice, and this keeps us safe from a fetcher that produces a
+    # different value on a follow-up pass.
+    _ENRICHMENT_WRITE_EXPR = {
+        "description": "%s",
+        "salary": "%s",
+        "published_at": "COALESCE(jobs.published_at, %s)",
+    }
+
     def update_enrichment(self, slug: str, payloads: dict[str, dict]) -> None:
         """Write per-column enrichment results for a company.
 
-        `payloads` is {job_id: {column: value, ...}}; only keys in
-        _ENRICHMENT_COLUMNS are accepted, and each per-job payload may
-        carry a different subset (a fetcher might capture both description
-        and published_at on one job but only description on another).
-
-        Empty per-job payloads (no extractable fields) are skipped.
+        `payloads` is `{job_id: {column: value, ...}}`; only keys in
+        `_ENRICHMENT_COLUMNS` are accepted. Each per-job payload may carry
+        a different subset of columns. Empty payloads are skipped. Bad
+        column names raise before any write, so a bad payload doesn't
+        half-write the batch.
         """
         if not payloads:
             return
 
-        # Validate up front so a bad payload doesn't half-write the batch.
         for jid, fields in payloads.items():
             bad = set(fields) - self._ENRICHMENT_COLUMNS
             if bad:
@@ -507,28 +501,20 @@ class JobStore:
                     f"for job {jid}; allowed: {sorted(self._ENRICHMENT_COLUMNS)}"
                 )
 
-        # Group by column-set so each group reuses one prepared statement.
-        by_cols: dict[tuple[str, ...], list[tuple]] = {}
-        for jid, fields in payloads.items():
-            if not fields:
-                continue
-            cols = tuple(sorted(fields))
-            by_cols.setdefault(cols, []).append(
-                tuple(fields[c] for c in cols) + (slug, jid)
-            )
-
-        if not by_cols:
-            return
-
         with self.conn.transaction():
             with self.conn.cursor() as cur:
-                for cols, rows in by_cols.items():
-                    set_clause = ", ".join(f"{c} = %s" for c in cols)
-                    cur.executemany(
+                for jid, fields in payloads.items():
+                    if not fields:
+                        continue
+                    cols = sorted(fields)
+                    set_clause = ", ".join(
+                        f"{c} = {self._ENRICHMENT_WRITE_EXPR[c]}" for c in cols
+                    )
+                    params = tuple(fields[c] for c in cols) + (slug, jid)
+                    cur.execute(
                         f"UPDATE jobs SET {set_clause} "
                         f"WHERE company_slug = %s AND job_id = %s",
-                        rows,
-                        returning=False,
+                        params,
                     )
 
     # -------------------------------------------------------------------

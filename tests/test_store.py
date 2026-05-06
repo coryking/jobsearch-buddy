@@ -120,17 +120,18 @@ class TestUpsertAndQuery:
         rows = store.query_jobs(companies=["acme"])
         assert rows[0]["description"] == "enriched"
 
-    def test_upsert_fills_null_published_at_with_today(self, store):
+    def test_upsert_passes_null_published_at_through_on_insert(self, store):
         """A fetcher with no posted-date signal (Tesla, Avature missing from
-        sitemap) inserts published_at=None; upsert must coerce it to today
-        so the row never carries NULL forward. This is the safety net that
-        makes the eventual NOT NULL constraint viable."""
-        from datetime import date
+        sitemap) inserts NULL. The upsert does NOT coerce on insert — a
+        separate backfill pass fills NULLs from last_seen before the NOT
+        NULL migration locks the column. This keeps the enrich phase's
+        `published_at IS NULL` retry predicate effective for rows whose
+        detail-page extraction can later succeed."""
         store.upsert_jobs("acme", [make_job("1", published_at=None)])
         row = store.conn.execute(
             "SELECT published_at FROM jobs WHERE job_id = '1'"
         ).fetchone()
-        assert row["published_at"] == date.today()
+        assert row["published_at"] is None
 
     def test_upsert_preserves_existing_published_at_on_null_resync(self, store):
         """A row that already has a real posted date (from prior sync, or
@@ -407,16 +408,13 @@ class TestEnrichmentQuery:
         assert {j["job_id"] for j in needing} == {"2"}
 
     def test_or_predicate_matches_either_null(self, store):
-        """Description and salary are both still nullable post-step-8, so
-        we use them to exercise the OR-of-NULLs logic. (published_at is no
-        longer nullable through upsert — covered separately.)"""
         store.upsert_jobs("acme", [
-            make_job("1", description="x", salary="$100k"),  # nothing missing
-            make_job("2", description=None, salary="$100k"),  # desc missing
-            make_job("3", description="x", salary=None),      # salary missing
-            make_job("4", description=None, salary=None),     # both missing
+            make_job("1", description="x", published_at=self.date(2026, 1, 1)),  # nothing missing
+            make_job("2", description=None, published_at=self.date(2026, 1, 1)),  # desc missing
+            make_job("3", description="x", published_at=None),                    # date missing
+            make_job("4", description=None, published_at=None),                   # both missing
         ])
-        needing = store.get_jobs_needing_enrichment("acme", ("description", "salary"))
+        needing = store.get_jobs_needing_enrichment("acme", ("description", "published_at"))
         assert {j["job_id"] for j in needing} == {"2", "3", "4"}
 
     def test_returns_same_columns_as_legacy(self, store):
@@ -482,6 +480,46 @@ class TestUpdateEnrichment:
         import pytest
         with pytest.raises(ValueError, match="unsupported"):
             store.update_enrichment("acme", {"1": {"id": 999}})
+
+    def test_published_at_preserved_when_existing(self, store):
+        """A re-enrich that produces a different published_at must not
+        clobber an existing real date. Posted dates don't change in
+        practice, so the existing value wins."""
+        existing = self.date(2026, 1, 1)
+        store.upsert_jobs("acme", [make_job("1", published_at=existing)])
+        store.update_enrichment("acme", {
+            "1": {"published_at": self.date(2026, 5, 1)},
+        })
+        row = store.conn.execute(
+            "SELECT published_at FROM jobs WHERE job_id = '1'"
+        ).fetchone()
+        assert row["published_at"] == existing
+
+    def test_published_at_written_when_existing_null(self, store):
+        """For rows with NULL published_at (the TalentBrew backfill case),
+        update_enrichment fills the date."""
+        store.upsert_jobs("acme", [make_job("1", published_at=None)])
+        new_date = self.date(2026, 5, 1)
+        store.update_enrichment("acme", {"1": {"published_at": new_date}})
+        row = store.conn.execute(
+            "SELECT published_at FROM jobs WHERE job_id = '1'"
+        ).fetchone()
+        assert row["published_at"] == new_date
+
+    def test_rollback_on_bad_payload_in_batch(self, store):
+        """All-or-nothing: a bad column in any one payload prevents the
+        entire batch from writing."""
+        store.upsert_jobs("acme", [make_job("1", description=None), make_job("2", description=None)])
+        import pytest
+        with pytest.raises(ValueError, match="unsupported"):
+            store.update_enrichment("acme", {
+                "1": {"description": "should not land"},
+                "2": {"id": 999},
+            })
+        row = store.conn.execute(
+            "SELECT description FROM jobs WHERE job_id = '1'"
+        ).fetchone()
+        assert row["description"] is None
 
 
 # ---------------------------------------------------------------------------

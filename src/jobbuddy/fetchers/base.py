@@ -11,7 +11,6 @@ import httpx
 from jobbuddy.models import Job
 
 type ProgressCallback = Callable[[int, int], None]   # (fetched, total)
-type FetchedCallback = Callable[[str, str], None]    # (job_id, description)
 type EnrichmentCallback = Callable[[str, dict[str, Any]], None]  # (job_id, payload)
 type RetryCallback = Callable[[int, int, float, str], None]  # (attempt, max_attempts, wait_seconds, reason)
 type JobList = list[Job]
@@ -184,24 +183,3 @@ class ATSFetcher(ABC):
 
         return results
 
-    def fetch_descriptions(
-        self,
-        job_ids: list[str],
-        *,
-        metadata: dict[str, dict] | None = None,
-        on_fetched: FetchedCallback | None = None,
-        on_retry: RetryCallback | None = None,
-    ) -> dict[str, str | None]:
-        """Description-only batch fetch. Thin shim over fetch_enrichments,
-        kept so existing callers and tests that only care about descriptions
-        don't have to deal with payload dicts."""
-        wrapped = None
-        if on_fetched is not None:
-            def wrapped(jid: str, payload: dict[str, Any]) -> None:
-                desc = payload.get("description")
-                if desc:
-                    on_fetched(jid, desc)
-        payloads = self.fetch_enrichments(
-            job_ids, metadata=metadata, on_fetched=wrapped, on_retry=on_retry,
-        )
-        return {jid: (p.get("description") if p else None) for jid, p in payloads.items()}

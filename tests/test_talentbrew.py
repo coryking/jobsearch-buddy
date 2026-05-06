@@ -84,16 +84,51 @@ class TestParseDetailPage:
         assert result["description"] == "Hi"
         assert result["published_at"] is None
 
-    def test_fetch_description_still_returns_string(self):
-        """The legacy str-only fetch_description path must keep working —
-        it's what the current enrich phase calls."""
+    def test_calendar_invalid_dateposted_is_none(self):
+        """A regex-matching but calendar-invalid date (month 13, day 0,
+        Feb 30) must not raise — _parse_loose_date catches the ValueError
+        from date() construction."""
+        fetcher = _make_fetcher()
+        for bad in ("2026-13-01", "2026-00-15", "2026-02-30"):
+            html = _wrap_jsonld(
+                f'{{"@type":"JobPosting","description":"Hi","datePosted":"{bad}"}}'
+            )
+            result = fetcher._parse_detail_page(html)
+            assert result["published_at"] is None, f"expected None for {bad}"
+
+    def test_non_string_description_does_not_crash(self):
+        """A JSON-LD block with description as a list or int (seen in some
+        tenant variants) must not raise on strip_html — return None for
+        description instead."""
+        fetcher = _make_fetcher()
+        for bad_desc in ('["a","b"]', '42', '{"nested":"obj"}'):
+            html = _wrap_jsonld(
+                f'{{"@type":"JobPosting","description":{bad_desc},"datePosted":"2026-3-1"}}'
+            )
+            result = fetcher._parse_detail_page(html)
+            assert result["description"] is None, f"expected None for {bad_desc}"
+            # The date should still come through.
+            assert result["published_at"] == date(2026, 3, 1)
+
+    def test_non_string_dateposted_does_not_crash(self):
+        """datePosted as a non-string (number, list) must not crash."""
+        fetcher = _make_fetcher()
+        for bad_date in ('20260301', '["2026-3-1"]', 'null'):
+            html = _wrap_jsonld(
+                f'{{"@type":"JobPosting","description":"Hi","datePosted":{bad_date}}}'
+            )
+            result = fetcher._parse_detail_page(html)
+            assert result["published_at"] is None, f"expected None for {bad_date}"
+
+    def test_parse_returns_dict_with_both_keys_present(self):
+        """The dict shape is the contract — callers may read either key,
+        so both must always be present (None when absent)."""
         fetcher = _make_fetcher()
         html = _wrap_jsonld(
-            '{"@type":"JobPosting","description":"Just the desc","datePosted":"2026-1-2"}'
+            '{"@type":"JobPosting","description":"Hi","datePosted":"2026-1-2"}'
         )
-        # _extract_description_from_html is the legacy entry point used by
-        # fetch_description.
-        assert fetcher._extract_description_from_html(html) == "Just the desc"
+        result = fetcher._parse_detail_page(html)
+        assert set(result.keys()) == {"description", "published_at"}
 
 
 class TestEnrichmentFills:

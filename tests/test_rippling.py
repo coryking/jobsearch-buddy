@@ -8,7 +8,7 @@ listing) rather than a full one.
 
 from datetime import date
 
-from jobbuddy.fetchers.rippling import RipplingFetcher
+from jobbuddy.fetchers.rippling import RipplingFetcher, _parse_created_on
 
 
 class TestStubFetcherShape:
@@ -59,6 +59,23 @@ class TestParseDetailJob:
         f = RipplingFetcher(board="rippling")
         job = f._parse_job(self._detail_payload())
         assert job.salary == "200000 - 300000"
+
+
+class TestParseCreatedOn:
+    """Rippling's createdOn is a full ISO timestamp; we keep only the date.
+    A non-ISO value must not crash _parse_job — it returns None and logs."""
+
+    def test_parses_iso_timestamp(self):
+        assert _parse_created_on("2026-03-03T22:14:19.782000-08:00") == date(2026, 3, 3)
+
+    def test_returns_none_on_empty(self):
+        assert _parse_created_on(None) is None
+        assert _parse_created_on("") is None
+
+    def test_returns_none_on_garbage(self):
+        """Source format change or corruption — don't propagate as ValidationError."""
+        assert _parse_created_on("not-a-date") is None
+        assert _parse_created_on("3/3/2026") is None
 
 
 class TestParseListStub:

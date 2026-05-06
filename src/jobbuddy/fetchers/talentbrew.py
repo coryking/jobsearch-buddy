@@ -273,20 +273,14 @@ class TalentBrewFetcher(ATSFetcher):
                 continue
 
             desc_raw = data.get("description")
-            description = strip_html(desc_raw) if desc_raw else None
+            description = strip_html(desc_raw) if isinstance(desc_raw, str) and desc_raw else None
 
             posted_raw = data.get("datePosted")
-            published_at = _parse_loose_date(posted_raw) if posted_raw else None
+            published_at = _parse_loose_date(posted_raw) if isinstance(posted_raw, str) else None
 
             return {"description": description, "published_at": published_at}
 
         return {"description": None, "published_at": None}
-
-    def _extract_description_from_html(self, html: str) -> str | None:
-        """Legacy entry point used by fetch_description. Returns just the
-        description; callers that also want the posted date use
-        _parse_detail_page directly."""
-        return self._parse_detail_page(html)["description"]
 
     def fetch_description(self, job_id: str, metadata: dict | None = None) -> str | None:
         """Fetch description from the job detail page."""

@@ -8,12 +8,33 @@ stubs, and the enrich phase fetches each detail page individually for
 description + published_at + salary.
 """
 
+import logging
+from datetime import date
 from typing import Any
 
 from jobbuddy.fetchers.base import ATSFetcher, ProgressCallback, RetryCallback
 from jobbuddy.models import Job, strip_html
 
+log = logging.getLogger(__name__)
+
 _BASE = "https://api.rippling.com/platform/api/ats/v1"
+
+
+def _parse_created_on(raw: str | None) -> date | None:
+    """Parse Rippling's createdOn ISO timestamp into a date.
+
+    Format is `YYYY-MM-DDTHH:MM:SS.fff[+-]HH:MM`. We only want the date part.
+    Pydantic would coerce the truncated ISO string, but doing it here keeps
+    the field type honest and surfaces malformed payloads at fetch time
+    instead of at Job construction.
+    """
+    if not raw:
+        return None
+    try:
+        return date.fromisoformat(raw[:10])
+    except ValueError:
+        log.warning("Rippling createdOn unparseable: %r", raw)
+        return None
 
 
 class RipplingFetcher(ATSFetcher):
@@ -70,7 +91,7 @@ class RipplingFetcher(ATSFetcher):
             location=location,
             url=url,
             apply_url=url,
-            published_at=j.get("createdOn", "")[:10] if j.get("createdOn") else None,
+            published_at=_parse_created_on(j.get("createdOn")),
             department=department or None,
             team=None,
             salary=salary,
