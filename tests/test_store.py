@@ -120,6 +120,55 @@ class TestUpsertAndQuery:
         rows = store.query_jobs(companies=["acme"])
         assert rows[0]["description"] == "enriched"
 
+    def test_upsert_fills_null_published_at_with_today(self, store):
+        """A fetcher with no posted-date signal (Tesla, Avature missing from
+        sitemap) inserts published_at=None; upsert must coerce it to today
+        so the row never carries NULL forward. This is the safety net that
+        makes the eventual NOT NULL constraint viable."""
+        from datetime import date
+        store.upsert_jobs("acme", [make_job("1", published_at=None)])
+        row = store.conn.execute(
+            "SELECT published_at FROM jobs WHERE job_id = '1'"
+        ).fetchone()
+        assert row["published_at"] == date.today()
+
+    def test_upsert_preserves_existing_published_at_on_null_resync(self, store):
+        """A row that already has a real posted date (from prior sync, or
+        from the enrich phase) must not be reset to today just because the
+        next sync's stub didn't carry one."""
+        from datetime import date
+        original = date(2026, 3, 15)
+        store.upsert_jobs("acme", [make_job("1", published_at=original)])
+        # Re-sync with NULL — should NOT bump to today.
+        store.upsert_jobs("acme", [make_job("1", published_at=None)])
+        row = store.conn.execute(
+            "SELECT published_at FROM jobs WHERE job_id = '1'"
+        ).fetchone()
+        assert row["published_at"] == original
+
+    def test_upsert_overwrites_published_at_with_real_value(self, store):
+        """When a fetcher learns the real posted date (e.g. TalentBrew
+        enrich pulls JSON-LD datePosted on a previously-scrape-dated row),
+        the new real date wins."""
+        from datetime import date
+        store.upsert_jobs("acme", [make_job("1", published_at=date(2026, 1, 1))])
+        store.upsert_jobs("acme", [make_job("1", published_at=date(2026, 3, 15))])
+        row = store.conn.execute(
+            "SELECT published_at FROM jobs WHERE job_id = '1'"
+        ).fetchone()
+        assert row["published_at"] == date(2026, 3, 15)
+
+    def test_upsert_preserves_salary_on_null_resync(self, store):
+        """Rippling moving to stub mode means list_jobs() returns salary=None
+        and the enrich phase fills it later. Re-sync of the stub must not
+        clobber an enriched salary."""
+        store.upsert_jobs("acme", [make_job("1", salary="$200k-$300k")])
+        store.upsert_jobs("acme", [make_job("1", salary=None)])
+        row = store.conn.execute(
+            "SELECT salary FROM jobs WHERE job_id = '1'"
+        ).fetchone()
+        assert row["salary"] == "$200k-$300k"
+
     def test_description_change_nulls_distill_outputs(self, store):
         """Re-upserting with a changed description NULLs short_jd and
         description_normalized so the distill phase reprocesses the row.
@@ -338,6 +387,101 @@ class TestDescriptions:
         store.update_descriptions("acme", {"1": "desc for 1"})
         row = store.conn.execute("SELECT description FROM jobs WHERE job_id = '1'").fetchone()
         assert row["description"] == "desc for 1"
+
+
+class TestEnrichmentQuery:
+    """get_jobs_needing_enrichment(slug, columns) generalizes
+    get_jobs_needing_descriptions: a row matches if ANY of the requested
+    columns is NULL. Lets fetchers re-fetch detail pages for rows that
+    have a description but are missing other detail-page fields like
+    published_at."""
+
+    from datetime import date
+
+    def test_description_only_matches_null_description(self, store):
+        store.upsert_jobs("acme", [
+            make_job("1", description="x", published_at=self.date(2026, 1, 1)),
+            make_job("2", description=None, published_at=self.date(2026, 1, 1)),
+        ])
+        needing = store.get_jobs_needing_enrichment("acme", ("description",))
+        assert {j["job_id"] for j in needing} == {"2"}
+
+    def test_or_predicate_matches_either_null(self, store):
+        """Description and salary are both still nullable post-step-8, so
+        we use them to exercise the OR-of-NULLs logic. (published_at is no
+        longer nullable through upsert — covered separately.)"""
+        store.upsert_jobs("acme", [
+            make_job("1", description="x", salary="$100k"),  # nothing missing
+            make_job("2", description=None, salary="$100k"),  # desc missing
+            make_job("3", description="x", salary=None),      # salary missing
+            make_job("4", description=None, salary=None),     # both missing
+        ])
+        needing = store.get_jobs_needing_enrichment("acme", ("description", "salary"))
+        assert {j["job_id"] for j in needing} == {"2", "3", "4"}
+
+    def test_returns_same_columns_as_legacy(self, store):
+        """Enrich phase reads job_id, title, ats_metadata; the new query must
+        return the same shape so callers don't have to branch."""
+        store.upsert_jobs("acme", [make_job("1", description=None, ats_metadata={"k": "v"})])
+        rows = store.get_jobs_needing_enrichment("acme", ("description",))
+        assert len(rows) == 1
+        assert set(rows[0].keys()) >= {"job_id", "title", "ats_metadata"}
+
+    def test_only_active_listings(self, store):
+        """Soft-deleted listings (not in the next sync) must not be enriched."""
+        store.upsert_jobs("acme", [make_job("1", description=None), make_job("2", description=None)])
+        # Re-sync without job 2 — it gets soft-deleted.
+        store.upsert_jobs("acme", [make_job("1", description=None)])
+        needing = store.get_jobs_needing_enrichment("acme", ("description",))
+        assert {j["job_id"] for j in needing} == {"1"}
+
+
+class TestUpdateEnrichment:
+    """update_enrichment(slug, payloads) writes whatever columns are present
+    in each per-job payload dict — generalizes update_descriptions so the
+    enrich phase can land description + published_at + salary in one batch."""
+
+    from datetime import date
+
+    def test_writes_multiple_columns(self, store):
+        store.upsert_jobs("acme", [make_job("1", description=None)])
+        store.update_enrichment("acme", {
+            "1": {"description": "the desc", "published_at": self.date(2026, 3, 1)},
+        })
+        row = store.conn.execute(
+            "SELECT description, published_at FROM jobs WHERE job_id = '1'"
+        ).fetchone()
+        assert row["description"] == "the desc"
+        assert row["published_at"] == self.date(2026, 3, 1)
+
+    def test_partial_payload_only_writes_present_columns(self, store):
+        """An enrichment that captured published_at but not description must
+        leave description alone."""
+        store.upsert_jobs("acme", [make_job("1", description="existing")])
+        store.update_enrichment("acme", {
+            "1": {"published_at": self.date(2026, 3, 1)},
+        })
+        row = store.conn.execute(
+            "SELECT description, published_at FROM jobs WHERE job_id = '1'"
+        ).fetchone()
+        assert row["description"] == "existing"
+        assert row["published_at"] == self.date(2026, 3, 1)
+
+    def test_empty_payload_dict_is_noop(self, store):
+        """An empty payload (detail page yielded nothing) must not blow up."""
+        store.upsert_jobs("acme", [make_job("1", description="x")])
+        store.update_enrichment("acme", {"1": {}})
+        row = store.conn.execute(
+            "SELECT description FROM jobs WHERE job_id = '1'"
+        ).fetchone()
+        assert row["description"] == "x"
+
+    def test_rejects_unknown_columns(self, store):
+        """Defense-in-depth: only whitelisted columns can be written."""
+        store.upsert_jobs("acme", [make_job("1", description=None)])
+        import pytest
+        with pytest.raises(ValueError, match="unsupported"):
+            store.update_enrichment("acme", {"1": {"id": 999}})
 
 
 # ---------------------------------------------------------------------------

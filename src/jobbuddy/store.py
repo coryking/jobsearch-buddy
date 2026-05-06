@@ -240,15 +240,32 @@ class JobStore:
                        (company_slug, job_id, title, location, url, published_at,
                         department, team, salary, description, ats_metadata, last_seen,
                         listing_status)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'active')
+                       VALUES (%s, %s, %s, %s, %s,
+                               COALESCE(%s, CURRENT_DATE),
+                               %s, %s, %s, %s, %s, %s, 'active')
                        ON CONFLICT(company_slug, job_id) DO UPDATE SET
                         title = excluded.title,
                         location = excluded.location,
                         url = excluded.url,
-                        published_at = excluded.published_at,
+                        -- Universal scrape-date fallback: VALUES coerced a
+                        -- NULL param to CURRENT_DATE so new INSERTs land a
+                        -- date. For the UPDATE-on-conflict path, an
+                        -- excluded value equal to CURRENT_DATE on a row
+                        -- that already carries a real date is the
+                        -- "fetcher had no signal" case — keep the existing
+                        -- date rather than clobbering it with today.
+                        -- (A fetcher genuinely reporting today's date for
+                        -- an already-dated row is a contradiction in
+                        -- practice — the row was created in the past.)
+                        published_at = CASE
+                            WHEN excluded.published_at = CURRENT_DATE
+                              AND jobs.published_at IS NOT NULL
+                            THEN jobs.published_at
+                            ELSE excluded.published_at
+                        END,
                         department = excluded.department,
                         team = excluded.team,
-                        salary = excluded.salary,
+                        salary = COALESCE(excluded.salary, jobs.salary),
                         description = COALESCE(excluded.description, jobs.description),
                         ats_metadata = COALESCE(excluded.ats_metadata, jobs.ats_metadata),
                         last_seen = excluded.last_seen,
@@ -271,8 +288,15 @@ class JobStore:
                               jobs.department, jobs.team, jobs.salary, jobs.description,
                               jobs.ats_metadata, jobs.listing_status)
                              IS DISTINCT FROM
-                             (excluded.title, excluded.location, excluded.url, excluded.published_at,
-                              excluded.department, excluded.team, excluded.salary,
+                             (excluded.title, excluded.location, excluded.url,
+                              CASE
+                                  WHEN excluded.published_at = CURRENT_DATE
+                                    AND jobs.published_at IS NOT NULL
+                                  THEN jobs.published_at
+                                  ELSE excluded.published_at
+                              END,
+                              excluded.department, excluded.team,
+                              COALESCE(excluded.salary, jobs.salary),
                               COALESCE(excluded.description, jobs.description),
                               COALESCE(excluded.ats_metadata, jobs.ats_metadata),
                               'active')""",
@@ -413,14 +437,40 @@ class JobStore:
         rows = self.conn.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
 
-    def get_jobs_needing_descriptions(self, slug: str) -> list[dict]:
-        """Return active jobs with NULL description for a company."""
-        rows = self.conn.execute(
-            """SELECT job_id, title, ats_metadata FROM jobs
-               WHERE company_slug = %s AND description IS NULL AND listing_status = 'active'""",
-            (slug,),
-        ).fetchall()
+    # Columns the enrich phase is allowed to ask about. Whitelisted to keep
+    # the SQL composer safe — the column tuple comes from a fetcher class
+    # attribute, but defense-in-depth costs nothing here.
+    _ENRICHMENT_COLUMNS = frozenset({"description", "published_at", "salary"})
+
+    def get_jobs_needing_enrichment(
+        self, slug: str, columns: tuple[str, ...]
+    ) -> list[dict]:
+        """Return active jobs in `slug` where ANY of `columns` is NULL.
+
+        Generalizes get_jobs_needing_descriptions so a fetcher can declare
+        multiple detail-page-derivable fields (description, published_at,
+        salary) via ATSFetcher.enrichment_fills, and the enrich phase
+        re-fetches a row whenever any one of them is missing.
+        """
+        if not columns:
+            raise ValueError("get_jobs_needing_enrichment: columns must be non-empty")
+        bad = set(columns) - self._ENRICHMENT_COLUMNS
+        if bad:
+            raise ValueError(
+                f"get_jobs_needing_enrichment: unsupported columns {sorted(bad)}; "
+                f"allowed: {sorted(self._ENRICHMENT_COLUMNS)}"
+            )
+        null_clause = " OR ".join(f"{c} IS NULL" for c in columns)
+        sql = (
+            "SELECT job_id, title, ats_metadata FROM jobs "
+            f"WHERE company_slug = %s AND listing_status = 'active' AND ({null_clause})"
+        )
+        rows = self.conn.execute(sql, (slug,)).fetchall()
         return [dict(row) for row in rows]
+
+    def get_jobs_needing_descriptions(self, slug: str) -> list[dict]:
+        """Back-compat shim around get_jobs_needing_enrichment."""
+        return self.get_jobs_needing_enrichment(slug, ("description",))
 
     def update_descriptions(self, slug: str, descs: dict[str, str]) -> None:
         """Batch update description column for jobs in a company."""
@@ -434,6 +484,52 @@ class JobStore:
                     [(desc, slug, job_id) for job_id, desc in descs.items()],
                     returning=False,
                 )
+
+    def update_enrichment(self, slug: str, payloads: dict[str, dict]) -> None:
+        """Write per-column enrichment results for a company.
+
+        `payloads` is {job_id: {column: value, ...}}; only keys in
+        _ENRICHMENT_COLUMNS are accepted, and each per-job payload may
+        carry a different subset (a fetcher might capture both description
+        and published_at on one job but only description on another).
+
+        Empty per-job payloads (no extractable fields) are skipped.
+        """
+        if not payloads:
+            return
+
+        # Validate up front so a bad payload doesn't half-write the batch.
+        for jid, fields in payloads.items():
+            bad = set(fields) - self._ENRICHMENT_COLUMNS
+            if bad:
+                raise ValueError(
+                    f"update_enrichment: unsupported columns {sorted(bad)} "
+                    f"for job {jid}; allowed: {sorted(self._ENRICHMENT_COLUMNS)}"
+                )
+
+        # Group by column-set so each group reuses one prepared statement.
+        by_cols: dict[tuple[str, ...], list[tuple]] = {}
+        for jid, fields in payloads.items():
+            if not fields:
+                continue
+            cols = tuple(sorted(fields))
+            by_cols.setdefault(cols, []).append(
+                tuple(fields[c] for c in cols) + (slug, jid)
+            )
+
+        if not by_cols:
+            return
+
+        with self.conn.transaction():
+            with self.conn.cursor() as cur:
+                for cols, rows in by_cols.items():
+                    set_clause = ", ".join(f"{c} = %s" for c in cols)
+                    cur.executemany(
+                        f"UPDATE jobs SET {set_clause} "
+                        f"WHERE company_slug = %s AND job_id = %s",
+                        rows,
+                        returning=False,
+                    )
 
     # -------------------------------------------------------------------
     # Distill phase

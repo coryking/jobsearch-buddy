@@ -48,7 +48,13 @@ class EnrichPhase(WorkerPhase["EnrichWorkItem"]):
         return self._fetcher_cache[slug]
 
     def count_remaining(self) -> int:
-        """Build enrichment plan and return total jobs needing descriptions."""
+        """Build enrichment plan and return total jobs needing enrichment.
+
+        Each fetcher declares which columns its detail-page request can
+        populate via `enrichment_fills`; we ask the store for jobs where
+        ANY of those columns is NULL, so a TalentBrew job that already has
+        a description but is missing published_at gets re-fetched.
+        """
         total = 0
         for slug in self.slugs:
             company = self.slug_to_company.get(slug)
@@ -56,7 +62,9 @@ class EnrichPhase(WorkerPhase["EnrichWorkItem"]):
                 continue
             if has_descriptions_in_listing(company.ats):
                 continue
-            needing = self._get_reader().get_jobs_needing_descriptions(slug)
+            fetcher = self._get_fetcher(slug)
+            cols = fetcher.enrichment_fills
+            needing = self._get_reader().get_jobs_needing_enrichment(slug, cols)
             if not needing:
                 continue
             job_ids = [j["job_id"] for j in needing]
@@ -86,19 +94,19 @@ class EnrichPhase(WorkerPhase["EnrichWorkItem"]):
         jobs_meta = item["jobs_meta"]
         fetcher = self._get_fetcher(slug)
 
-        def _on_fetched(job_id: str, desc: str) -> None:
-            self.submit_write(lambda store, s=slug, jid=job_id, d=desc: store.update_descriptions(s, {jid: d}))
+        def _on_fetched(job_id: str, payload: dict) -> None:
+            if payload:
+                self.submit_write(
+                    lambda store, s=slug, jid=job_id, p=payload: store.update_enrichment(s, {jid: p})
+                )
             self.display.advance(detail=slug)
 
         try:
-            fetcher.fetch_descriptions(
+            fetcher.fetch_enrichments(
                 job_ids,
                 metadata=jobs_meta,
                 on_fetched=_on_fetched,
             )
         except Exception as e:
-            log.warning("Description enrichment failed for %s: %s", slug, e)
-            # Count remaining jobs in this company as done (with errors implied)
-            remaining = len(job_ids) - self.display.done
-            # Just log -- the base class _safe_process will record the error
+            log.warning("Enrichment failed for %s: %s", slug, e)
             raise
