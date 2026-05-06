@@ -82,8 +82,6 @@ def migrate():
             console.print(f"[green]{len(applied)} migration(s) applied.[/green]")
 
         # One-time CSV activity log import (no-ops if already imported)
-        store = JobStore.__new__(JobStore)
-        store.conn = conn
-        store._migrate_csv_activity_log(conn)
+        JobStore._migrate_csv_activity_log(conn)
     finally:
         conn.close()

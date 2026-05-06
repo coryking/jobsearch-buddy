@@ -928,7 +928,8 @@ class JobStore:
     # CSV Migration
     # -------------------------------------------------------------------
 
-    def _migrate_csv_activity_log(self, conn: psycopg.Connection[DictRow]) -> None:
+    @staticmethod
+    def _migrate_csv_activity_log(conn: psycopg.Connection[DictRow]) -> None:
         """One-time CSV activity log import. Called by `jsb migrate` only.
 
         Dead code path from normal JobStore usage — only invoked explicitly
