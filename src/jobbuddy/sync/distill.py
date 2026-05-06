@@ -20,6 +20,7 @@ from pathlib import Path
 import httpx
 from openai import OpenAI
 
+from jobbuddy.eval.models import find_by_deployment
 from jobbuddy.openai_client import create_openai_client
 from jobbuddy.settings import get_settings
 from jobbuddy.store import JobStore
@@ -86,7 +87,7 @@ class DistillPhase(WorkerPhase["DistillWorkItem"]):
     def __init__(
         self, conninfo: str, *,
         display: PhaseState,
-        max_workers: int = 60,
+        max_workers: int = 240,
         slugs: list[str] | None = None,
         conninfo_factory: Callable[[], str] | None = None,
     ):
@@ -168,6 +169,18 @@ class DistillPhase(WorkerPhase["DistillWorkItem"]):
                 cached = getattr(details, "cached_tokens", 0) or 0
             self.display.add_to_info_counter(response.usage.total_tokens, cached=cached)
             self.display.token_rate.record(response.usage.total_tokens)
+            prompt_toks = getattr(response.usage, "prompt_tokens", 0)
+            completion_toks = getattr(response.usage, "completion_tokens", 0)
+            if prompt_toks or completion_toks:
+                cfg = find_by_deployment(settings.distill_model)
+                if cfg is not None:
+                    cost = cfg.cost(
+                        prompt_toks,
+                        completion_toks,
+                        cached_input_tokens=cached,
+                    )
+                    if cost is not None:
+                        self.display.add_cost(cost)
 
         content = response.choices[0].message.content or ""
         try:

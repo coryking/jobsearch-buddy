@@ -106,6 +106,7 @@ class PhaseState:
     info_tokens: int = 0
     info_cached_tokens: int = 0
     info_label: str = "tok"
+    info_cost_usd: float = 0.0
     rate: RollingRate = field(default_factory=RollingRate)
     token_rate: RollingTokenRate = field(default_factory=RollingTokenRate)
     active_workers: int = 0
@@ -150,6 +151,15 @@ class PhaseState:
             self.info_tokens += n
             self.info_cached_tokens += cached
             self.info_label = label.strip() or "tok"
+
+    def add_cost(self, usd: float) -> None:
+        """Accumulate phase cost in USD. Computed by the phase from token
+        counts × the model's per-1M pricing — see eval/models.py. Heartbeat
+        renders as `cost=$X.XXXX` when > 0 so the operator can see real-time
+        spend without piping through eval/results.py.
+        """
+        with self._info_lock:
+            self.info_cost_usd += usd
 
     def record_error(self) -> None:
         self.errors += 1

@@ -29,40 +29,46 @@ log = logging.getLogger(__name__)
 def _format_phase_line(phase: PhaseState) -> str:
     """Render one phase's metrics as a key=value log line.
 
-    Missing metrics are emitted as ``-`` so column-grepping stays stable.
+    Optimized to fit a typical 120-column terminal without wrapping. Fields
+    that carry no signal in the common case (``status`` when active,
+    ``idle`` when 0, ``cached`` / ``cost`` before any tokens are billed) are
+    suppressed; cumulative ``info_tokens`` is dropped entirely because
+    ``cost`` and ``tok_rate`` together carry that magnitude.
     """
-    parts: list[str] = [
-        f"phase={phase.name}",
-        f"status={phase.status}",
-        f"done={phase.done}",
-    ]
+    parts: list[str] = [f"phase={phase.name}"]
 
-    if phase.total is not None:
-        parts.append(f"total={phase.total}")
-        if phase.total > 0:
-            pct = phase.done / phase.total * 100
-            parts.append(f"pct={pct:.0f}")
+    # Status is interesting only when not actively chewing work.
+    if phase.status != "active":
+        parts.append(f"status={phase.status}")
+
+    if phase.total is not None and phase.total > 0:
+        pct = phase.done / phase.total * 100
+        parts.append(f"done={phase.done}/{phase.total}({pct:.0f}%)")
+    else:
+        parts.append(f"done={phase.done}")
 
     rpm = phase.rate.rate_per_min()
     parts.append(f"rate={int(rpm)}/m" if rpm is not None else "rate=-")
 
     tpm = phase.token_rate.tokens_per_min()
-    parts.append(f"tok_rate={humanize.metric(tpm)}/m" if tpm is not None else "tok_rate=-")
+    if tpm is not None:
+        parts.append(f"tpm={humanize.metric(tpm)}")
 
-    if phase.info_tokens > 0:
-        info = f"{humanize.metric(phase.info_tokens)}_{phase.info_label}"
-        parts.append(f"info={info}")
-        if phase.info_cached_tokens > 0:
-            cache_pct = phase.info_cached_tokens / phase.info_tokens * 100
-            parts.append(f"cached={cache_pct:.0f}%")
+    if phase.info_cached_tokens > 0 and phase.info_tokens > 0:
+        cache_pct = phase.info_cached_tokens / phase.info_tokens * 100
+        parts.append(f"cached={cache_pct:.0f}%")
+
+    if phase.info_cost_usd > 0:
+        parts.append(f"cost=${phase.info_cost_usd:.4f}")
 
     if phase.max_workers > 0:
-        parts.append(f"workers={phase.active_workers}/{phase.max_workers}")
+        parts.append(f"w={phase.active_workers}/{phase.max_workers}")
 
-    parts.append(f"errors={phase.errors}")
+    if phase.errors > 0:
+        parts.append(f"errors={phase.errors}")
 
     idle = phase.seconds_since_last_ok()
-    if idle is not None:
+    if idle is not None and idle >= 5:
         parts.append(f"idle={int(idle)}s")
 
     return " ".join(parts)

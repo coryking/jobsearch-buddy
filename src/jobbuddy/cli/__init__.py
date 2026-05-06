@@ -3,8 +3,10 @@
 import sys
 
 import typer
+from rich.console import Console
 
 app = typer.Typer(help="Fetch job listings from ATS job boards.")
+console = Console(stderr=True)
 
 
 @app.callback()

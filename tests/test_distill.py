@@ -123,9 +123,17 @@ def _make_phase(*, response_content: str, usage_total: int = 100) -> tuple[Disti
     phase._company_bios = {"acme": "Acme makes widgets."}
 
     client = MagicMock()
+    # Real Azure responses always populate prompt_tokens/completion_tokens;
+    # the test mock mirrors that so the cost-tracking path is exercised.
+    prompt_tokens = int(usage_total * 0.8)
+    completion_tokens = usage_total - prompt_tokens
     client.chat.completions.create.return_value = SimpleNamespace(
         choices=[SimpleNamespace(message=SimpleNamespace(content=response_content))],
-        usage=SimpleNamespace(total_tokens=usage_total),
+        usage=SimpleNamespace(
+            total_tokens=usage_total,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+        ),
     )
     phase._client = client
 
