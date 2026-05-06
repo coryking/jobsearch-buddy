@@ -26,12 +26,18 @@ _RECORDS_PER_PAGE = 25
 
 
 def _parse_date(value: str | None) -> date | None:
-    """Parse SuccessFactors date format: 'Apr 22, 2026' -> date."""
+    """Parse SuccessFactors visible date label.
+
+    The list-page format is "Apr 22, 2026" today, but tenants vary on
+    abbreviation style (period vs no period, three-letter vs full name).
+    Defer to dateutil rather than locking to a single strptime pattern.
+    """
     if not value:
         return None
+    from dateutil import parser as date_parser
     try:
-        return datetime.strptime(value.strip(), "%b %d, %Y").date()
-    except ValueError:
+        return date_parser.parse(value.strip()).date()
+    except (ValueError, TypeError, OverflowError):
         return None
 
 

@@ -54,53 +54,22 @@ _SEARCH_DEFAULTS = {
 _RECORDS_PER_PAGE = 20
 
 
-_DATE_RE = re.compile(r"^(\d{4})-(\d{1,2})-(\d{1,2})$")
-_MONTHS = {m: i for i, m in enumerate(
-    ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"], start=1
-)}
-_ASCTIME_RE = re.compile(
-    r"^[A-Za-z]{3}\s+([A-Za-z]{3})\s+(\d{1,2})\s+\d{2}:\d{2}:\d{2}\s+[A-Z]{2,4}\s+(\d{4})$"
-)
-_LONG_MONTH_RE = re.compile(
-    r"^([A-Za-z]{3})[a-z]*\.?\s+(\d{1,2}),\s+(\d{4})$"
-)
-
-
 def _parse_loose_date(raw: str) -> date | None:
     """Parse a TalentBrew detail-page date in any format we've seen.
 
-    Supported shapes:
-      - JSON-LD `datePosted`: "2026-5-1" or "2026-05-01" (Walgreens-style unpadded ok)
-      - Microdata `<meta itemprop="datePosted" content="...">`: asctime-like
-        "Mon May 04 00:00:00 UTC 2026" (Amtrak)
-      - v3 visible "Date posted" label: "May 01, 2026" (Disney)
+    Tenants emit at least three different shapes — JSON-LD ISO ("2026-5-1"
+    or "2026-05-01"), microdata asctime ("Mon May 04 00:00:00 UTC 2026"),
+    and the v3 visible label ("May 01, 2026" / "Apr. 24, 2026"). Rather
+    than maintain a regex per variant, defer to dateutil which handles all
+    of them.
     """
     if not raw:
         return None
-    s = raw.strip()
-    m = _DATE_RE.match(s)
-    if m:
-        try:
-            return date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
-        except ValueError:
-            return None
-    m = _ASCTIME_RE.match(s)
-    if m:
-        month = _MONTHS.get(m.group(1))
-        if month:
-            try:
-                return date(int(m.group(3)), month, int(m.group(2)))
-            except ValueError:
-                return None
-    m = _LONG_MONTH_RE.match(s)
-    if m:
-        month = _MONTHS.get(m.group(1).title()[:3])
-        if month:
-            try:
-                return date(int(m.group(3)), month, int(m.group(2)))
-            except ValueError:
-                return None
-    return None
+    from dateutil import parser as date_parser
+    try:
+        return date_parser.parse(raw.strip()).date()
+    except (ValueError, TypeError, OverflowError):
+        return None
 
 
 class TalentBrewFetcher(ATSFetcher):
