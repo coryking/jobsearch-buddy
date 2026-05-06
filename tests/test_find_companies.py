@@ -1,11 +1,11 @@
-"""Tests for the company-embedding pipeline + find_companies surface.
+"""Tests for the find_companies surface.
 
 Covers:
-- JobStore.{count,get}_companies_needing_embedding predicate (column-presence,
-  stale relative to bio_researched_at)
 - JobStore.update_company_embedding write path
-- JobStore.find_companies_by_vector ranking (cosine score order, score range)
-- core.find_companies validation, coverage_hint trigger, raise on empty cache
+- JobStore.find_companies hybrid (vector + FTS) ranking via RRF
+- core.find_companies validation, coverage_hint trigger, empty-cache error
+- ResearchPhase inline embedding: bio + embedding paired, embed failure
+  swallowed without losing the bio write
 
 The embedding call is monkeypatched — no live OpenAI traffic in tests.
 """
@@ -42,42 +42,6 @@ def _seed_company_with_bio(store, slug: str, *, long_bio: str, name: str | None 
     )
     if name is not None:
         store.conn.execute("UPDATE companies SET name = %s WHERE slug = %s", (name, slug))
-
-
-class TestEmbeddingPredicate:
-    def test_no_long_bio_means_not_needing(self, store):
-        # acme has no bio → not selected
-        assert store.count_companies_needing_embedding() == 0
-        assert store.get_companies_needing_embedding() == []
-
-    def test_bio_without_embedding_is_needing(self, store):
-        _seed_company_with_bio(store, "acme", long_bio="Acme builds widgets.")
-        assert store.count_companies_needing_embedding() == 1
-        items = store.get_companies_needing_embedding()
-        assert len(items) == 1
-        assert items[0]["slug"] == "acme"
-        assert items[0]["long_bio"] == "Acme builds widgets."
-
-    def test_fresh_embedding_is_not_needing(self, store):
-        _seed_company_with_bio(store, "acme", long_bio="Acme.")
-        store.update_company_embedding("acme", embedding=_vec([0.1, 0.2]))
-        assert store.count_companies_needing_embedding() == 0
-
-    def test_stale_embedding_is_needing(self, store):
-        _seed_company_with_bio(store, "acme", long_bio="Acme.")
-        store.update_company_embedding("acme", embedding=_vec([0.1]))
-        # Backdate the embedding to before the current bio_researched_at
-        store.conn.execute(
-            "UPDATE companies SET bio_embedding_updated_at ="
-            " bio_researched_at - interval '1 hour' WHERE slug = 'acme'"
-        )
-        assert store.count_companies_needing_embedding() == 1
-
-    def test_slug_filter_scopes_predicate(self, store):
-        _seed_company_with_bio(store, "acme", long_bio="A.")
-        _seed_company_with_bio(store, "beta", long_bio="B.")
-        items = store.get_companies_needing_embedding(slugs=["acme"])
-        assert [i["slug"] for i in items] == ["acme"]
 
 
 class TestHybridSearch:
@@ -240,3 +204,74 @@ class TestCoreFindCompanies:
         result = core.find_companies("payments", limit=1)
         assert result["coverage_hint"] is None
         assert result["results"][0]["fts_score"] is not None
+
+
+class TestResearchPhaseInlineEmbedding:
+    """ResearchPhase writes a bio AND embedding in a single process_item."""
+
+    def _make_phase(self, monkeypatch, *, embed_raises: bool = False):
+        from jobbuddy.research import CompanyBio
+        from jobbuddy.sync.display import PhaseState
+        from jobbuddy.sync.research import ResearchPhase
+        from tests.conftest import TEST_CONNINFO
+
+        bio = CompanyBio(
+            short_bio="we make widgets",
+            long_bio="acme makes widgets for warehouses",
+            model="gpt-test",
+            web_search_count=2,
+        )
+        monkeypatch.setattr(
+            "jobbuddy.sync.research.research_company",
+            lambda name, client=None: bio,
+        )
+
+        embed_calls: list[str] = []
+
+        def fake_embed(text):
+            embed_calls.append(text)
+            if embed_raises:
+                raise RuntimeError("embedding API down")
+            return _vec([0.5, 0.5]), 7
+
+        monkeypatch.setattr("jobbuddy.sync.research.embed_text", fake_embed)
+
+        phase = ResearchPhase(TEST_CONNINFO, display=PhaseState("Research"))
+        return phase, bio, embed_calls
+
+    def _run_process_item(self, phase, store):
+        from jobbuddy.sync.base import WriteQueue
+        phase._writer = WriteQueue(conninfo_factory=lambda: store.conn.info.dsn)
+        phase._writer.start()
+        try:
+            phase.process_item({"slug": "acme", "name": "Acme Corp"})
+            phase._writer.flush()
+        finally:
+            phase._writer.stop()
+
+    def test_happy_path_writes_bio_and_embedding(self, store, monkeypatch):
+        phase, bio, embed_calls = self._make_phase(monkeypatch)
+        self._run_process_item(phase, store)
+
+        assert embed_calls == [bio.long_bio]
+        row = store.conn.execute(
+            "SELECT short_bio, long_bio, bio_embedding IS NOT NULL AS has_emb"
+            " FROM companies WHERE slug = 'acme'"
+        ).fetchone()
+        assert row["short_bio"] == bio.short_bio
+        assert row["long_bio"] == bio.long_bio
+        assert row["has_emb"] is True
+
+    def test_embed_failure_does_not_lose_bio_write(self, store, monkeypatch):
+        phase, bio, embed_calls = self._make_phase(monkeypatch, embed_raises=True)
+        # Should NOT raise — the embed exception is swallowed by design
+        self._run_process_item(phase, store)
+
+        assert embed_calls == [bio.long_bio]
+        row = store.conn.execute(
+            "SELECT long_bio, bio_embedding IS NOT NULL AS has_emb"
+            " FROM companies WHERE slug = 'acme'"
+        ).fetchone()
+        # Bio landed, embedding didn't — the recovery contract.
+        assert row["long_bio"] == bio.long_bio
+        assert row["has_emb"] is False

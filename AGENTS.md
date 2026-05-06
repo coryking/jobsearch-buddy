@@ -60,7 +60,7 @@ jsb-mcp                          # Run MCP server
 ```
 jsb migrate                                  # Apply pending database migrations
 jsb sync [PHASES...] [--company NAME] [--stale HOURS]  # Sync pipeline (phases: fetch, enrich, research, distill)
-jsb find-companies "<query>" [--limit N]    # Vector-search companies by long_bio
+jsb find-companies "<query>" [--limit N]    # Hybrid vector+FTS search over company bios
 jsb research-companies [--company NAME]... [--force]  # Fill companies.short_bio/long_bio (Azure Responses + web_search)
 jsb list-jobs [company] [-f FILTER]         # List cached jobs
 jsb search [--title T] [--location L] [--company C]  # Search cache

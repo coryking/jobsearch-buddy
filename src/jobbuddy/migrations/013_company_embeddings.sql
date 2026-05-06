@@ -19,7 +19,9 @@ ALTER TABLE companies
 -- HNSW index for cosine similarity search. maintenance_work_mem boost
 -- mirrors the (dropped) idx_embeddings_hnsw recipe — 700 rows is tiny but
 -- the same RAM pattern keeps build deterministic across environments.
-SET maintenance_work_mem = '1GB';
+-- SET LOCAL keeps the bump scoped to this transaction even if CREATE INDEX
+-- fails — no leaked session state for subsequent migrations in the same
+-- apply_migrations() run.
+SET LOCAL maintenance_work_mem = '1GB';
 CREATE INDEX IF NOT EXISTS idx_companies_bio_embedding_hnsw
     ON companies USING hnsw (bio_embedding vector_cosine_ops);
-RESET maintenance_work_mem;

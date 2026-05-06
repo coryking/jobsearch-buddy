@@ -13,7 +13,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Json
 
 from jobbuddy.models import Company, Job
-from jobbuddy.types import DistillWorkItem, EmbedWorkItem, ResearchWorkItem
+from jobbuddy.types import DistillWorkItem, ResearchWorkItem
 
 log = logging.getLogger(__name__)
 
@@ -175,46 +175,6 @@ class JobStore:
     # -------------------------------------------------------------------
     # Company bio embeddings (Phase 2: find_companies)
     # -------------------------------------------------------------------
-
-    def _embed_conditions(self, slugs: list[str] | None) -> tuple[str, list]:
-        """Stable column-presence predicate: embed when bio exists and either
-        no embedding yet, or the embedding is older than the bio."""
-        conditions = [
-            "long_bio IS NOT NULL",
-            "(bio_embedding IS NULL"
-            " OR bio_embedding_updated_at IS NULL"
-            " OR bio_embedding_updated_at < bio_researched_at)",
-        ]
-        params: list = []
-        if slugs:
-            conditions.append("slug = ANY(%s)")
-            params.append(slugs)
-        return " AND ".join(conditions), params
-
-    def count_companies_needing_embedding(
-        self, *, slugs: list[str] | None = None,
-    ) -> int:
-        """Count companies whose bio_embedding is missing or stale."""
-        where, params = self._embed_conditions(slugs)
-        row = self.conn.execute(
-            f"SELECT COUNT(*) AS cnt FROM companies WHERE {where}", params
-        ).fetchone()
-        return row["cnt"]
-
-    def get_companies_needing_embedding(
-        self, limit: int = 50, *, slugs: list[str] | None = None,
-    ) -> list[EmbedWorkItem]:
-        """Return companies whose bio_embedding is missing or stale."""
-        where, params = self._embed_conditions(slugs)
-        params.append(limit)
-        rows = self.conn.execute(
-            f"""SELECT slug, long_bio FROM companies
-                WHERE {where}
-                ORDER BY slug
-                LIMIT %s""",
-            params,
-        ).fetchall()
-        return [{"slug": r["slug"], "long_bio": r["long_bio"]} for r in rows]
 
     def update_company_embedding(self, slug: str, *, embedding: str) -> None:
         """Persist a bio embedding. `embedding` is the pgvector text literal

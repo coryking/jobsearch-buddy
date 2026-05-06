@@ -3,9 +3,9 @@ then immediately embed long_bio for find_companies vector search.
 
 Bio + embedding are paired: every newly-written long_bio gets embedded in
 the same `process_item` so a research run leaves the company in a fully
-queryable state. The standalone `company_embeddings` phase remains as the
-backfill path for bios that pre-date this coupling (or whose embedding
-otherwise fell behind).
+queryable state. There is no standalone embed phase — the recovery path
+for a bio whose embedding wasn't written (e.g. transient API failure) is
+to re-run `jsb research-companies --company <slug> --force`.
 
 Polls companies.long_bio IS NULL, runs the researcher per company in a
 thread pool, writes results via WriteQueue. Same WorkerPhase machinery as
@@ -99,10 +99,11 @@ class ResearchPhase(WorkerPhase["ResearchWorkItem"]):
                 lambda store, sl=slug, v=vector_literal:
                     store.update_company_embedding(sl, embedding=v)
             )
-        except Exception as e:
+        except Exception:
             log.warning(
-                "Embedding failed for %s: %s — bio saved, will retry on next "
-                "company_embeddings sync", slug, e,
+                "Embedding failed for %s — bio saved, re-run "
+                "`jsb research-companies --company %s --force` to retry",
+                slug, slug, exc_info=True,
             )
 
         self.display.add_to_info_counter(bio.web_search_count, label=" search")

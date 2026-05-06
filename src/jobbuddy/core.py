@@ -90,11 +90,17 @@ def find_companies(
     if limit < 1:
         raise ValueError("limit must be >= 1")
 
+    import psycopg
+
     embedding, _tokens = embed_text(query)
 
     store = JobStore()
     try:
         rows = store.find_companies(embedding, query, limit=limit)
+    except psycopg.Error as e:
+        # websearch_to_tsquery is generous but malformed input still raises.
+        # Re-raise as ValueError so MCP/CLI handlers can map it cleanly.
+        raise ValueError(f"Invalid query for find_companies: {e}") from e
     finally:
         store.close()
 
@@ -112,9 +118,12 @@ def find_companies(
     # similarity, and any FTS hit means the query's tokens literally appear
     # in some company's name+short_bio — that's positive evidence of cache
     # coverage even when the score is small.
+    # The FTS CTE's WHERE already guarantees only real matches reach this
+    # row, so any non-None fts_score is positive evidence of cache coverage
+    # — even ts_rank == 0.0 (which can occur on very short docs).
     coverage_hint = None
     vec_weak = top_vec is None or top_vec < coverage_floor
-    fts_missed = top_fts is None or top_fts <= 0
+    fts_missed = top_fts is None
     if vec_weak and fts_missed:
         coverage_hint = (
             "Top match is weak — the cache may not contain the entity you"
