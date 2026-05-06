@@ -1,23 +1,48 @@
-"""Sync pipeline command with phase selection."""
+"""`jsb sync` -- run the phase pipeline with plain timestamped logging.
+
+Output is stdlib `logging` to stderr with `asctime` so:
+
+- systemd / upstart journals get useful per-line timestamps;
+- LLM operators reading a captured log file can grep for `phase=`,
+  `WriteQueue`, `ERROR`, etc.;
+- failures show full tracebacks instead of a swallowed Rich Live frame.
+
+There is no interactive Rich Live mode anymore. The single failure mode
+that motivated the rewrite -- a WriteQueue drop hidden behind the live
+table that ate $60 of distill calls -- can no longer happen: WriteQueue
+errors are now fatal and crash the process with a traceback.
+"""
 
 import logging
-from typing import TYPE_CHECKING, Optional
+from typing import Optional
 
 import typer
 
 from jobbuddy.cli import app, console
-
-if TYPE_CHECKING:
-    from jobbuddy.sync.display import SyncDisplayState
 
 log = logging.getLogger(__name__)
 
 
 @app.command()
 def sync(
-    phases: Optional[list[str]] = typer.Argument(None, help="Phases to run: fetch, enrich, research, distill (default: all)"),
-    company: Optional[list[str]] = typer.Option(None, "--company", "-c", help="Sync specific companies (repeatable)"),
-    stale: Optional[float] = typer.Option(None, "--stale", "-s", help="Skip companies synced within N hours"),
+    phases: Optional[list[str]] = typer.Argument(
+        None,
+        help="Phases to run: fetch, enrich, research, distill (default: all)",
+    ),
+    company: Optional[list[str]] = typer.Option(
+        None, "--company", "-c", help="Sync specific companies (repeatable)",
+    ),
+    stale: Optional[float] = typer.Option(
+        None, "--stale", "-s", help="Skip companies synced within N hours",
+    ),
+    verbose: bool = typer.Option(
+        False, "--verbose", "-v",
+        help="Log per-item activity at DEBUG. Default INFO emits one heartbeat per phase every 30s.",
+    ),
+    heartbeat: float = typer.Option(
+        30.0, "--heartbeat",
+        help="Seconds between phase status heartbeats. Set 0 to disable.",
+    ),
 ):
     """Sync job listings from ATS boards into PostgreSQL.
 
@@ -25,9 +50,13 @@ def sync(
 
         jsb sync                    # all phases (default)
         jsb sync fetch              # fetch only
+        jsb sync distill -v         # distill with per-job DEBUG logs
     """
     from jobbuddy.sync import VALID_PHASES, sync_jobs, validate_sync_config
-    from jobbuddy.sync.display import SyncDisplayState, create_live, print_sync_summary
+    from jobbuddy.sync.display import SyncDisplayState
+    from jobbuddy.sync.heartbeat import HeartbeatLogger
+
+    _configure_logging(verbose=verbose)
 
     phase_set = set(phases) if phases else None
     try:
@@ -37,79 +66,78 @@ def sync(
             stale_hours=stale,
         )
     except ValueError as e:
-        console.print(f"[red]{e}[/red]")
+        log.error("%s", e)
         raise SystemExit(1)
 
-    interactive = console.is_terminal
-    if not interactive:
-        _setup_logging()
+    phase_label = ", ".join(sorted(config.phases)) if phase_set else "all"
+    log.info("jsb sync starting (phases: %s)", phase_label)
 
     state = SyncDisplayState()
 
-    if not interactive:
-        phase_label = ", ".join(sorted(config.phases)) if phase_set else "all"
-        log.info("jsb sync starting (phases: %s)", phase_label)
+    hb: HeartbeatLogger | None = None
+    if heartbeat > 0:
+        hb = HeartbeatLogger(state, interval_seconds=heartbeat)
+        hb.start()
 
-    def _run():
-        return sync_jobs(
+    try:
+        results = sync_jobs(
             company_slugs=company or None,
             stale_hours=stale,
             display_state=state,
             phases=phase_set,
         )
-
-    phase_order = ["fetch", "enrich", "research", "distill"]
-    filter_phases = (
-        [p.capitalize() for p in sorted(config.phases, key=lambda p: phase_order.index(p) if p in phase_order else 99)]
-        if phase_set else None
-    )
-
-    try:
-        if interactive:
-            with create_live(console, state, filter_phases=filter_phases):
-                results = _run()
-        else:
-            results = _run()
     except KeyboardInterrupt:
+        log.warning("jsb sync interrupted by user")
         return
     except ValueError as e:
-        console.print(f"[red]{e}[/red]")
+        log.error("%s", e)
         raise SystemExit(1)
+    finally:
+        if hb is not None:
+            hb.stop()
 
-    _print_summary(state, results, "fetch" in config.phases, interactive)
+    _log_summary(state, results, ran_fetch="fetch" in config.phases)
 
 
-def _setup_logging() -> None:
-    """Configure logging for non-interactive (systemd/cron) runs."""
+def _configure_logging(*, verbose: bool) -> None:
+    """Default INFO with timestamps. -v drops jobbuddy loggers to DEBUG."""
     logging.basicConfig(
-        level=logging.WARNING,
-        format="%(levelname)s %(name)s: %(message)s",
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
-    logging.getLogger("jobbuddy").setLevel(logging.INFO)
+    # Quiet down noisy third-party libs unless the user really wants DEBUG.
+    if not verbose:
+        logging.getLogger("httpx").setLevel(logging.WARNING)
+        logging.getLogger("httpcore").setLevel(logging.WARNING)
+        logging.getLogger("openai").setLevel(logging.WARNING)
+        logging.getLogger("urllib3").setLevel(logging.WARNING)
+    else:
+        logging.getLogger("jobbuddy").setLevel(logging.DEBUG)
 
 
-def _print_summary(
-    state: "SyncDisplayState",
-    results: list,
-    ran_fetch: bool,
-    interactive: bool,
-) -> None:
-    """Print sync results — Rich table for interactive, log lines otherwise."""
-    from jobbuddy.sync.display import print_sync_summary
-
+def _log_summary(state, results, *, ran_fetch: bool) -> None:
+    """Final summary as plain log lines (no Rich)."""
     if not results and ran_fetch:
-        if interactive:
-            console.print("[dim]Nothing to sync.[/dim]")
-        else:
-            log.info("Nothing to sync")
+        log.info("Nothing to sync")
         return
 
-    if interactive:
-        print_sync_summary(console, state)
+    total_done = 0
+    total_errors = 0
+    for phase in state.phases:
+        if phase.status == "pending":
+            continue
+        total_done += phase.done
+        total_errors += phase.errors
+        log.info(
+            "summary phase=%s done=%d errors=%d",
+            phase.name, phase.done, phase.errors,
+        )
+
+    for r in results:
+        if not r.ok:
+            log.error("fetch failed slug=%s error=%s", r.slug, r.error)
+
+    if total_errors:
+        log.warning("sync complete with %d errors across %d items", total_errors, total_done)
     else:
-        for phase in state.phases:
-            if phase.status != "pending":
-                log.info("%s: %d done, %d errors", phase.name, phase.done, phase.errors)
-        for r in results:
-            if not r.ok:
-                log.error("%s: %s", r.slug, r.error)
+        log.info("sync complete: %d items, no errors", total_done)
