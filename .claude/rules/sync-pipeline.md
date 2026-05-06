@@ -62,9 +62,33 @@ The distill phase's "needs work" predicate (already enforced by the
 job's `description` body changes, so the distill phase will pick the row up
 again on the next pass.
 
-## Display
+## Logging and progress
 
-Display uses Rich Live with `PhaseState` objects (`sync/display.py`). Phase
-workers update `PhaseState` attributes directly (GIL-atomic writes); the Rich
-Live renderer polls at 4hz. `RollingRate` tracks items/min from a 60-second
-sliding window of timestamps.
+Sync output is stdlib `logging` to stderr with `asctime` timestamps —
+greppable, journalctl-friendly, LLM-friendly. There is no Rich Live TUI.
+
+`PhaseState` (`sync/display.py`) is now a pure metrics struct: phase
+workers update `done`, `errors`, `info_tokens`, `active_workers`, etc.
+directly (GIL-atomic) and `RollingRate` / `RollingTokenRate` track
+items-per-minute from a 60-second sliding window. A `HeartbeatLogger`
+(`sync/heartbeat.py`) thread samples each PhaseState every 30s and emits
+one structured INFO line per active phase, e.g. `phase=Distill
+status=active done=142 total=500 pct=28 rate=18/m tok_rate=4.2k/m
+info=85.3k_tok cached=87% workers=3/5 errors=2`. Cadence is wall-clock
+so a stalled phase is visibly stalled rather than silently quiet.
+`-v/--verbose` drops jobbuddy loggers to DEBUG for per-item activity.
+`--heartbeat 0` disables the heartbeat (e.g. tight cron loops).
+
+## WriteQueue failure policy
+
+Per-row write failures are fatal, never silent. On a connection-dead
+error WriteQueue closes the dead connection, reopens via
+`conninfo_factory` (refreshes the Entra token in Azure mode), and
+retries the failing callable once. Reconnect failure, retry failure, or
+any non-connection write error → `_bail()`: log.error with traceback,
+mark queue fatal, drain pending items without executing, set
+`self._fatal`. The next `submit()` / `flush()` re-raises, propagates out
+of the phase's `run()`, and crashes the sync with a non-zero exit. The
+upstream LLM/HTTP call that produced the row was already paid for, so
+silently dropping the row would mean burning money for nothing AND
+leaving stale NULLs that look identical to "never processed".

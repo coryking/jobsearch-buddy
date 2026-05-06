@@ -60,16 +60,17 @@ class WriteQueue:
 
     On connection-level failures (closed connection, expired Entra token,
     server-side reset) the writer transparently reconnects via the supplied
-    `conninfo_factory` and retries the failed callable exactly once. Per-row
-    data bugs (a write that fails for non-connection reasons) are logged and
-    the row is dropped -- those won't get better on retry.
+    `conninfo_factory` and retries the failed callable exactly once.
 
-    If reconnect itself fails, or the retry-after-reconnect fails for a
-    connection reason, the writer marks the queue fatal: it stops accepting
-    new writes, drains the existing queue without executing it, and the
-    fatal exception is re-raised to the caller from submit() and flush().
-    Silently dropping writes when the database is gone is worse than
-    crashing; bail loudly and let the caller decide.
+    Any other failure -- including a retry-after-reconnect that still
+    fails -- is fatal. The writer logs the traceback, marks itself fatal,
+    drains the queue without executing, and the next `submit()` / `flush()`
+    re-raises. The owning phase propagates the exception out of `run()`,
+    which kills the whole sync process. The upstream LLM/HTTP call that
+    produced the row was already paid for, so silently dropping the row
+    would mean burning money for nothing AND leaving stale NULLs that
+    look identical to "never processed". Termination is louder, cheaper,
+    and easier for an operator (or LLM) to investigate.
     """
 
     def __init__(self, conninfo_factory: Callable[[], str]):
@@ -92,7 +93,7 @@ class WriteQueue:
         hanging on task_done counts. The fatal exception is surfaced to the
         caller from submit() and flush().
         """
-        log.error("WriteQueue fatal: %s; bailing", exc)
+        log.error("WriteQueue fatal: %s; bailing", exc, exc_info=exc)
         self._fatal = exc
         try:
             while True:
@@ -135,16 +136,16 @@ class WriteQueue:
                         try:
                             fn(store)
                         except Exception as retry_err:
-                            if _is_connection_dead(store, retry_err):
-                                self._queue.task_done()
-                                self._bail(retry_err)
-                                return
-                            log.warning(
-                                "WriteQueue write failed after reconnect: %s",
-                                retry_err,
-                            )
+                            self._queue.task_done()
+                            self._bail(retry_err)
+                            return
                     else:
-                        log.warning("WriteQueue error: %s", e)
+                        # Per-row write error. We refuse to drop the row --
+                        # the upstream call was paid for. Bail and let the
+                        # operator see exactly what failed.
+                        self._queue.task_done()
+                        self._bail(e)
+                        return
                 self._queue.task_done()
         finally:
             try:

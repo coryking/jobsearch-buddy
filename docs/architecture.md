@@ -140,14 +140,26 @@ check (`short_jd IS NULL AND description IS NOT NULL`) — no hash. The
 upsert nulls `short_jd`/`description_normalized` when raw description
 changes, so the distill phase picks the row up again on the next pass.
 
-### Display
+### Logging and progress
 
-`sync/display.py` provides a Rich Live TUI. `PhaseState` dataclass
-tracks each phase's progress (done/total, errors, rolling rate, last
-detail text). Phase workers update `PhaseState` attributes directly —
-simple attribute writes are GIL-atomic. `RollingRate` tracks items/min
-from a 60-second sliding window of completion timestamps. The Rich Live
-renderer polls at 4hz via `create_live()`.
+Sync output is stdlib `logging` to stderr with `asctime` timestamps. No
+Rich Live TUI. `PhaseState` (`sync/display.py`) is a thread-safe metrics
+struct: workers update `done`, `errors`, `info_tokens`, `active_workers`
+directly (GIL-atomic); `RollingRate` / `RollingTokenRate` track per-minute
+rates from a 60-second sliding window. A `HeartbeatLogger`
+(`sync/heartbeat.py`) thread samples each PhaseState every 30s by default
+and emits one key=value INFO line per active phase, e.g. `phase=Distill
+status=active done=142 total=500 pct=28 rate=18/m tok_rate=4.2k/m
+info=85.3k_tok cached=87% workers=3/5 errors=2`. `-v/--verbose` enables
+per-item DEBUG logs. `--heartbeat 0` disables periodic emission for tight
+cron loops.
+
+WriteQueue failures are fatal: on any non-recoverable write error (or a
+retry that still fails after reconnect) the queue calls `_bail()`,
+which logs the traceback, drains pending items without executing, and
+re-raises on the next `submit()` / `flush()`. The exception propagates
+out of the phase and crashes the sync non-zero. There is no silent-drop
+path — the upstream LLM/HTTP call producing the row was already paid for.
 
 ### Sync Concurrency
 

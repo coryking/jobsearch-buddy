@@ -228,7 +228,8 @@ def test_process_item_records_usage_tokens():
         usage_total=4321,
     )
     phase.process_item(_mk_item())
-    assert "tok" in phase.display.info or "k" in phase.display.info  # humanize.metric
+    assert phase.display.info_tokens == 4321
+    assert phase.display.info_label == "tok"
 
 
 # ---------------------------------------------------------------------------

@@ -177,8 +177,8 @@ class TestFetchPhaseState:
         FetchPhase(store, [company], max_workers=1, display=display).run()
         store.close()
 
-        assert display.info  # should have job count string
-        assert display._info_counter == 3
+        assert display.info_tokens == 3
+        assert display.info_label == "jobs"
 
 
 class TestEnrichment:
