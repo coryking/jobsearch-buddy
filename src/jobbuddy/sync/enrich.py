@@ -11,6 +11,7 @@ from collections.abc import Callable
 
 from jobbuddy.fetchers import get_fetcher, has_descriptions_in_listing
 from jobbuddy.fetchers.base import ATSFetcher
+from jobbuddy.logctx import bind as logbind
 from jobbuddy.models import Company
 from jobbuddy.sync.base import WorkerPhase
 from jobbuddy.sync.display import PhaseState
@@ -125,14 +126,15 @@ class EnrichPhase(WorkerPhase["EnrichWorkItem"]):
             self.display.advance(detail=slug)
 
         try:
-            fetcher.fetch_enrichments(
-                job_ids,
-                metadata=jobs_meta,
-                on_fetched=_on_fetched,
-                on_gone=_on_gone,
-                on_empty=_on_empty,
-                on_error=_on_error,
-            )
+            with logbind(company=slug, ats=fetcher.ats_type):
+                fetcher.fetch_enrichments(
+                    job_ids,
+                    metadata=jobs_meta,
+                    on_fetched=_on_fetched,
+                    on_gone=_on_gone,
+                    on_empty=_on_empty,
+                    on_error=_on_error,
+                )
         except Exception as e:
             log.warning("Enrichment failed for %s: %s", slug, e)
             raise

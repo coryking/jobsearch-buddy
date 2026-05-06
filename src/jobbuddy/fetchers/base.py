@@ -8,6 +8,7 @@ from typing import Any, TypeVar
 
 import httpx
 
+from jobbuddy.logctx import bind as logbind
 from jobbuddy.models import Job
 
 type ProgressCallback = Callable[[int, int], None]   # (fetched, total)
@@ -179,47 +180,45 @@ class ATSFetcher(ABC):
         metadata = metadata or {}
         results: dict[str, dict[str, Any]] = {}
         for job_id in job_ids:
-            payload: dict[str, Any] = {}
-            try:
-                payload = self._retry_request(
-                    lambda jid=job_id: self.fetch_enrichment(jid, metadata.get(jid)),
-                    on_retry=on_retry,
-                )
-            except httpx.HTTPStatusError as e:
-                if e.response.status_code == 404:
-                    log.debug("enrichment outcome ats=%s job=%s outcome=gone", self.ats_type, job_id)
-                    log.info("Listing no longer active for %s (404)", job_id)
-                    if on_gone:
-                        on_gone(job_id)
-                else:
-                    log.debug("enrichment outcome ats=%s job=%s outcome=error reason=%s",
-                              self.ats_type, job_id, e)
-                    log.warning("Failed to fetch enrichment for %s: %s", job_id, e)
+            url = (metadata.get(job_id) or {}).get("url", "") or ""
+            with logbind(job_id=job_id, url=url):
+                payload: dict[str, Any] = {}
+                try:
+                    payload = self._retry_request(
+                        lambda jid=job_id: self.fetch_enrichment(jid, metadata.get(jid)),
+                        on_retry=on_retry,
+                    )
+                except httpx.HTTPStatusError as e:
+                    if e.response.status_code == 404:
+                        log.debug("enrichment outcome=gone")
+                        log.info("Listing no longer active (404)")
+                        if on_gone:
+                            on_gone(job_id)
+                    else:
+                        log.debug("enrichment outcome=error reason=%s", e)
+                        log.warning("Failed to fetch enrichment: %s", e)
+                        if on_error:
+                            on_error(job_id)
+                except Exception as e:
+                    log.debug("enrichment outcome=error reason=%s", e)
+                    log.warning("Failed to fetch enrichment: %s", e)
                     if on_error:
                         on_error(job_id)
-            except Exception as e:
-                log.debug("enrichment outcome ats=%s job=%s outcome=error reason=%s",
-                          self.ats_type, job_id, e)
-                log.warning("Failed to fetch enrichment for %s: %s", job_id, e)
-                if on_error:
-                    on_error(job_id)
-            else:
-                if payload:
-                    log.debug("enrichment outcome ats=%s job=%s outcome=filled cols=%s",
-                              self.ats_type, job_id, sorted(payload.keys()))
-                    if on_fetched:
-                        on_fetched(job_id, payload)
                 else:
-                    log.warning("enrichment outcome ats=%s job=%s outcome=empty "
-                                "(request succeeded, parser extracted nothing)",
-                                self.ats_type, job_id)
-                    if on_empty:
-                        on_empty(job_id)
+                    if payload:
+                        log.debug("enrichment outcome=filled cols=%s", sorted(payload.keys()))
+                        if on_fetched:
+                            on_fetched(job_id, payload)
+                    else:
+                        log.warning("enrichment outcome=empty "
+                                    "(request succeeded, parser extracted nothing)")
+                        if on_empty:
+                            on_empty(job_id)
 
-            results[job_id] = payload
+                results[job_id] = payload
 
-            if self.enrich_delay > 0:
-                time.sleep(self.enrich_delay)
+                if self.enrich_delay > 0:
+                    time.sleep(self.enrich_delay)
 
         return results
 

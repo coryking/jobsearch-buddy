@@ -108,9 +108,11 @@ def _configure_logging(*, verbose: bool) -> None:
     libs are unmuzzled to INFO so HTTP/SDK chatter is visible during
     investigation.
     """
+    from jobbuddy.logctx import install as install_logctx
+    install_logctx()
     logging.basicConfig(
         level=logging.WARNING,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        format="%(asctime)s %(levelname)s %(ctx)s%(name)s: %(message)s%(suffix)s",
     )
     if verbose:
         logging.getLogger().setLevel(logging.INFO)
