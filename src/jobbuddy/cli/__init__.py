@@ -1,10 +1,10 @@
 """CLI entry point. Registers subcommand modules."""
 
+import sys
+
 import typer
-from rich.console import Console
 
 app = typer.Typer(help="Fetch job listings from ATS job boards.")
-console = Console(stderr=True)
 
 
 @app.callback()
@@ -13,7 +13,7 @@ def main():
 
     s = get_settings()
     db = s.postgres_host or f"service={s.pg_service}"
-    console.print(f"[dim]db: {db}[/dim]")
+    print(f"db: {db}", file=sys.stderr)
 
 
 # Import submodules — each adds its commands to `app` via @app.command()

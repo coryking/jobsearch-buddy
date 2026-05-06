@@ -86,7 +86,7 @@ class DistillPhase(WorkerPhase["DistillWorkItem"]):
     def __init__(
         self, conninfo: str, *,
         display: PhaseState,
-        max_workers: int = 30,
+        max_workers: int = 60,
         slugs: list[str] | None = None,
         conninfo_factory: Callable[[], str] | None = None,
     ):
