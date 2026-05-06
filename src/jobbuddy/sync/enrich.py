@@ -103,11 +103,18 @@ class EnrichPhase(WorkerPhase["EnrichWorkItem"]):
                 )
             self.display.advance(detail=slug)
 
+        def _on_gone(job_id: str) -> None:
+            self.submit_write(
+                lambda store, s=slug, jid=job_id: store.mark_listing_removed(s, jid)
+            )
+            self.display.advance(detail=slug)
+
         try:
             fetcher.fetch_enrichments(
                 job_ids,
                 metadata=jobs_meta,
                 on_fetched=_on_fetched,
+                on_gone=_on_gone,
             )
         except Exception as e:
             log.warning("Enrichment failed for %s: %s", slug, e)

@@ -12,6 +12,7 @@ from jobbuddy.models import Job
 
 type ProgressCallback = Callable[[int, int], None]   # (fetched, total)
 type EnrichmentCallback = Callable[[str, dict[str, Any]], None]  # (job_id, payload)
+type GoneCallback = Callable[[str], None]  # (job_id) — listing 404'd, no longer active
 type RetryCallback = Callable[[int, int, float, str], None]  # (attempt, max_attempts, wait_seconds, reason)
 type JobList = list[Job]
 
@@ -153,6 +154,7 @@ class ATSFetcher(ABC):
         *,
         metadata: dict[str, dict] | None = None,
         on_fetched: EnrichmentCallback | None = None,
+        on_gone: GoneCallback | None = None,
         on_retry: RetryCallback | None = None,
     ) -> dict[str, dict[str, Any]]:
         """Fetch enrichment payloads for a batch of job IDs with retry/backoff.
@@ -161,6 +163,11 @@ class ATSFetcher(ABC):
         (job_id, payload) so callers can commit incrementally; the payload is
         whatever fetch_enrichment returned for that job (may be empty if the
         detail page yielded no usable fields).
+
+        A 404 on the detail page means the ATS pulled the listing — call
+        on_gone(job_id) so the caller can flip listing_status to 'removed'.
+        Logged at INFO, not WARNING: this is the expected end-of-life signal,
+        not a fault.
         """
         metadata = metadata or {}
         results: dict[str, dict[str, Any]] = {}
@@ -171,6 +178,13 @@ class ATSFetcher(ABC):
                     lambda jid=job_id: self.fetch_enrichment(jid, metadata.get(jid)),
                     on_retry=on_retry,
                 )
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 404:
+                    log.info("Listing no longer active for %s (404)", job_id)
+                    if on_gone:
+                        on_gone(job_id)
+                else:
+                    log.warning("Failed to fetch enrichment for %s: %s", job_id, e)
             except Exception as e:
                 log.warning("Failed to fetch enrichment for %s: %s", job_id, e)
 

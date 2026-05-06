@@ -537,6 +537,27 @@ class TestUpdateEnrichment:
         ).fetchone()
         assert row["description"] == "filled"
 
+    def test_mark_listing_removed_flips_status(self, store):
+        """A 404 from the ATS detail page means the listing is gone;
+        mark_listing_removed flips status and the trigger sets removed_at."""
+        store.upsert_jobs("acme", [make_job("1"), make_job("2")])
+        store.mark_listing_removed("acme", "2")
+        row = store.conn.execute(
+            "SELECT listing_status, removed_at FROM jobs WHERE job_id = '2'"
+        ).fetchone()
+        assert row["listing_status"] == "removed"
+        assert row["removed_at"] is not None
+
+    def test_mark_listing_removed_idempotent_for_already_removed(self, store):
+        """Calling mark_listing_removed on an already-removed row is a no-op."""
+        store.upsert_jobs("acme", [make_job("1"), make_job("2")])
+        store.upsert_jobs("acme", [make_job("1")])  # job 2 already removed
+        store.mark_listing_removed("acme", "2")  # should not raise
+        row = store.conn.execute(
+            "SELECT listing_status FROM jobs WHERE job_id = '2'"
+        ).fetchone()
+        assert row["listing_status"] == "removed"
+
     def test_rollback_on_bad_payload_in_batch(self, store):
         """All-or-nothing: a bad column in any one payload prevents the
         entire batch from writing."""

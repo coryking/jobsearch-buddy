@@ -647,6 +647,19 @@ class JobStore:
                         params,
                     )
 
+    def mark_listing_removed(self, slug: str, job_id: str) -> None:
+        """Flip listing_status to 'removed' for a single job.
+
+        Used by the enrich phase when an ATS detail-page request 404s —
+        the listing has been pulled at the source. The manage_removed_at
+        trigger sets removed_at. No-op if already removed.
+        """
+        self.conn.execute(
+            "UPDATE jobs SET listing_status = 'removed' "
+            "WHERE company_slug = %s AND job_id = %s AND listing_status = 'active'",
+            (slug, job_id),
+        )
+
     # -------------------------------------------------------------------
     # Distill phase
     # -------------------------------------------------------------------

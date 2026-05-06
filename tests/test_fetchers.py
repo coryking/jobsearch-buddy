@@ -192,6 +192,55 @@ class TestFetchEnrichmentsRetry:
         assert len(retry_events) == 1
         assert retry_events[0][0] == 1  # attempt
 
+    def test_fetch_enrichments_404_calls_on_gone_and_logs_info(self, caplog):
+        """A 404 from the ATS detail page means the listing is gone.
+        fetch_enrichments must call on_gone(job_id), skip on_fetched, and
+        log at INFO (not WARNING) — these are expected, not errors."""
+        import logging
+        fetcher = StubFetcher()
+        fetcher.enrich_delay = 0
+
+        response_404 = MagicMock()
+        response_404.status_code = 404
+        err = httpx.HTTPStatusError("not found", request=MagicMock(), response=response_404)
+        fetcher.fetch_enrichment = MagicMock(side_effect=err)
+
+        gone = []
+        fetched = []
+        with caplog.at_level(logging.INFO, logger="jobbuddy.fetchers.base"):
+            fetcher.fetch_enrichments(
+                ["j1"],
+                on_fetched=lambda jid, p: fetched.append((jid, p)),
+                on_gone=lambda jid: gone.append(jid),
+            )
+
+        assert gone == ["j1"]
+        assert fetched == []
+        warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert warnings == []
+        infos = [r for r in caplog.records if r.levelno == logging.INFO]
+        assert any("no longer active" in r.message.lower() for r in infos)
+
+    def test_fetch_enrichments_non_404_status_still_warns(self, caplog):
+        """A 500 (or other non-404 HTTP error) still logs WARNING — only
+        404 is the 'listing gone' signal."""
+        import logging
+        fetcher = StubFetcher()
+        fetcher.enrich_delay = 0
+        fetcher.max_retries = 0
+
+        response_500 = MagicMock()
+        response_500.status_code = 500
+        err = httpx.HTTPStatusError("server error", request=MagicMock(), response=response_500)
+        fetcher.fetch_enrichment = MagicMock(side_effect=err)
+
+        gone = []
+        with caplog.at_level(logging.WARNING, logger="jobbuddy.fetchers.base"):
+            fetcher.fetch_enrichments(["j1"], on_gone=lambda jid: gone.append(jid))
+
+        assert gone == []
+        assert any(r.levelno == logging.WARNING for r in caplog.records)
+
     def test_fetch_enrichments_skips_on_fetched_for_empty_payload(self):
         """A detail page that yields no extractable fields returns an
         empty dict; on_fetched must not fire so update_enrichment isn't
