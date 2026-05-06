@@ -199,7 +199,7 @@ class TestEnrichment:
         mock_fetcher.descriptions_in_listing = False
         mock_fetcher.enrichment_fills = ("description",)
 
-        def fake_fetch(job_ids, *, metadata=None, on_fetched=None, on_gone=None, on_retry=None):
+        def fake_fetch(job_ids, *, metadata=None, on_fetched=None, on_gone=None, on_empty=None, on_error=None, on_retry=None):
             for jid, desc in [("1", "PM description"), ("2", "SWE description")]:
                 if on_fetched:
                     on_fetched(jid, {"description": desc})
@@ -251,7 +251,7 @@ class TestEnrichment:
         mock_fetcher.descriptions_in_listing = False
         mock_fetcher.enrichment_fills = ("description",)
 
-        def fake_fetch(job_ids, *, metadata=None, on_fetched=None, on_gone=None, on_retry=None):
+        def fake_fetch(job_ids, *, metadata=None, on_fetched=None, on_gone=None, on_empty=None, on_error=None, on_retry=None):
             for jid in job_ids:
                 if on_fetched:
                     on_fetched(jid, {"description": "description"})
@@ -307,7 +307,7 @@ class TestEnrichment:
         mock_fetcher.descriptions_in_listing = False
         mock_fetcher.enrichment_fills = ("description",)
 
-        def fake_fetch(job_ids, *, metadata=None, on_fetched=None, on_gone=None, on_retry=None):
+        def fake_fetch(job_ids, *, metadata=None, on_fetched=None, on_gone=None, on_empty=None, on_error=None, on_retry=None):
             for jid in job_ids:
                 if on_fetched:
                     on_fetched(jid, {"description": f"desc-{jid}"})
@@ -340,7 +340,7 @@ class TestEnrichment:
         mock_fetcher.descriptions_in_listing = False
         mock_fetcher.enrichment_fills = ("description",)
 
-        def fake_fetch(job_ids, *, metadata=None, on_fetched=None, on_gone=None, on_retry=None):
+        def fake_fetch(job_ids, *, metadata=None, on_fetched=None, on_gone=None, on_empty=None, on_error=None, on_retry=None):
             captured_metadata.update(metadata or {})
             for jid in job_ids:
                 if on_fetched:
@@ -369,7 +369,7 @@ class TestEnrichment:
         mock_fetcher.descriptions_in_listing = False
         mock_fetcher.enrichment_fills = ("description",)
 
-        def fake_fetch(job_ids, *, metadata=None, on_fetched=None, on_gone=None, on_retry=None):
+        def fake_fetch(job_ids, *, metadata=None, on_fetched=None, on_gone=None, on_empty=None, on_error=None, on_retry=None):
             if on_fetched:
                 on_fetched("1", {"description": "first description"})
             raise Exception("Network died mid-batch")

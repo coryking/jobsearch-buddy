@@ -55,23 +55,52 @@ _RECORDS_PER_PAGE = 20
 
 
 _DATE_RE = re.compile(r"^(\d{4})-(\d{1,2})-(\d{1,2})$")
+_MONTHS = {m: i for i, m in enumerate(
+    ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"], start=1
+)}
+_ASCTIME_RE = re.compile(
+    r"^[A-Za-z]{3}\s+([A-Za-z]{3})\s+(\d{1,2})\s+\d{2}:\d{2}:\d{2}\s+[A-Z]{2,4}\s+(\d{4})$"
+)
+_LONG_MONTH_RE = re.compile(
+    r"^([A-Za-z]{3})[a-z]*\s+(\d{1,2}),\s+(\d{4})$"
+)
 
 
 def _parse_loose_date(raw: str) -> date | None:
-    """Parse a JSON-LD datePosted that may be non-zero-padded ('2026-4-25').
+    """Parse a TalentBrew detail-page date in any format we've seen.
 
-    date.fromisoformat is strict on padding; TalentBrew tenants like Walgreens
-    emit unpadded values, so we accept both.
+    Supported shapes:
+      - JSON-LD `datePosted`: "2026-5-1" or "2026-05-01" (Walgreens-style unpadded ok)
+      - Microdata `<meta itemprop="datePosted" content="...">`: asctime-like
+        "Mon May 04 00:00:00 UTC 2026" (Amtrak)
+      - v3 visible "Date posted" label: "May 01, 2026" (Disney)
     """
     if not raw:
         return None
-    m = _DATE_RE.match(raw.strip())
-    if not m:
-        return None
-    try:
-        return date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
-    except ValueError:
-        return None
+    s = raw.strip()
+    m = _DATE_RE.match(s)
+    if m:
+        try:
+            return date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        except ValueError:
+            return None
+    m = _ASCTIME_RE.match(s)
+    if m:
+        month = _MONTHS.get(m.group(1))
+        if month:
+            try:
+                return date(int(m.group(3)), month, int(m.group(2)))
+            except ValueError:
+                return None
+    m = _LONG_MONTH_RE.match(s)
+    if m:
+        month = _MONTHS.get(m.group(1).title()[:3])
+        if month:
+            try:
+                return date(int(m.group(3)), month, int(m.group(2)))
+            except ValueError:
+                return None
+    return None
 
 
 class TalentBrewFetcher(ATSFetcher):
@@ -253,20 +282,36 @@ class TalentBrewFetcher(ATSFetcher):
         raise ValueError(f"Job ID {job_id} not found on {self.name}.")
 
     def _parse_detail_page(self, html: str) -> dict[str, Any]:
-        """Parse a TalentBrew detail page's JSON-LD JobPosting block.
+        """Parse a TalentBrew detail page using whichever encoding it uses.
 
-        Returns {"description": str | None, "published_at": date | None}.
-        Both keys are always present; either may be None if the page doesn't
-        provide that field (or no JSON-LD at all). The first JSON-LD block
-        with "@type": "JobPosting" wins; malformed blocks are skipped.
+        Returns {"description": str | None, "published_at": date | None}. Three
+        variants in the wild — fallback chain runs until one yields data:
+
+          1. JSON-LD JobPosting (Boeing, Walgreens, Citi, Comcast, Spectrum)
+          2. schema.org microdata `itemprop=...` attributes (Amtrak)
+          3. v3 page shape with `<div class="job-description">` (Disney) — no
+             posted date available, falls back to scrape-date downstream.
         """
+        result = self._parse_jsonld(html)
+        if result["description"] or result["published_at"]:
+            return result
+        result = self._parse_microdata(html)
+        if result["description"] or result["published_at"]:
+            return result
+        return self._parse_v3_html(html)
+
+    @staticmethod
+    def _parse_jsonld(html: str) -> dict[str, Any]:
         ld_pattern = re.compile(
             r'<script[^>]*type="application/ld\+json"[^>]*>(.*?)</script>',
             re.DOTALL,
         )
         for match in ld_pattern.finditer(html):
             try:
-                data = json.loads(match.group(1))
+                # strict=False: some tenants (Boeing) embed raw tabs/newlines
+                # in the description without escaping. Strict JSON rejects
+                # those; permissive mode accepts them.
+                data = json.loads(match.group(1), strict=False)
             except (json.JSONDecodeError, TypeError):
                 continue
             if not isinstance(data, dict) or data.get("@type") != "JobPosting":
@@ -281,6 +326,63 @@ class TalentBrewFetcher(ATSFetcher):
             return {"description": description, "published_at": published_at}
 
         return {"description": None, "published_at": None}
+
+    @staticmethod
+    def _parse_microdata(html: str) -> dict[str, Any]:
+        """Parse schema.org HTML microdata. Amtrak emits a JobPosting itemscope
+        with `<meta itemprop="datePosted" content="Mon May 04 00:00:00 UTC 2026">`
+        and `<span itemprop="description">...</span>` containing the body."""
+        published_at: date | None = None
+        date_match = re.search(
+            r'<meta[^>]*itemprop="datePosted"[^>]*content="([^"]+)"',
+            html,
+        )
+        if date_match:
+            published_at = _parse_loose_date(date_match.group(1))
+
+        description: str | None = None
+        # Match a span/div with itemprop="description" then capture up to the
+        # matching closing tag. Microdata can use either tag, so we accept both.
+        desc_match = re.search(
+            r'<(span|div)[^>]*itemprop="description"[^>]*>(.*?)</\1>',
+            html,
+            re.DOTALL,
+        )
+        if desc_match:
+            body = strip_html(desc_match.group(2)) if desc_match.group(2) else None
+            description = body or None
+
+        return {"description": description, "published_at": published_at}
+
+    @staticmethod
+    def _parse_v3_html(html: str) -> dict[str, Any]:
+        """Parse the v3 TalentBrew shell (Disney) where the description sits
+        in `<div class="ats-description">` and the posted date is rendered as
+        a visible `<span class="job-date">…<b>Date posted</b> May 01, 2026</span>`.
+        """
+        published_at: date | None = None
+        date_match = re.search(
+            r'<span[^>]*class="[^"]*\bjob-date\b[^"]*"[^>]*>'
+            r'.*?<b>\s*Date\s*posted\s*</b>\s*([^<\n]+?)\s*</span>',
+            html,
+            re.DOTALL | re.IGNORECASE,
+        )
+        if date_match:
+            published_at = _parse_loose_date(date_match.group(1))
+
+        description: str | None = None
+        # ats-description is followed by </section>; capture until the section
+        # closes so nested </div> tags inside the body don't terminate early.
+        desc_match = re.search(
+            r'<div[^>]*class="[^"]*\bats-description\b[^"]*"[^>]*>(.*?)</section>',
+            html,
+            re.DOTALL,
+        )
+        if desc_match:
+            body = strip_html(desc_match.group(1))
+            description = body or None
+
+        return {"description": description, "published_at": published_at}
 
     def fetch_description(self, job_id: str, metadata: dict | None = None) -> str | None:
         """Fetch description from the job detail page."""

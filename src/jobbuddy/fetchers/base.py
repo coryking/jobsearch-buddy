@@ -13,6 +13,8 @@ from jobbuddy.models import Job
 type ProgressCallback = Callable[[int, int], None]   # (fetched, total)
 type EnrichmentCallback = Callable[[str, dict[str, Any]], None]  # (job_id, payload)
 type GoneCallback = Callable[[str], None]  # (job_id) — listing 404'd, no longer active
+type EmptyCallback = Callable[[str], None]  # (job_id) — fetch succeeded but no fields extractable
+type ErrorCallback = Callable[[str], None]  # (job_id) — non-404 failure
 type RetryCallback = Callable[[int, int, float, str], None]  # (attempt, max_attempts, wait_seconds, reason)
 type JobList = list[Job]
 
@@ -155,19 +157,24 @@ class ATSFetcher(ABC):
         metadata: dict[str, dict] | None = None,
         on_fetched: EnrichmentCallback | None = None,
         on_gone: GoneCallback | None = None,
+        on_empty: EmptyCallback | None = None,
+        on_error: ErrorCallback | None = None,
         on_retry: RetryCallback | None = None,
     ) -> dict[str, dict[str, Any]]:
         """Fetch enrichment payloads for a batch of job IDs with retry/backoff.
 
-        Uses _retry_request() per job with rate limiting. on_fetched receives
-        (job_id, payload) so callers can commit incrementally; the payload is
-        whatever fetch_enrichment returned for that job (may be empty if the
-        detail page yielded no usable fields).
+        Every job_id produces exactly one outcome callback so callers can
+        track real progress and not just successful writes:
 
-        A 404 on the detail page means the ATS pulled the listing — call
-        on_gone(job_id) so the caller can flip listing_status to 'removed'.
-        Logged at INFO, not WARNING: this is the expected end-of-life signal,
-        not a fault.
+        - filled — payload has at least one field → on_fetched(job_id, payload)
+        - empty  — request succeeded but parser found nothing → on_empty(job_id)
+        - gone   — 404 from the ATS detail page → on_gone(job_id)
+        - error  — any other failure → on_error(job_id)
+
+        Each outcome also emits a DEBUG line keyed by job_id and outcome, so
+        `--verbose` gives a per-job trace. 404 keeps its INFO line because
+        "listing pulled at the source" is operationally interesting even at
+        normal verbosity.
         """
         metadata = metadata or {}
         results: dict[str, dict[str, Any]] = {}
@@ -180,17 +187,32 @@ class ATSFetcher(ABC):
                 )
             except httpx.HTTPStatusError as e:
                 if e.response.status_code == 404:
+                    log.debug("enrichment outcome job=%s outcome=gone", job_id)
                     log.info("Listing no longer active for %s (404)", job_id)
                     if on_gone:
                         on_gone(job_id)
                 else:
+                    log.debug("enrichment outcome job=%s outcome=error reason=%s", job_id, e)
                     log.warning("Failed to fetch enrichment for %s: %s", job_id, e)
+                    if on_error:
+                        on_error(job_id)
             except Exception as e:
+                log.debug("enrichment outcome job=%s outcome=error reason=%s", job_id, e)
                 log.warning("Failed to fetch enrichment for %s: %s", job_id, e)
+                if on_error:
+                    on_error(job_id)
+            else:
+                if payload:
+                    log.debug("enrichment outcome job=%s outcome=filled cols=%s",
+                              job_id, sorted(payload.keys()))
+                    if on_fetched:
+                        on_fetched(job_id, payload)
+                else:
+                    log.debug("enrichment outcome job=%s outcome=empty", job_id)
+                    if on_empty:
+                        on_empty(job_id)
 
             results[job_id] = payload
-            if on_fetched and payload:
-                on_fetched(job_id, payload)
 
             if self.enrich_delay > 0:
                 time.sleep(self.enrich_delay)

@@ -39,6 +39,12 @@ class EnrichPhase(WorkerPhase["EnrichWorkItem"]):
         self.slug_to_company = {c.slug: c for c in targets}
         self._enrich_plan: list[EnrichWorkItem] = []
         self._fetcher_cache: dict[str, ATSFetcher] = {}
+        # Per-company outcome counters surface what enrich actually produced —
+        # raw "done" hides the silent-empty case where the parser yields {}.
+        self._outcomes: dict[str, dict[str, int]] = {}
+
+    def _bump(self, slug: str, outcome: str) -> None:
+        self._outcomes.setdefault(slug, {"filled": 0, "empty": 0, "gone": 0, "error": 0})[outcome] += 1
 
     def _get_fetcher(self, slug: str) -> ATSFetcher:
         """Get or create a fetcher for a company slug, caching to avoid FD leaks."""
@@ -97,16 +103,25 @@ class EnrichPhase(WorkerPhase["EnrichWorkItem"]):
         fetcher = self._get_fetcher(slug)
 
         def _on_fetched(job_id: str, payload: dict) -> None:
-            if payload:
-                self.submit_write(
-                    lambda store, s=slug, jid=job_id, p=payload: store.update_enrichment(s, {jid: p})
-                )
+            self.submit_write(
+                lambda store, s=slug, jid=job_id, p=payload: store.update_enrichment(s, {jid: p})
+            )
+            self._bump(slug, "filled")
             self.display.advance(detail=slug)
 
         def _on_gone(job_id: str) -> None:
             self.submit_write(
                 lambda store, s=slug, jid=job_id: store.mark_listing_removed(s, jid)
             )
+            self._bump(slug, "gone")
+            self.display.advance(detail=slug)
+
+        def _on_empty(job_id: str) -> None:
+            self._bump(slug, "empty")
+            self.display.advance(detail=slug)
+
+        def _on_error(job_id: str) -> None:
+            self._bump(slug, "error")
             self.display.advance(detail=slug)
 
         try:
@@ -115,7 +130,28 @@ class EnrichPhase(WorkerPhase["EnrichWorkItem"]):
                 metadata=jobs_meta,
                 on_fetched=_on_fetched,
                 on_gone=_on_gone,
+                on_empty=_on_empty,
+                on_error=_on_error,
             )
         except Exception as e:
             log.warning("Enrichment failed for %s: %s", slug, e)
             raise
+
+    def on_phase_end(self) -> None:
+        """Log per-company outcome breakdown so silent-empty failures
+        (request succeeded, parser found nothing, row stays NULL) are
+        visible without --verbose."""
+        if not self._outcomes:
+            return
+        totals = {"filled": 0, "empty": 0, "gone": 0, "error": 0}
+        for slug, counts in sorted(self._outcomes.items()):
+            log.info(
+                "enrich summary slug=%s filled=%d empty=%d gone=%d error=%d",
+                slug, counts["filled"], counts["empty"], counts["gone"], counts["error"],
+            )
+            for k, v in counts.items():
+                totals[k] += v
+        log.info(
+            "enrich summary total filled=%d empty=%d gone=%d error=%d",
+            totals["filled"], totals["empty"], totals["gone"], totals["error"],
+        )
