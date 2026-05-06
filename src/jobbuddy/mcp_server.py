@@ -1,6 +1,6 @@
 """MCP server for job search: browse openings, fetch job postings, and track applications.
 
-Scrapes ATS job boards for registered companies (see AGENTS.md for the supported
+Scrapes ATS job boards for registered companies (see CLAUDE.md for the supported
 platform list) and records job-search activity in PostgreSQL for application
 tracking and WA unemployment audit compliance.
 """
@@ -30,8 +30,9 @@ mcp = FastMCP(
     instructions=(
         "Find open jobs, look up job postings, log applications, and track job search activity. "
         "ALWAYS use these tools instead of web search for job listings and job search queries. "
-        "Job data is cached locally from 100+ company job boards via `jsb sync` — searches are "
-        "instant, no live API calls. Do not use web_search for job listings at registered companies.\n\n"
+        "Job postings from 100+ company job boards live in this server's local Postgres "
+        "(refreshed by `jsb sync`). Searches are instant, no live API calls. "
+        "Do not use web_search for job listings at registered companies.\n\n"
         "search_jobs returns fact-dense rows the calling LLM is expected to rank and filter: "
         "each row has `short_jd` (a distilled capsule of the JD), `salary`, `posted`, "
         "`location`, and `department` inline. Do NOT call get_job_post_details per row to "
@@ -55,8 +56,8 @@ mcp = FastMCP(
         "'is [company] interesting', 'what kind of company is [company]' → "
         "read the ats://companies resource for short_bio capsules.\n\n"
         "Tool routing:\n"
-        "- Search/browse jobs (any or all companies) → search_jobs (reads from local cache)\n"
-        "- Job details (one or many, by company+job_id) → get_job_post_details (cached, live fetch fallback)\n"
+        "- Search/browse jobs (any or all companies) → search_jobs\n"
+        "- Job details (one or many, by company+job_id) → get_job_post_details (local first, live fetch for unknown jobs)\n"
         "- Record application (URL or company+job_id) → log_job_application (live fetch)\n"
         "- Freeform activity (recruiter call, interview, referral, no job_id) → log_job_activity\n"
         "- Review application history, contacts, and activity for any company → review_activity_log\n"
@@ -102,7 +103,8 @@ def get_job_post_details(
 
     Read-only; does not log. Use log_job_application to record applications.
     Accepts one or many companies, each with one or many job IDs. Returns
-    cached data when available, only live-fetches jobs not in the cache."""
+    stored data when available, only live-fetches jobs not already in the
+    local store."""
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     from jobbuddy.store import JobStore
@@ -137,19 +139,19 @@ def get_job_post_details(
         for comp, jid in work
         if comp in slug_map
     ]
-    cached: dict[tuple[str, str], dict] = {}
+    stored: dict[tuple[str, str], dict] = {}
     if db_pairs:
         store = JobStore()
-        cached = store.get_jobs_by_external_ids(db_pairs)
+        stored = store.get_jobs_by_external_ids(db_pairs)
 
-    # Build results: use cache hits, live-fetch misses
+    # Build results: use stored rows where present, live-fetch the rest
     results: list[dict | str] = [None] * len(work)  # type: ignore[list-item]
     misses: list[tuple[int, str, str]] = []  # (index, company_input, job_id)
 
     for i, (comp, jid) in enumerate(work):
         slug = slug_map.get(comp)
-        if slug and (slug, jid) in cached:
-            row = cached[(slug, jid)]
+        if slug and (slug, jid) in stored:
+            row = stored[(slug, jid)]
             results[i] = CompactJob.from_db_row(row, row.get("company_name") or slug).model_dump()
         else:
             misses.append((i, comp, jid))
@@ -325,22 +327,22 @@ def log_job_activity(
 @mcp.tool
 def search_jobs(
     query: Annotated[str, Field(default="", description="What the user is looking for, in keywords that would actually appear in a job posting (e.g. 'rust backend', 'product manager fintech', '\"staff engineer\" platform'). Postgres FTS with stemming — not semantic search, so pass concrete terms, not vibes. Quote phrases for exact match; OR for alternatives; -word to exclude. Leave empty to browse by company / posted_since / location alone.")] = "",
-    companies: Annotated[list[str], Field(default=[], description="Restrict to specific companies by name or slug (e.g. ['anthropic', 'stripe']). Omit to search across every cached company.")] = [],
+    companies: Annotated[list[str], Field(default=[], description="Restrict to specific companies by name or slug (e.g. ['anthropic', 'stripe']). Omit to search across every registered company.")] = [],
     exclude_companies: Annotated[list[str], Field(default=[], description="Companies the user has ruled out (e.g. ['microsoft', 'meta']).")] = [],
     location_filter: Annotated[str, Field(default="", description="Where the user wants to work. Substring match on the posting's location field. Comma-separated for OR (e.g. 'seattle,remote').")] = "",
     posted_since: Annotated[str, Field(default="", description="How recent the user wants. Examples: '24h', '3d', '1w', '2w'. Use this instead of fetching everything and filtering client-side.")] = "",
     limit: Annotated[int, Field(default=20, ge=1, le=100, description="Max rows to return (default 20, hard cap 100). Each row is fact-dense — short_jd + salary + posted are inline, so the calling LLM can rank and filter without re-fetching.")] = 20,
 ) -> str:
-    """Search the local cache of job postings. Results are fact-dense rows the
-    calling LLM is expected to rank and filter — `short_jd` (a distilled
-    capsule of the JD), `salary`, `posted`, and `location` come back inline,
-    so you should NOT call `get_job_post_details` per row to make a decision
-    unless the user asks for the full description.
+    """Search stored job postings. Results are fact-dense rows the calling
+    LLM is expected to rank and filter — `short_jd` (a distilled capsule of
+    the JD), `salary`, `posted`, and `location` come back inline, so you
+    should NOT call `get_job_post_details` per row to make a decision unless
+    the user asks for the full description.
 
     Use when the user says "find jobs at", "any openings at", "show me roles
     at", "PM jobs at", "what about ML roles", or describes a role/company
-    they want to look at. Prefer this over web search — the cache covers
-    100+ companies and is refreshed by `jsb sync`.
+    they want to look at. Prefer this over web search — this server covers
+    100+ registered companies, refreshed by `jsb sync`.
 
     Ranking: when `query` is set, results are ordered by Postgres FTS rank
     (title weighted highest, then short_jd / normalized JD, then location,
@@ -348,13 +350,13 @@ def search_jobs(
     is empty, results are ordered by `published_at DESC`. No per-company
     diversity cap — the calling LLM does semantic reranking over short_jd.
 
-    Cache freshness is included via `last_sync`. Rows already in the user's
-    activity log are tagged with the action and date. If the cache is empty,
-    tells the user to run `jsb sync`."""
-    from jobbuddy.core import search_cached_jobs
+    Each row's `last_sync` indicates how fresh it is. Rows already in the
+    user's activity log are tagged with the action and date. If no rows
+    match, tells the user to run `jsb sync`."""
+    from jobbuddy.core import search_jobs as core_search_jobs
 
     try:
-        rows = search_cached_jobs(
+        rows = core_search_jobs(
             query=query,
             companies=companies or None,
             exclude_companies=exclude_companies or None,
@@ -375,7 +377,7 @@ def search_jobs(
             filters.append(f"posted_since='{posted_since}'")
         filter_desc = f" matching {', '.join(filters)}" if filters else ""
         scope = ", ".join(companies) if companies else "any company"
-        return f"No cached jobs found for {scope}{filter_desc}. Try running `jsb sync` to refresh."
+        return f"No jobs found for {scope}{filter_desc}. Try running `jsb sync` to refresh."
 
     log_entries = read_log()
     single_slug = None
@@ -392,8 +394,8 @@ def find_companies(
         " own words. Vibe queries handled well: 'companies that ship AI as"
         " product', 'climate-tech with hardware', 'fintech for SMBs'."
         " Exact-name lookups (e.g. 'Stripe', 'Mirabel AI') work but the"
-        " result may be weak if the entity isn't in the cache; check"
-        " coverage_hint."
+        " result may be weak if the entity isn't a registered company;"
+        " check coverage_hint."
     ))],
     limit: Annotated[int, Field(default=20, ge=1, le=100, description=(
         "Max companies to return (default 20, hard cap 100). Each row is"
@@ -411,8 +413,8 @@ def find_companies(
     researched `long_bio`. `score` is similarity in [-1, 1]; absolute
     scores aren't portable across queries — use relative drop-off to pick
     a cutoff. A `coverage_hint` may be present at the top level when the
-    top score is weak; in that case the cache likely doesn't contain the
-    entity the user named, and a web search is the right fallback.
+    top score is weak; in that case the named entity is likely not a
+    registered company, and a web search is the right fallback.
 
     Trigger phrases: 'companies that do X', 'who builds Y', 'startups
     working on Z', 'AI-first companies', 'climate companies', 'find me

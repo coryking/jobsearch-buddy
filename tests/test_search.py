@@ -1,6 +1,6 @@
-"""Tests for the Phase 1 search surface.
+"""Tests for the search surface.
 
-Covers JobStore.search_jobs_fts and core.search_cached_jobs — the path that
+Covers JobStore.search_jobs_fts and core.search_jobs — the path that
 both `jsb search` and the `search_jobs` MCP tool sit on top of.
 """
 
@@ -191,13 +191,13 @@ class TestSearchJobsFts:
         assert [r["job_id"] for r in rows] == ["raw"]
 
 
-class TestCoreSearchCachedJobs:
+class TestCoreSearchJobs:
     def test_unknown_company_raises_value_error(self, store):
-        from jobbuddy.core import search_cached_jobs
+        from jobbuddy.core import search_jobs
         with pytest.raises(ValueError, match="Unknown company"):
-            search_cached_jobs(companies=["nonexistent-co"])
+            search_jobs(companies=["nonexistent-co"])
 
     def test_invalid_posted_since_raises_value_error(self, store):
-        from jobbuddy.core import search_cached_jobs
+        from jobbuddy.core import search_jobs
         with pytest.raises(ValueError, match="Invalid duration"):
-            search_cached_jobs(posted_since="garbage")
+            search_jobs(posted_since="garbage")

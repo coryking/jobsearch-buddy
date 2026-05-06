@@ -77,7 +77,7 @@ JobRow = list[Any]
 
 
 class JobSearchResults(BaseModel):
-    """Cached job listings. `jobs` is a header+rows table (first element is column names)."""
+    """Job listings. `jobs` is a header+rows table (first element is column names)."""
 
     count: int
     company: str | None = None

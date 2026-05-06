@@ -123,7 +123,7 @@ def sync_jobs(
     display_state: SyncDisplayState | None = None,
     phases: set[str] | None = None,
 ) -> list[SyncResult]:
-    """Sync job listings from ATS boards into the PostgreSQL cache.
+    """Sync job listings from ATS boards into PostgreSQL.
 
     Fetch runs first; enrich and research run concurrently after.
     Research is independent of the job pipeline -- it polls companies.

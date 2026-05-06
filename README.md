@@ -160,7 +160,7 @@ Connect via `pg_service.conf` (recommended) or explicit connection parameters:
 
 ## Eval Framework
 
-A strip prompt eval framework (`jsb-eval`) exists for iterating on the LLM boilerplate removal prompt. It runs candidate prompts against sample job descriptions and uses an LLM judge to score recall, precision, integrity, and fidelity. See `eval/AGENTS.md` for details.
+A distill prompt eval framework (`jsb-eval`) exists for iterating on the LLM distill prompt. It runs candidate prompts against sample job descriptions and uses an LLM judge to score recall, precision, integrity, and fidelity. See `eval/CLAUDE.md` for details.
 
 ## Project Structure
 
@@ -183,7 +183,7 @@ infrastructure/  Terraform for Azure deployment
 docs/            Architecture docs, migration notes
 ```
 
-See `AGENTS.md` for architecture details.
+See `CLAUDE.md` for architecture details.
 
 ## License
 

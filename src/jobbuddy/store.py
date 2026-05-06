@@ -810,7 +810,7 @@ class JobStore:
         return [dict(row) for row in rows]
 
     def job_count(self, include_removed: bool = False) -> int:
-        """Total number of cached jobs."""
+        """Total number of jobs in the store."""
         sql = "SELECT COUNT(*) as cnt FROM jobs"
         if not include_removed:
             sql += " WHERE listing_status = 'active'"
@@ -821,8 +821,8 @@ class JobStore:
     # Utilities
     # -------------------------------------------------------------------
 
-    def cache_exists(self) -> bool:
-        """Check if there are any jobs in the cache."""
+    def has_any_jobs(self) -> bool:
+        """Whether the jobs table has at least one row."""
         row = self.conn.execute("SELECT COUNT(*) as cnt FROM jobs").fetchone()
         return row["cnt"] > 0 if row else False
 
