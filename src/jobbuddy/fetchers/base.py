@@ -210,8 +210,9 @@ class ATSFetcher(ABC):
                     if on_fetched:
                         on_fetched(job_id, payload)
                 else:
-                    log.info("enrichment outcome ats=%s job=%s outcome=empty",
-                             self.ats_type, job_id)
+                    log.warning("enrichment outcome ats=%s job=%s outcome=empty "
+                                "(request succeeded, parser extracted nothing)",
+                                self.ats_type, job_id)
                     if on_empty:
                         on_empty(job_id)
 
