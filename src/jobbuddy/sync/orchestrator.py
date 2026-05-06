@@ -3,7 +3,10 @@
 Phases wired today:
 1. FetchPhase: parallel company fetching via ThreadPoolExecutor
 2. EnrichPhase: description enrichment for stub fetchers
-3. ResearchPhase: company bio research (requires Azure Responses API)
+3. ResearchPhase: company bio research (Azure Responses API) AND inline
+   embedding of long_bio (text-embedding-3-small) for find_companies.
+   Bio + embedding are paired in one step so a research run leaves the
+   company immediately queryable by find_companies.
 4. DistillPhase: per-job structured-output LLM call -> short_jd,
    description_normalized, salary (requires OpenAI credentials)
 
@@ -34,7 +37,9 @@ from jobbuddy.sync.types import SyncResult
 
 
 VALID_PHASES = {"fetch", "enrich", "research", "distill"}
-_OPENAI_PHASES: set[str] = {"distill"}
+# Research embeds inline (see sync/research.py), so it requires OpenAI creds
+# in addition to the Azure Responses endpoint.
+_OPENAI_PHASES: set[str] = {"distill", "research"}
 _RESEARCH_PHASES = {"research"}
 
 
@@ -118,7 +123,7 @@ def sync_jobs(
     display_state: SyncDisplayState | None = None,
     phases: set[str] | None = None,
 ) -> list[SyncResult]:
-    """Sync job listings from ATS boards into the PostgreSQL cache.
+    """Sync job listings from ATS boards into PostgreSQL.
 
     Fetch runs first; enrich and research run concurrently after.
     Research is independent of the job pipeline -- it polls companies.

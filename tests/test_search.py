@@ -1,6 +1,6 @@
-"""Tests for the Phase 1 search surface.
+"""Tests for the search surface.
 
-Covers JobStore.search_jobs_fts and core.search_cached_jobs — the path that
+Covers JobStore.search_jobs_fts and core.search_jobs — the path that
 both `jsb search` and the `search_jobs` MCP tool sit on top of.
 """
 
@@ -112,9 +112,9 @@ class TestSearchJobsFts:
         rows = store.search_jobs_fts(exclude_companies=["beta"], limit=20)
         assert {r["company_slug"] for r in rows} == {"acme"}
 
-    def test_no_diversity_cap(self, store):
-        # Phase 1 explicit decision: no per-company diversity in SERP.
-        # All 5 acme jobs should land in the result before any beta job.
+    def test_per_company_cap_caps_default(self, store):
+        # Default cap of 3 prevents one employer from flooding the result set.
+        # Without the cap the top-5 would be 5 acme rows; with it, beta breaks in.
         today = date.today()
         for i in range(5):
             _seed_distilled(store, "acme", f"a{i}", title=f"A{i}", short_jd="x",
@@ -122,7 +122,31 @@ class TestSearchJobsFts:
         _seed_distilled(store, "beta", "b1", title="B1", short_jd="x",
                         published_at=today - timedelta(days=10))
         rows = store.search_jobs_fts(limit=5)
-        assert {r["company_slug"] for r in rows} == {"acme"}
+        slugs = [r["company_slug"] for r in rows]
+        assert slugs.count("acme") == 3
+        assert slugs.count("beta") == 1
+        # Within acme, the 3 newest should win (a0, a1, a2 by recency).
+        acme_ids = [r["job_id"] for r in rows if r["company_slug"] == "acme"]
+        assert acme_ids == ["a0", "a1", "a2"]
+
+    def test_per_company_cap_disabled_returns_all(self, store):
+        # Caller can opt out by passing per_company_cap=None.
+        today = date.today()
+        for i in range(5):
+            _seed_distilled(store, "acme", f"a{i}", title=f"A{i}", short_jd="x",
+                            published_at=today - timedelta(days=i))
+        rows = store.search_jobs_fts(limit=5, per_company_cap=None)
+        assert len(rows) == 5
+
+    def test_per_company_cap_skipped_when_single_company_filter(self, store):
+        # Scoping to a single company means "I want depth here." Cap shouldn't
+        # silently truncate that to 3.
+        today = date.today()
+        for i in range(5):
+            _seed_distilled(store, "acme", f"a{i}", title=f"A{i}", short_jd="x",
+                            published_at=today - timedelta(days=i))
+        rows = store.search_jobs_fts(companies=["acme"], limit=10)
+        assert len(rows) == 5
 
     def test_limit_cap(self, store):
         for i in range(10):
@@ -167,13 +191,13 @@ class TestSearchJobsFts:
         assert [r["job_id"] for r in rows] == ["raw"]
 
 
-class TestCoreSearchCachedJobs:
+class TestCoreSearchJobs:
     def test_unknown_company_raises_value_error(self, store):
-        from jobbuddy.core import search_cached_jobs
+        from jobbuddy.core import search_jobs
         with pytest.raises(ValueError, match="Unknown company"):
-            search_cached_jobs(companies=["nonexistent-co"])
+            search_jobs(companies=["nonexistent-co"])
 
     def test_invalid_posted_since_raises_value_error(self, store):
-        from jobbuddy.core import search_cached_jobs
+        from jobbuddy.core import search_jobs
         with pytest.raises(ValueError, match="Invalid duration"):
-            search_cached_jobs(posted_since="garbage")
+            search_jobs(posted_since="garbage")

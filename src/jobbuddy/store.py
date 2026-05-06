@@ -173,6 +173,104 @@ class JobStore:
         return result.rowcount
 
     # -------------------------------------------------------------------
+    # Company bio embeddings (Phase 2: find_companies)
+    # -------------------------------------------------------------------
+
+    def update_company_embedding(self, slug: str, *, embedding: str) -> None:
+        """Persist a bio embedding. `embedding` is the pgvector text literal
+        `'[v1,v2,...]'` produced by jobbuddy.embeddings.embed_text()."""
+        self.conn.execute(
+            """UPDATE companies SET
+                bio_embedding = %s::vector,
+                bio_embedding_updated_at = now()
+               WHERE slug = %s""",
+            (embedding, slug),
+        )
+
+    # Reciprocal Rank Fusion constant. k=60 is the canonical default from
+    # Cormack et al. (2009); larger k softens the weight of top ranks.
+    _RRF_K = 60
+
+    def find_companies(
+        self, embedding: str, query: str, *, limit: int = 20,
+    ) -> list[dict]:
+        """Hybrid company search: vector ∪ FTS, fused via Reciprocal Rank Fusion.
+
+        Vector arm: cosine similarity over `bio_embedding` (handles vibe
+        queries — "AI-as-product startups").
+        FTS arm: websearch_to_tsquery over `name + short_bio` (handles
+        exact-name lookups — "Stripe", "Mirabel AI" — that vector alone
+        scores poorly because short queries have weak semantic signal).
+        Fusion: RRF with k=60. Each arm fetches LIMIT*3 candidates so the
+        merge has room to surface rows ranked highly by only one arm.
+
+        Returns rows with `slug`, `name`, `short_bio`, plus three scores:
+        - `vec_score`: cosine similarity in [-1, 1], or NULL if vector arm
+          missed this row
+        - `fts_score`: ts_rank, or NULL if FTS arm missed this row
+        - `rrf_score`: fused rank score (sums to ~0.03 max with k=60)
+
+        At 693 companies the FTS arm runs as a sequential scan with inline
+        to_tsvector — no GIN index needed. Add the index when row count
+        grows past where seq scan stays fast.
+        """
+        candidate_pool = max(limit * 3, 30)
+        rows = self.conn.execute(
+            """
+            WITH vec AS (
+                SELECT slug,
+                       1 - (bio_embedding <=> %(embedding)s::vector) AS vec_score,
+                       ROW_NUMBER() OVER (
+                           ORDER BY bio_embedding <=> %(embedding)s::vector
+                       ) AS vec_rank
+                  FROM companies
+                 WHERE bio_embedding IS NOT NULL
+                 ORDER BY bio_embedding <=> %(embedding)s::vector
+                 LIMIT %(pool)s
+            ),
+            fts AS (
+                SELECT slug,
+                       ts_rank(
+                           to_tsvector('english', coalesce(name, '') || ' ' || coalesce(short_bio, '')),
+                           websearch_to_tsquery('english', %(query)s)
+                       ) AS fts_score,
+                       ROW_NUMBER() OVER (
+                           ORDER BY ts_rank(
+                               to_tsvector('english', coalesce(name, '') || ' ' || coalesce(short_bio, '')),
+                               websearch_to_tsquery('english', %(query)s)
+                           ) DESC
+                       ) AS fts_rank
+                  FROM companies
+                 WHERE to_tsvector('english', coalesce(name, '') || ' ' || coalesce(short_bio, ''))
+                       @@ websearch_to_tsquery('english', %(query)s)
+                 LIMIT %(pool)s
+            ),
+            fused AS (
+                SELECT COALESCE(v.slug, f.slug) AS slug,
+                       v.vec_score, f.fts_score,
+                       COALESCE(1.0 / (%(k)s + v.vec_rank), 0)
+                       + COALESCE(1.0 / (%(k)s + f.fts_rank), 0) AS rrf_score
+                  FROM vec v
+                  FULL OUTER JOIN fts f ON v.slug = f.slug
+            )
+            SELECT c.slug, c.name, c.short_bio,
+                   fused.vec_score, fused.fts_score, fused.rrf_score
+              FROM fused
+              JOIN companies c ON c.slug = fused.slug
+             ORDER BY fused.rrf_score DESC
+             LIMIT %(limit)s
+            """,
+            {
+                "embedding": embedding,
+                "query": query,
+                "pool": candidate_pool,
+                "k": self._RRF_K,
+                "limit": limit,
+            },
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    # -------------------------------------------------------------------
     # Jobs
     # -------------------------------------------------------------------
 
@@ -340,6 +438,8 @@ class JobStore:
         rows = self.conn.execute(sql, params).fetchall()
         return [{k: v for k, v in dict(row).items() if k != "rn"} for row in rows]
 
+    PER_COMPANY_CAP_DEFAULT = 3
+
     def search_jobs_fts(
         self,
         *,
@@ -350,6 +450,7 @@ class JobStore:
         posted_after: str | None = None,
         include_removed: bool = False,
         limit: int = 20,
+        per_company_cap: int | None = PER_COMPANY_CAP_DEFAULT,
     ) -> list[dict]:
         """Phase 1 search: FTS over fts_vector with deterministic ranking.
 
@@ -357,7 +458,11 @@ class JobStore:
           (published_at DESC NULLS LAST, company_slug, job_id).
         - When `query` is empty: pure published_at DESC NULLS LAST,
           tie-break on (company_slug, job_id).
-        - No per-company diversity cap (a deferred SERP-tuning concern).
+        - Per-company cap: keeps the top N rows per company in the result
+          set so a single dominant employer (Carvana auto-body, Anduril
+          robotics) doesn't crowd cross-employer evidence out of the
+          fixed-size top-K. Skipped when the caller already scoped to a
+          single company or passes None.
         - Returns rows including short_jd, salary, published_at — the
           fact-dense shape the calling LLM filters on.
         """
@@ -367,33 +472,74 @@ class JobStore:
             include_removed=include_removed,
         )
 
+        # Three ORDER BY contexts:
+        #  - `order_window`: inside row_number() OVER. Cannot use the `rank`
+        #    alias (window evaluation precedes SELECT-list aliasing in PG).
+        #    Must repeat the full ts_rank() expression and use `j.` prefixes.
+        #  - `order_inner`: top-level ORDER BY of the cap-less query. Can use
+        #    the `rank` alias. Uses `j.` prefixes for unambiguous join columns.
+        #  - `order_outer`: ORDER BY over the CTE result in the cap path.
+        #    Uses unqualified column names since CTE columns are flat.
+        ts_rank_expr = "ts_rank(j.fts_vector, websearch_to_tsquery('english', %s))"
         select_extra = ""
-        order_by = "j.published_at DESC NULLS LAST, j.company_slug, j.job_id"
+        order_window = "j.published_at DESC NULLS LAST, j.company_slug, j.job_id"
+        order_inner = order_window
+        order_outer = "published_at DESC NULLS LAST, company_slug, job_id"
         if query:
-            # Reuse the same tsquery already bound to params via _build_filter_conditions
-            select_extra = (
-                ", ts_rank(j.fts_vector, websearch_to_tsquery('english', %s)) AS rank"
-            )
-            params.insert(0, query)  # bound to the SELECT-list %s
-            order_by = (
-                "rank DESC, j.published_at DESC NULLS LAST, "
-                "j.company_slug, j.job_id"
-            )
+            select_extra = f", {ts_rank_expr} AS rank"
+            params.insert(0, query)  # bound to the SELECT-list ts_rank
+            order_window = f"{ts_rank_expr} DESC, " + order_window
+            order_inner = "rank DESC, " + order_inner
+            order_outer = "rank DESC, " + order_outer
 
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
-        params.append(limit)
 
-        sql = f"""
-            SELECT j.*, s.last_sync, c.name AS company_name{select_extra}
-              FROM jobs j
-              LEFT JOIN sync_status s ON j.company_slug = s.company_slug
-              LEFT JOIN companies c ON j.company_slug = c.slug
-              {where}
-              ORDER BY {order_by}
-              LIMIT %s
-        """
+        # Skip the cap when the caller explicitly scoped to one company —
+        # the user wants depth there, not breadth.
+        apply_cap = (
+            per_company_cap is not None
+            and per_company_cap > 0
+            and not (companies and len(companies) == 1)
+        )
+
+        if apply_cap:
+            sql = f"""
+                WITH ranked AS (
+                    SELECT j.*, s.last_sync, c.name AS company_name{select_extra},
+                           row_number() OVER (
+                               PARTITION BY j.company_slug
+                               ORDER BY {order_window}
+                           ) AS company_rn
+                      FROM jobs j
+                      LEFT JOIN sync_status s ON j.company_slug = s.company_slug
+                      LEFT JOIN companies c ON j.company_slug = c.slug
+                      {where}
+                )
+                SELECT * FROM ranked
+                 WHERE company_rn <= %s
+                 ORDER BY {order_outer}
+                 LIMIT %s
+            """
+            # When `query` is set, the OVER clause's ts_rank expression needs
+            # its own bound copy of the query (right after the SELECT-list one
+            # we already inserted, before the WHERE-clause params).
+            if query:
+                params.insert(1, query)
+            params.extend([per_company_cap, limit])
+        else:
+            sql = f"""
+                SELECT j.*, s.last_sync, c.name AS company_name{select_extra}
+                  FROM jobs j
+                  LEFT JOIN sync_status s ON j.company_slug = s.company_slug
+                  LEFT JOIN companies c ON j.company_slug = c.slug
+                  {where}
+                  ORDER BY {order_inner}
+                  LIMIT %s
+            """
+            params.append(limit)
+
         rows = self.conn.execute(sql, params).fetchall()
-        return [dict(r) for r in rows]
+        return [{k: v for k, v in dict(r).items() if k != "company_rn"} for r in rows]
 
     # Columns the enrich phase is allowed to ask about. Whitelisted to keep
     # the SQL composer safe — the column tuple comes from a fetcher class
@@ -721,7 +867,7 @@ class JobStore:
         return [dict(row) for row in rows]
 
     def job_count(self, include_removed: bool = False) -> int:
-        """Total number of cached jobs."""
+        """Total number of jobs in the store."""
         sql = "SELECT COUNT(*) as cnt FROM jobs"
         if not include_removed:
             sql += " WHERE listing_status = 'active'"
@@ -732,8 +878,8 @@ class JobStore:
     # Utilities
     # -------------------------------------------------------------------
 
-    def cache_exists(self) -> bool:
-        """Check if there are any jobs in the cache."""
+    def has_any_jobs(self) -> bool:
+        """Whether the jobs table has at least one row."""
         row = self.conn.execute("SELECT COUNT(*) as cnt FROM jobs").fetchone()
         return row["cnt"] > 0 if row else False
 

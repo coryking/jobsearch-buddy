@@ -1,6 +1,6 @@
 # jobbuddy Package
 
-See `AGENTS.md` in the repo root for project overview, build commands, and
+See `CLAUDE.md` in the repo root for project overview, build commands, and
 architecture index. See `docs/architecture.md` for detailed architecture.
 
 ## Package-Specific Coding Conventions

@@ -48,6 +48,8 @@ class Settings(BaseSettings):
     research_endpoint: Optional[str] = None
     research_max_workers: int = 4  # Bing web_search 429s observed >4 concurrent
 
+    embedding_model: str = "text-embedding-3-small"
+
     @property
     def has_openai(self) -> bool:
         """Whether OpenAI credentials are configured (enables the distill phase)."""

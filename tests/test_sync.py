@@ -28,7 +28,11 @@ class TestSync:
         mock_get_fetcher.return_value = mock_fetcher
 
         with patch("jobbuddy.sync.orchestrator.lookup_by_name", return_value=company):
-            results = sync_jobs(company_slugs=["acme"], conninfo=pg_conninfo)
+            results = sync_jobs(
+                company_slugs=["acme"],
+                conninfo=pg_conninfo,
+                phases={"fetch"},
+            )
 
         assert len(results) == 1
         assert results[0].ok
@@ -60,7 +64,7 @@ class TestSync:
 
         mock_get_fetcher.side_effect = side_effect
 
-        results = sync_jobs(max_workers=1, conninfo=pg_conninfo)
+        results = sync_jobs(max_workers=1, conninfo=pg_conninfo, phases={"fetch"})
 
         ok_results = [r for r in results if r.ok]
         err_results = [r for r in results if not r.ok]
@@ -102,12 +106,13 @@ class TestSync:
         mock_fetcher.list_jobs.return_value = [make_job("1")]
         mock_get_fetcher.return_value = mock_fetcher
 
-        # First sync
-        sync_jobs(conninfo=pg_conninfo)
+        # First sync (fetch only — research/distill would hit network)
+        sync_jobs(conninfo=pg_conninfo, phases={"fetch"})
         # Second sync with stale_hours=24 should skip
         results = sync_jobs(
             stale_hours=24,
             conninfo=pg_conninfo,
+            phases={"fetch"},
         )
         assert len(results) == 0
 
@@ -392,8 +397,14 @@ class TestValidateSyncConfig:
     """Tests for validate_sync_config() — all preconditions checked up front."""
 
     def _settings(self, has_openai: bool = True) -> Settings:
-        """Build a Settings with controlled OpenAI state."""
+        """Build a Settings with controlled OpenAI state.
+
+        `_env_file=None` disables .env loading so tests aren't sensitive to
+        whether the host has JOBBUDDY_OPENAI_API_KEY in the developer's
+        local .env file.
+        """
         return Settings(
+            _env_file=None,  # type: ignore[call-arg]
             pg_service="job-search-buddy-test",
             openai_api_key="test-key" if has_openai else None,
             research_endpoint="https://test.openai.azure.com/",
@@ -464,6 +475,17 @@ class TestValidateSyncConfig:
 
         config = validate_sync_config(phases=None, settings=self._settings())
         assert config.phases == VALID_PHASES
+
+    def test_research_phase_requires_openai(self):
+        """Research now embeds inline, so it requires OpenAI creds in addition
+        to the Azure Responses endpoint."""
+        from jobbuddy.sync import validate_sync_config
+
+        with pytest.raises(ValueError, match="JOBBUDDY_OPENAI_API_KEY"):
+            validate_sync_config(
+                phases={"research"},
+                settings=self._settings(has_openai=False),
+            )
 
 
 class TestSyncResult:

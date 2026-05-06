@@ -1,10 +1,19 @@
-"""ResearchPhase -- Azure Responses API + web_search to fill company bios.
+"""ResearchPhase -- Azure Responses API + web_search to fill company bios,
+then immediately embed long_bio for find_companies vector search.
+
+Bio + embedding are paired: every newly-written long_bio gets embedded in
+the same `process_item` so a research run leaves the company in a fully
+queryable state. There is no standalone embed phase — the recovery path
+for a bio whose embedding wasn't written (e.g. transient API failure) is
+to re-run `jsb research-companies --company <slug> --force`.
 
 Polls companies.long_bio IS NULL, runs the researcher per company in a
 thread pool, writes results via WriteQueue. Same WorkerPhase machinery as
-EnrichPhase / StripPhase. Permanent failures (content_filter, schema
+EnrichPhase / DistillPhase. Permanent failures (content_filter, schema
 mismatches) are recorded as errors and skipped — no retry. Transient
-failures fall through to WorkerPhase's retry loop."""
+failures fall through to WorkerPhase's retry loop. Embedding failures are
+swallowed (logged) so a flaky embedding API doesn't lose a successful
+research result; the backfill phase will catch the missing embedding."""
 
 from __future__ import annotations
 
@@ -13,6 +22,7 @@ from collections.abc import Callable
 
 from openai import OpenAI
 
+from jobbuddy.embeddings import embed_text
 from jobbuddy.research import (
     PermanentResearchError,
     build_research_client,
@@ -79,5 +89,22 @@ class ResearchPhase(WorkerPhase["ResearchWorkItem"]):
                 sl, short_bio=b.short_bio, long_bio=b.long_bio, model=b.model,
             )
         )
+
+        # Embed long_bio so the company is immediately queryable via
+        # find_companies. Bio write and embedding write are independent
+        # UPDATEs on the same row — the WriteQueue serialises them.
+        try:
+            vector_literal, _tokens = embed_text(bio.long_bio)
+            self.submit_write(
+                lambda store, sl=slug, v=vector_literal:
+                    store.update_company_embedding(sl, embedding=v)
+            )
+        except Exception:
+            log.warning(
+                "Embedding failed for %s — bio saved, re-run "
+                "`jsb research-companies --company %s --force` to retry",
+                slug, slug, exc_info=True,
+            )
+
         self.display.add_to_info_counter(bio.web_search_count, label=" search")
         self.display.advance(detail=f"{slug} ({bio.web_search_count} searches)")

@@ -62,11 +62,11 @@ def companies_add(
 
 @app.command(name="list-jobs")
 def list_jobs(
-    company: Optional[str] = typer.Argument(None, help="Company name or slug (omit for all cached jobs)"),
+    company: Optional[str] = typer.Argument(None, help="Company name or slug (omit to list across all companies)"),
     filter: Optional[str] = typer.Option(None, "--filter", "-f", help="Keyword search across title and description (full-text search with stemming)"),
     since: Optional[str] = typer.Option(None, "--since", "-s", help="Only show jobs posted within this period (e.g. 24h, 3d, 1w, 2w)"),
 ):
-    """List open jobs from cache. Omit company for all cached jobs."""
+    """List open jobs. Omit company to list across all companies."""
     from jobbuddy.store import JobStore
 
     posted_after = parse_since(since) if since else None
@@ -77,8 +77,8 @@ def list_jobs(
         console.print("[yellow]Cannot connect to database. Check pg_service.conf.[/yellow]")
         raise SystemExit(1)
 
-    if not store.cache_exists():
-        console.print("[yellow]No cached data. Run 'jsb sync' to populate.[/yellow]")
+    if not store.has_any_jobs():
+        console.print("[yellow]No jobs in the database. Run 'jsb sync' to populate.[/yellow]")
         store.close()
         raise SystemExit(0)
 
@@ -92,10 +92,9 @@ def list_jobs(
             raise SystemExit(1)
         company_slug = resolved.slug
 
-        # Show cache freshness
         statuses = store.get_sync_status(company_slug)
         if statuses:
-            console.print(f"[dim]Cache from: {statuses[0]['last_sync']}[/dim]")
+            console.print(f"[dim]Last synced: {statuses[0]['last_sync']}[/dim]")
 
     try:
         rows = store.query_jobs(
@@ -114,7 +113,7 @@ def list_jobs(
     if company_slug:
         console.print(f"[dim]{company_slug} -- {len(rows)} jobs[/dim]")
     else:
-        console.print(f"[dim]{len(rows)} cached jobs[/dim]")
+        console.print(f"[dim]{len(rows)} jobs[/dim]")
 
     buf = io.StringIO()
     writer = csv.writer(buf)
@@ -132,6 +131,41 @@ def list_jobs(
     print(buf.getvalue(), end="")
 
 
+@app.command(name="find-companies")
+def find_companies_cmd(
+    query: str = typer.Argument(..., help="Vibe / theme query (e.g. 'companies that ship AI as product')"),
+    limit: int = typer.Option(20, "--limit", "-n", help="Max rows (default 20, cap 100)"),
+):
+    """Vector-search companies by long_bio. Mirrors the `find_companies` MCP tool."""
+    from jobbuddy.core import find_companies
+
+    try:
+        result = find_companies(query, limit=min(limit, 100))
+    except ValueError as e:
+        console.print(f"[red]{e}[/red]")
+        raise SystemExit(1)
+
+    if result["coverage_hint"]:
+        console.print(f"[yellow]{result['coverage_hint']}[/yellow]")
+
+    def _fmt(v):
+        return f"{v:.3f}" if v is not None else "—"
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["RRF", "Vec", "FTS", "Slug", "Name", "Short Bio"])
+    for r in result["results"]:
+        writer.writerow([
+            _fmt(r["rrf_score"]),
+            _fmt(r["vec_score"]),
+            _fmt(r["fts_score"]),
+            r["slug"],
+            r["name"],
+            (r["short_bio"] or "").replace("\n", " "),
+        ])
+    print(buf.getvalue(), end="")
+
+
 @app.command()
 def search(
     query: Optional[str] = typer.Option(None, "--query", "-q", help="Postgres FTS query over title, short_jd, description_normalized, location, department"),
@@ -141,15 +175,15 @@ def search(
     posted_since: Optional[str] = typer.Option(None, "--posted-since", "-s", help="Only show jobs posted within this period (e.g. 24h, 3d, 1w, 2w)"),
     limit: int = typer.Option(50, "--limit", "-n", help="Max rows to return"),
 ):
-    """Search cached jobs across all companies (CLI parity with the search_jobs MCP tool)."""
-    from jobbuddy.core import search_cached_jobs
+    """Search jobs across all companies (CLI parity with the search_jobs MCP tool)."""
+    from jobbuddy.core import search_jobs
 
     exclude_list = None
     if exclude:
         exclude_list = [s.strip() for s in exclude.split(",") if s.strip()]
 
     try:
-        rows = search_cached_jobs(
+        rows = search_jobs(
             query=query or "",
             companies=[company] if company else None,
             exclude_companies=exclude_list,

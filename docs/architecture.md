@@ -178,7 +178,7 @@ descriptions in bulk listings. After fetch, the enrich phase calls
 ## Settings
 
 `settings.py` uses pydantic-settings. Priority: env vars > defaults.
-See `AGENTS.md` for the full settings table.
+See `CLAUDE.md` for the full settings table.
 
 OpenAI credentials are required for the distill phase. The `pgvector`
 extension stays installed but no Python client uses it (Phase 2 will).

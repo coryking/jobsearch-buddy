@@ -53,7 +53,127 @@ def resolve_company_slugs(names: list[str]) -> list[str]:
     return slugs
 
 
-def search_cached_jobs(
+def find_companies(
+    query: str,
+    *,
+    limit: int = 20,
+    coverage_floor: float = 0.35,
+) -> dict:
+    """Hybrid search over registered companies — vector + FTS, fused via RRF.
+
+    Returns `{"results": [{slug, name, short_bio, vec_score, fts_score,
+    rrf_score}], "coverage_hint": str | None}`.
+
+    - `vec_score`: cosine similarity in [-1, 1] when the vector arm
+      surfaced this row, else None. Useful for vibe queries.
+    - `fts_score`: Postgres ts_rank when the FTS arm surfaced this row,
+      else None. Useful for exact-name lookups where the vector arm scores
+      poorly because the query is too short to carry semantic signal.
+    - `rrf_score`: fused rank score. Used for ordering only; absolute
+      values aren't portable across queries — the LLM uses relative
+      drop-off, not a threshold.
+
+    `coverage_hint` is set when neither arm produced a strong match:
+    `max(top vec_score, top fts_score) < coverage_floor`. That tells the
+    LLM the named entity may not be a registered company and a web search
+    is the right fallback.
+
+    Always returns top-N rows when any embeddings exist; never returns
+    empty just because the query is unusual. Raises ValueError when query
+    is empty, limit < 1, or no company embeddings exist yet.
+    """
+    from jobbuddy.embeddings import embed_text
+    from jobbuddy.store import JobStore
+
+    if not query or not query.strip():
+        raise ValueError("find_companies requires a non-empty query")
+    if limit < 1:
+        raise ValueError("limit must be >= 1")
+
+    import psycopg
+
+    embedding, _tokens = embed_text(query)
+
+    store = JobStore()
+    try:
+        rows = store.find_companies(embedding, query, limit=limit)
+    except psycopg.Error as e:
+        # websearch_to_tsquery is generous but malformed input still raises.
+        # Re-raise as ValueError so MCP/CLI handlers can map it cleanly.
+        raise ValueError(f"Invalid query for find_companies: {e}") from e
+    finally:
+        store.close()
+
+    if not rows:
+        raise ValueError(
+            "No company embeddings yet. Run `jsb research-companies`"
+            " to fill bios + embeddings."
+        )
+
+    top_vec = max((r["vec_score"] for r in rows if r["vec_score"] is not None), default=None)
+    top_fts = max((r["fts_score"] for r in rows if r["fts_score"] is not None), default=None)
+
+    # Coverage hint fires only when *both* arms missed: vector below floor
+    # AND no FTS match at all. ts_rank is bounded differently than cosine
+    # similarity, and any FTS hit means the query's tokens literally appear
+    # in some company's name+short_bio — that's positive evidence the
+    # entity is registered, even when the score is small.
+    # The FTS CTE's WHERE already guarantees only real matches reach this
+    # row, so any non-None fts_score is positive evidence of registration —
+    # even ts_rank == 0.0 (which can occur on very short docs).
+    coverage_hint = None
+    vec_weak = top_vec is None or top_vec < coverage_floor
+    fts_missed = top_fts is None
+    if vec_weak and fts_missed:
+        coverage_hint = (
+            "Top match is weak — the named entity may not be a registered"
+            " company. For exact-name lookups, fall back to web search."
+        )
+
+    def _round(v):
+        return None if v is None else round(float(v), 4)
+
+    results = [
+        {
+            "slug": r["slug"],
+            "name": r["name"],
+            "short_bio": r["short_bio"],
+            "vec_score": _round(r["vec_score"]),
+            "fts_score": _round(r["fts_score"]),
+            "rrf_score": _round(r["rrf_score"]),
+        }
+        for r in rows
+    ]
+
+    # Audit log so a few weeks of real traffic answer the open Phase 2
+    # questions: is the coverage_floor calibrated correctly, and does the
+    # FTS arm earn its keep on real queries (the deferred tuning question
+    # from issue #41)? The `extra` dict makes structured-log scrapers
+    # happy; the formatted message is for grep.
+    top_slugs = [r["slug"] for r in results[:3]]
+    log.info(
+        "find_companies q=%r top_vec=%s top_fts=%s top_slugs=%s "
+        "coverage_hint=%s n=%d",
+        query, _round(top_vec), _round(top_fts), top_slugs,
+        bool(coverage_hint), len(results),
+        extra={
+            "find_companies_query": query,
+            "find_companies_top_vec": _round(top_vec),
+            "find_companies_top_fts": _round(top_fts),
+            "find_companies_top_rrf": results[0]["rrf_score"] if results else None,
+            "find_companies_top_slugs": top_slugs,
+            "find_companies_coverage_hint": bool(coverage_hint),
+            "find_companies_result_count": len(results),
+        },
+    )
+
+    return {
+        "results": results,
+        "coverage_hint": coverage_hint,
+    }
+
+
+def search_jobs(
     *,
     query: str = "",
     companies: list[str] | None = None,
@@ -62,7 +182,7 @@ def search_cached_jobs(
     posted_since: str = "",
     limit: int = 20,
 ) -> list[dict]:
-    """Search the cached job listings — shared entry point for CLI and MCP.
+    """Search stored job listings — shared entry point for CLI and MCP.
 
     Resolves company names to slugs, parses the duration filter, and delegates
     to JobStore.search_jobs_fts. Raises ValueError on unknown company or bad
