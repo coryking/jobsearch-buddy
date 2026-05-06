@@ -441,15 +441,16 @@ class JobStore:
                     returning=False,
                 )
 
-    # Per-column write expression for update_enrichment. Most columns are
-    # written directly (a non-NULL fetched value is authoritative). For
-    # published_at we use COALESCE(jobs.x, %s) so a real existing date is
-    # never clobbered by a re-enrich — posted dates don't change in
-    # practice, and this keeps us safe from a fetcher that produces a
-    # different value on a follow-up pass.
+    # Per-column write expression for update_enrichment. All columns use
+    # COALESCE(jobs.X, %s) — "old wins". This matches the pure-insert
+    # contract: a row's content is fixed at first non-NULL value. Enrich
+    # fills NULLs; it never overwrites populated data. A row whose OR
+    # predicate (description IS NULL OR published_at IS NULL) matches
+    # because of one missing column won't have its other already-populated
+    # columns rewritten with re-parsed values.
     _ENRICHMENT_WRITE_EXPR = {
-        "description": "%s",
-        "salary": "%s",
+        "description": "COALESCE(jobs.description, %s)",
+        "salary": "COALESCE(jobs.salary, %s)",
         "published_at": "COALESCE(jobs.published_at, %s)",
     }
 

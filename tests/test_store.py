@@ -487,9 +487,9 @@ class TestUpdateEnrichment:
             store.update_enrichment("acme", {"1": {"id": 999}})
 
     def test_published_at_preserved_when_existing(self, store):
-        """A re-enrich that produces a different published_at must not
-        clobber an existing real date. Posted dates don't change in
-        practice, so the existing value wins."""
+        """Old-wins: a re-enrich never clobbers an existing populated
+        value, regardless of which column it is. Posted dates don't
+        change in practice."""
         existing = self.date(2026, 1, 1)
         store.upsert_jobs("acme", [make_job("1", published_at=existing)])
         store.update_enrichment("acme", {
@@ -499,6 +499,29 @@ class TestUpdateEnrichment:
             "SELECT published_at FROM jobs WHERE job_id = '1'"
         ).fetchone()
         assert row["published_at"] == existing
+
+    def test_description_preserved_when_existing(self, store):
+        """Old-wins applies to description too: when a row matches the OR
+        predicate because of a missing published_at, the re-fetched
+        description must NOT overwrite the existing one (which may differ
+        cosmetically from a fresh re-parse)."""
+        store.upsert_jobs("acme", [make_job("1", description="original")])
+        store.update_enrichment("acme", {
+            "1": {"description": "re-parsed", "published_at": self.date(2026, 5, 1)},
+        })
+        row = store.conn.execute(
+            "SELECT description, published_at FROM jobs WHERE job_id = '1'"
+        ).fetchone()
+        assert row["description"] == "original"
+        assert row["published_at"] == self.date(2026, 5, 1)
+
+    def test_salary_preserved_when_existing(self, store):
+        store.upsert_jobs("acme", [make_job("1", salary="$200k")])
+        store.update_enrichment("acme", {"1": {"salary": "$300k"}})
+        row = store.conn.execute(
+            "SELECT salary FROM jobs WHERE job_id = '1'"
+        ).fetchone()
+        assert row["salary"] == "$200k"
 
     def test_published_at_written_when_existing_null(self, store):
         """For rows with NULL published_at (the TalentBrew backfill case),
