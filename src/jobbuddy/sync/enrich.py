@@ -7,6 +7,7 @@ This phase fetches full descriptions from ATS URLs, one company at a time.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 
 from jobbuddy.fetchers import get_fetcher, has_descriptions_in_listing
 from jobbuddy.fetchers.base import ATSFetcher
@@ -28,8 +29,12 @@ class EnrichPhase(WorkerPhase["EnrichWorkItem"]):
 
     def __init__(self, conninfo: str, *, slugs: list[str],
                  targets: list[Company], display: PhaseState,
-                 max_workers: int = 5):
-        super().__init__(conninfo, max_workers=max_workers, display=display)
+                 max_workers: int = 5,
+                 conninfo_factory: Callable[[], str] | None = None):
+        super().__init__(
+            conninfo, max_workers=max_workers, display=display,
+            conninfo_factory=conninfo_factory,
+        )
         self.slugs = slugs
         self.slug_to_company = {c.slug: c for c in targets}
         self._enrich_plan: list[EnrichWorkItem] = []

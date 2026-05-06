@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable
 from pathlib import Path
 
 import httpx
@@ -87,8 +88,12 @@ class DistillPhase(WorkerPhase["DistillWorkItem"]):
         display: PhaseState,
         max_workers: int = 30,
         slugs: list[str] | None = None,
+        conninfo_factory: Callable[[], str] | None = None,
     ):
-        super().__init__(conninfo, max_workers=max_workers, display=display)
+        super().__init__(
+            conninfo, max_workers=max_workers, display=display,
+            conninfo_factory=conninfo_factory,
+        )
         self._slugs = slugs
         self._client: OpenAI | None = None
         self._system_prompt: str = ""

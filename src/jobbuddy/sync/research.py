@@ -9,6 +9,7 @@ failures fall through to WorkerPhase's retry loop."""
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 
 from openai import OpenAI
 
@@ -33,9 +34,13 @@ class ResearchPhase(WorkerPhase["ResearchWorkItem"]):
         display: PhaseState,
         max_workers: int | None = None,
         slugs: list[str] | None = None,
+        conninfo_factory: Callable[[], str] | None = None,
     ):
         workers = max_workers if max_workers is not None else get_settings().research_max_workers
-        super().__init__(conninfo, max_workers=workers, display=display)
+        super().__init__(
+            conninfo, max_workers=workers, display=display,
+            conninfo_factory=conninfo_factory,
+        )
         self._slugs = slugs
         self._client: OpenAI | None = None
 

@@ -25,6 +25,8 @@ from collections.abc import Callable, Hashable
 from concurrent.futures import ThreadPoolExecutor
 from typing import ClassVar, Generic, TypeVar
 
+import psycopg
+
 T = TypeVar("T")
 
 from jobbuddy.store import JobStore
@@ -33,23 +35,49 @@ from jobbuddy.sync.display import PhaseState
 log = logging.getLogger(__name__)
 
 
+def _is_connection_dead(store: JobStore | None, exc: BaseException) -> bool:
+    """Heuristic: did this exception come from a dead/closed connection?
+
+    Azure Entra tokens expire around 1h; the resulting failures show up as
+    psycopg.OperationalError / InterfaceError, or as "the connection is
+    closed" from psycopg itself. We also treat a `conn.closed` flag as a
+    signal regardless of the exception type.
+    """
+    if isinstance(exc, (psycopg.OperationalError, psycopg.InterfaceError)):
+        return True
+    if store is not None:
+        conn = getattr(store, "conn", None)
+        if conn is not None and getattr(conn, "closed", False):
+            return True
+    return False
+
+
 class WriteQueue:
     """Single-threaded DB writer. Workers submit callables; one connection
     executes them all. Eliminates per-thread connections, file descriptor
     exhaustion, and zombie lock issues at high worker counts.
+
+    On connection-level failures (closed connection, expired Entra token,
+    server-side reset) the writer transparently reconnects via the supplied
+    `conninfo_factory` and retries the failed callable exactly once. Any
+    other exception is logged and the row is dropped -- those are per-row
+    data bugs that won't get better on retry.
     """
 
-    def __init__(self, conninfo: str):
+    def __init__(self, conninfo_factory: Callable[[], str]):
         self._queue: queue.Queue[Callable[[JobStore], None] | None] = queue.Queue()
-        self._conninfo = conninfo
+        self._conninfo_factory = conninfo_factory
         self._thread: threading.Thread | None = None
 
     def start(self) -> None:
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
+    def _open_store(self) -> JobStore:
+        return JobStore(self._conninfo_factory())
+
     def _run(self) -> None:
-        store = JobStore(self._conninfo)
+        store = self._open_store()
         try:
             while True:
                 fn = self._queue.get()
@@ -59,10 +87,38 @@ class WriteQueue:
                 try:
                     fn(store)
                 except Exception as e:
-                    log.warning("WriteQueue error: %s", e)
+                    if _is_connection_dead(store, e):
+                        log.warning(
+                            "WriteQueue connection dead (%s); reconnecting", e
+                        )
+                        try:
+                            store.close()
+                        except Exception:
+                            pass
+                        try:
+                            store = self._open_store()
+                        except Exception as reopen_err:
+                            log.warning(
+                                "WriteQueue reconnect failed: %s; dropping write",
+                                reopen_err,
+                            )
+                            self._queue.task_done()
+                            continue
+                        try:
+                            fn(store)
+                        except Exception as retry_err:
+                            log.warning(
+                                "WriteQueue write failed after reconnect: %s",
+                                retry_err,
+                            )
+                    else:
+                        log.warning("WriteQueue error: %s", e)
                 self._queue.task_done()
         finally:
-            store.close()
+            try:
+                store.close()
+            except Exception:
+                pass
 
     def submit(self, fn: Callable[[JobStore], None]) -> None:
         self._queue.put(fn)
@@ -87,8 +143,17 @@ class WorkerPhase(ABC, Generic[T]):
 
     def __init__(self, conninfo: str, *, max_workers: int,
                  display: PhaseState,
-                 upstream_done: threading.Event | None = None):
+                 upstream_done: threading.Event | None = None,
+                 conninfo_factory: Callable[[], str] | None = None):
         self.conninfo = conninfo
+        # Factory is invoked at WriteQueue startup AND on every reconnect, so
+        # each reconnect picks up a fresh Entra token in Azure mode. Default
+        # closes over the static conninfo for callers that don't need refresh
+        # (local password auth, tests).
+        self._conninfo_factory: Callable[[], str] = (
+            conninfo_factory if conninfo_factory is not None
+            else (lambda: self.conninfo)
+        )
         self.max_workers = max_workers
         self.display = display
         self._shutdown = threading.Event()
@@ -162,7 +227,7 @@ class WorkerPhase(ABC, Generic[T]):
         self.display.max_workers = self.max_workers
         self.on_phase_start()
 
-        self._writer = WriteQueue(self.conninfo)
+        self._writer = WriteQueue(conninfo_factory=self._conninfo_factory)
         self._writer.start()
 
         work_queue: queue.Queue[T | None] = queue.Queue(maxsize=self.max_workers * 2)

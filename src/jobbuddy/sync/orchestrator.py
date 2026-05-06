@@ -135,6 +135,11 @@ def sync_jobs(
     if conninfo is None:
         conninfo = pg_conninfo_with_token()
 
+    # Factory used by WriteQueue for transparent reconnect on connection-level
+    # failures (Azure Entra token expiry, idle timeout, server reset). Each
+    # invocation refreshes the bearer token in Azure mode.
+    conninfo_factory = pg_conninfo_with_token
+
     resolved_slugs: list[str] | None = None
     if company_slugs:
         resolved_slugs = [c.slug for c in _resolve_company_targets(company_slugs)]
@@ -186,6 +191,7 @@ def sync_jobs(
             targets=targets,
             display=display_state.enrich,
             max_workers=max_workers,
+            conninfo_factory=conninfo_factory,
         )
 
     research_phase = None
@@ -194,6 +200,7 @@ def sync_jobs(
             conninfo,
             display=display_state.research,
             slugs=resolved_slugs,
+            conninfo_factory=conninfo_factory,
         )
 
     def run_enrich() -> None:
@@ -218,6 +225,7 @@ def sync_jobs(
             conninfo,
             display=display_state.distill,
             slugs=resolved_slugs,
+            conninfo_factory=conninfo_factory,
         ).run()
 
     return results
