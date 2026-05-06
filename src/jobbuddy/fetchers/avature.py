@@ -14,7 +14,9 @@ Company registry fields:
 import logging
 import re
 import threading
+import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import date
 
 from jobbuddy.fetchers.base import ATSFetcher, JobList, ProgressCallback, RetryCallback
 from jobbuddy.models import Job, strip_html
@@ -22,6 +24,11 @@ from jobbuddy.models import Job, strip_html
 log = logging.getLogger(__name__)
 
 _RECORDS_PER_PAGE = 20
+
+# Matches "https://{host}/.../JobDetail/{slug}/{numeric_id}" — the path may
+# carry an optional locale + section prefix; we only care about the trailing
+# /JobDetail/<slug>/<id>.
+_JOBDETAIL_RE = re.compile(r"/JobDetail/[^/]+/(\d+)/?$")
 
 
 class AvatureFetcher(ATSFetcher):
@@ -54,6 +61,73 @@ class AvatureFetcher(ATSFetcher):
             f"{self._base_url()}{self._section_path()}/SearchJobs"
             f"?jobRecordsPerPage={_RECORDS_PER_PAGE}&jobOffset={offset}"
         )
+
+    def _sitemap_url(self) -> str:
+        return f"{self._base_url()}{self._section_path()}/sitemap.xml"
+
+    def _parse_sitemap_dates(self, xml_text: str) -> dict[str, date]:
+        """Build {job_id: lastmod_date} from an Avature careers sitemap.
+
+        The sitemap mixes JobDetail entries with portal pages (AgentCreate,
+        SearchJobs, etc.); only entries whose <loc> path ends in
+        /JobDetail/<slug>/<id> contribute. Best-effort: returns {} on any
+        XML or date parse failure rather than raising — published_at will
+        fall back to scrape-date in the upsert path.
+        """
+        try:
+            root = ET.fromstring(xml_text)
+        except ET.ParseError:
+            return {}
+
+        # Sitemap.org namespace; fall back to no-ns for unusual emitters.
+        ns = {"sm": "http://www.sitemaps.org/schemas/sitemap/0.9"}
+        urls = root.findall("sm:url", ns)
+        if not urls:
+            urls = root.findall("url")
+
+        def _find(parent: ET.Element, tag: str) -> ET.Element | None:
+            el = parent.find(f"sm:{tag}", ns)
+            if el is None:
+                el = parent.find(tag)
+            return el
+
+        dates: dict[str, date] = {}
+        for url_el in urls:
+            loc_el = _find(url_el, "loc")
+            mod_el = _find(url_el, "lastmod")
+            if loc_el is None or mod_el is None or not loc_el.text or not mod_el.text:
+                continue
+
+            m = _JOBDETAIL_RE.search(loc_el.text.strip())
+            if not m:
+                continue
+
+            try:
+                # Sitemaps emit lastmod as W3C datetime — date-only or full
+                # timestamp. Take the leading YYYY-MM-DD slice.
+                d = date.fromisoformat(mod_el.text.strip()[:10])
+            except ValueError:
+                continue
+
+            dates[m.group(1)] = d
+
+        return dates
+
+    def _fetch_sitemap_dates(self, on_retry: RetryCallback | None = None) -> dict[str, date]:
+        """Fetch and parse the sitemap. Returns {} on any HTTP/parse failure."""
+        try:
+            resp = self._retry_request(
+                lambda: self.client.get(self._sitemap_url()),
+                on_retry=on_retry,
+            )
+            resp.raise_for_status()
+        except Exception as e:
+            log.warning(
+                "Avature sitemap fetch failed for %s (%s); published_at will fall back to scrape-date",
+                self.name, e,
+            )
+            return {}
+        return self._parse_sitemap_dates(resp.text)
 
     def _parse_search_html(self, html: str) -> tuple[list[Job], int]:
         """Parse Avature search results HTML. Returns (jobs, total)."""
@@ -159,6 +233,19 @@ class AvatureFetcher(ATSFetcher):
                     current = len(jobs)
                 if on_progress:
                     on_progress(current, total)
+
+        # Attach published_at from the careers sitemap. Avature detail pages
+        # are JS-rendered with no static date, but the sitemap carries
+        # per-JobDetail <lastmod> values. Best-effort: a sitemap fetch
+        # failure leaves published_at NULL and the upsert's scrape-date
+        # fallback handles it.
+        sitemap_dates = self._fetch_sitemap_dates(on_retry=on_retry)
+        if sitemap_dates:
+            jobs = [
+                j.model_copy(update={"published_at": sitemap_dates[j.id]})
+                if j.id in sitemap_dates else j
+                for j in jobs
+            ]
 
         return jobs
 

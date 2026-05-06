@@ -4,14 +4,14 @@ import logging
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable
-from typing import TypeVar
+from typing import Any, TypeVar
 
 import httpx
 
 from jobbuddy.models import Job
 
 type ProgressCallback = Callable[[int, int], None]   # (fetched, total)
-type FetchedCallback = Callable[[str, str], None]    # (job_id, description)
+type EnrichmentCallback = Callable[[str, dict[str, Any]], None]  # (job_id, payload)
 type RetryCallback = Callable[[int, int, float, str], None]  # (attempt, max_attempts, wait_seconds, reason)
 type JobList = list[Job]
 
@@ -42,6 +42,14 @@ class ATSFetcher(ABC):
     # that only return stubs (Workday, Eightfold, Oracle HCM) so the sync
     # pipeline knows to run a post-sync enrichment phase.
     descriptions_in_listing: bool = True
+
+    # Job columns this fetcher can populate during the enrich phase. The
+    # enrich phase polls jobs where any of these columns are NULL, so a
+    # fetcher should only declare a column it can plausibly fill from a
+    # detail-page request. Default: just description (the original
+    # enrichment contract). Fetchers that also extract a posted date,
+    # salary, etc. from detail pages add those here.
+    enrichment_fills: tuple[str, ...] = ("description",)
 
     # Rate limiting config for enrichment — override in subclasses
     enrich_delay: float = 0.0
@@ -124,37 +132,54 @@ class ATSFetcher(ABC):
         job = self.fetch_job(job_id)
         return job.description
 
-    def fetch_descriptions(
+    def fetch_enrichment(self, job_id: str, metadata: dict | None = None) -> dict[str, Any]:
+        """Fetch all enrichable fields for a single job from a detail-page request.
+
+        Returns a dict whose keys are a subset of self.enrichment_fills. Default
+        impl calls fetch_description() and wraps as {"description": str}; fetchers
+        that can extract more from a single detail-page request (TalentBrew's
+        datePosted, Rippling's createdOn + payRangeDetails) override this so the
+        enrich phase captures everything from one HTTP call.
+
+        An empty dict means "nothing extractable" — the row stays as-is and
+        the upsert's scrape-date fallback handles missing published_at.
+        """
+        desc = self.fetch_description(job_id, metadata)
+        return {"description": desc} if desc is not None else {}
+
+    def fetch_enrichments(
         self,
         job_ids: list[str],
         *,
         metadata: dict[str, dict] | None = None,
-        on_fetched: FetchedCallback | None = None,
+        on_fetched: EnrichmentCallback | None = None,
         on_retry: RetryCallback | None = None,
-    ) -> dict[str, str | None]:
-        """Fetch descriptions for a batch of job IDs with retry/backoff.
+    ) -> dict[str, dict[str, Any]]:
+        """Fetch enrichment payloads for a batch of job IDs with retry/backoff.
 
-        Uses _retry_request() per job with rate limiting. If on_fetched is
-        provided, it's called with (job_id, description) after each successful
-        fetch so callers can commit incrementally.
+        Uses _retry_request() per job with rate limiting. on_fetched receives
+        (job_id, payload) so callers can commit incrementally; the payload is
+        whatever fetch_enrichment returned for that job (may be empty if the
+        detail page yielded no usable fields).
         """
         metadata = metadata or {}
-        results: dict[str, str | None] = {}
+        results: dict[str, dict[str, Any]] = {}
         for job_id in job_ids:
-            desc = None
+            payload: dict[str, Any] = {}
             try:
-                desc = self._retry_request(
-                    lambda jid=job_id: self.fetch_description(jid, metadata.get(jid)),
+                payload = self._retry_request(
+                    lambda jid=job_id: self.fetch_enrichment(jid, metadata.get(jid)),
                     on_retry=on_retry,
                 )
             except Exception as e:
-                log.warning("Failed to fetch description for %s: %s", job_id, e)
+                log.warning("Failed to fetch enrichment for %s: %s", job_id, e)
 
-            results[job_id] = desc
-            if on_fetched and desc:
-                on_fetched(job_id, desc)
+            results[job_id] = payload
+            if on_fetched and payload:
+                on_fetched(job_id, payload)
 
             if self.enrich_delay > 0:
                 time.sleep(self.enrich_delay)
 
         return results
+

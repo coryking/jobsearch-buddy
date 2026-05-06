@@ -338,42 +338,24 @@ class JobStore:
                        (company_slug, job_id, title, location, url, published_at,
                         department, team, salary, description, ats_metadata, last_seen,
                         listing_status)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'active')
+                       VALUES (%s, %s, %s, %s, %s,
+                               COALESCE(%s, CURRENT_DATE),
+                               %s, %s, %s, %s, %s, %s, 'active')
                        ON CONFLICT(company_slug, job_id) DO UPDATE SET
-                        title = excluded.title,
-                        location = excluded.location,
-                        url = excluded.url,
-                        published_at = excluded.published_at,
-                        department = excluded.department,
-                        team = excluded.team,
-                        salary = excluded.salary,
-                        description = COALESCE(excluded.description, jobs.description),
-                        ats_metadata = COALESCE(excluded.ats_metadata, jobs.ats_metadata),
+                        -- Pure-insert model: a row's content (title, location,
+                        -- description, salary, dates, etc.) is fixed at first
+                        -- insert. Only operational state mutates here:
+                        --   last_seen      -- bumped every sync
+                        --   listing_status -- back to 'active' if we'd marked it removed
+                        -- The manage_removed_at trigger clears removed_at on
+                        -- the listing_status flip back to 'active'. Filling
+                        -- NULLs the fetcher couldn't produce (descriptions on
+                        -- stub fetchers, posted dates on TalentBrew/Avature)
+                        -- is the enrich phase's job, via update_enrichment.
                         last_seen = excluded.last_seen,
-                        listing_status = 'active',
-                        -- Invalidate distill outputs when the description body changes,
-                        -- so the distill phase picks the row up again.
-                        short_jd = CASE
-                            WHEN excluded.description IS NOT NULL
-                              AND excluded.description IS DISTINCT FROM jobs.description
-                            THEN NULL
-                            ELSE jobs.short_jd
-                        END,
-                        description_normalized = CASE
-                            WHEN excluded.description IS NOT NULL
-                              AND excluded.description IS DISTINCT FROM jobs.description
-                            THEN NULL
-                            ELSE jobs.description_normalized
-                        END
-                       WHERE (jobs.title, jobs.location, jobs.url, jobs.published_at,
-                              jobs.department, jobs.team, jobs.salary, jobs.description,
-                              jobs.ats_metadata, jobs.listing_status)
-                             IS DISTINCT FROM
-                             (excluded.title, excluded.location, excluded.url, excluded.published_at,
-                              excluded.department, excluded.team, excluded.salary,
-                              COALESCE(excluded.description, jobs.description),
-                              COALESCE(excluded.ats_metadata, jobs.ats_metadata),
-                              'active')""",
+                        listing_status = 'active'
+                       WHERE jobs.last_seen IS DISTINCT FROM excluded.last_seen
+                          OR jobs.listing_status <> 'active'""",
                     upsert_params,
                     returning=False,
                 )
@@ -559,14 +541,40 @@ class JobStore:
         rows = self.conn.execute(sql, params).fetchall()
         return [{k: v for k, v in dict(r).items() if k != "company_rn"} for r in rows]
 
-    def get_jobs_needing_descriptions(self, slug: str) -> list[dict]:
-        """Return active jobs with NULL description for a company."""
-        rows = self.conn.execute(
-            """SELECT job_id, title, ats_metadata FROM jobs
-               WHERE company_slug = %s AND description IS NULL AND listing_status = 'active'""",
-            (slug,),
-        ).fetchall()
+    # Columns the enrich phase is allowed to ask about. Whitelisted to keep
+    # the SQL composer safe — the column tuple comes from a fetcher class
+    # attribute, but defense-in-depth costs nothing here.
+    _ENRICHMENT_COLUMNS = frozenset({"description", "published_at", "salary"})
+
+    def get_jobs_needing_enrichment(
+        self, slug: str, columns: tuple[str, ...]
+    ) -> list[dict]:
+        """Return active jobs in `slug` where ANY of `columns` is NULL.
+
+        Generalizes get_jobs_needing_descriptions so a fetcher can declare
+        multiple detail-page-derivable fields (description, published_at,
+        salary) via ATSFetcher.enrichment_fills, and the enrich phase
+        re-fetches a row whenever any one of them is missing.
+        """
+        if not columns:
+            raise ValueError("get_jobs_needing_enrichment: columns must be non-empty")
+        bad = set(columns) - self._ENRICHMENT_COLUMNS
+        if bad:
+            raise ValueError(
+                f"get_jobs_needing_enrichment: unsupported columns {sorted(bad)}; "
+                f"allowed: {sorted(self._ENRICHMENT_COLUMNS)}"
+            )
+        null_clause = " OR ".join(f"{c} IS NULL" for c in columns)
+        sql = (
+            "SELECT job_id, title, ats_metadata FROM jobs "
+            f"WHERE company_slug = %s AND listing_status = 'active' AND ({null_clause})"
+        )
+        rows = self.conn.execute(sql, (slug,)).fetchall()
         return [dict(row) for row in rows]
+
+    def get_jobs_needing_descriptions(self, slug: str) -> list[dict]:
+        """Back-compat shim around get_jobs_needing_enrichment."""
+        return self.get_jobs_needing_enrichment(slug, ("description",))
 
     def update_descriptions(self, slug: str, descs: dict[str, str]) -> None:
         """Batch update description column for jobs in a company."""
@@ -580,6 +588,55 @@ class JobStore:
                     [(desc, slug, job_id) for job_id, desc in descs.items()],
                     returning=False,
                 )
+
+    # Per-column write expression for update_enrichment. All columns use
+    # COALESCE(jobs.X, %s) — "old wins". This matches the pure-insert
+    # contract: a row's content is fixed at first non-NULL value. Enrich
+    # fills NULLs; it never overwrites populated data. A row whose OR
+    # predicate (description IS NULL OR published_at IS NULL) matches
+    # because of one missing column won't have its other already-populated
+    # columns rewritten with re-parsed values.
+    _ENRICHMENT_WRITE_EXPR = {
+        "description": "COALESCE(jobs.description, %s)",
+        "salary": "COALESCE(jobs.salary, %s)",
+        "published_at": "COALESCE(jobs.published_at, %s)",
+    }
+
+    def update_enrichment(self, slug: str, payloads: dict[str, dict]) -> None:
+        """Write per-column enrichment results for a company.
+
+        `payloads` is `{job_id: {column: value, ...}}`; only keys in
+        `_ENRICHMENT_COLUMNS` are accepted. Each per-job payload may carry
+        a different subset of columns. Empty payloads are skipped. Bad
+        column names raise before any write, so a bad payload doesn't
+        half-write the batch.
+        """
+        if not payloads:
+            return
+
+        for jid, fields in payloads.items():
+            bad = set(fields) - self._ENRICHMENT_COLUMNS
+            if bad:
+                raise ValueError(
+                    f"update_enrichment: unsupported columns {sorted(bad)} "
+                    f"for job {jid}; allowed: {sorted(self._ENRICHMENT_COLUMNS)}"
+                )
+
+        with self.conn.transaction():
+            with self.conn.cursor() as cur:
+                for jid, fields in payloads.items():
+                    if not fields:
+                        continue
+                    cols = sorted(fields)
+                    set_clause = ", ".join(
+                        f"{c} = {self._ENRICHMENT_WRITE_EXPR[c]}" for c in cols
+                    )
+                    params = tuple(fields[c] for c in cols) + (slug, jid)
+                    cur.execute(
+                        f"UPDATE jobs SET {set_clause} "
+                        f"WHERE company_slug = %s AND job_id = %s",
+                        params,
+                    )
 
     # -------------------------------------------------------------------
     # Distill phase
