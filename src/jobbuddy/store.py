@@ -546,7 +546,7 @@ class JobStore:
     # Columns the enrich phase is allowed to ask about. Whitelisted to keep
     # the SQL composer safe — the column tuple comes from a fetcher class
     # attribute, but defense-in-depth costs nothing here.
-    _ENRICHMENT_COLUMNS = frozenset({"description", "published_at", "salary"})
+    _ENRICHMENT_COLUMNS: frozenset[LiteralString] = frozenset({"description", "published_at", "salary"})
 
     def get_jobs_needing_enrichment(
         self, slug: str, columns: tuple[str, ...]
@@ -566,7 +566,11 @@ class JobStore:
                 f"get_jobs_needing_enrichment: unsupported columns {sorted(bad)}; "
                 f"allowed: {sorted(self._ENRICHMENT_COLUMNS)}"
             )
-        null_clause = " OR ".join(f"{c} IS NULL" for c in columns)
+        # Iterate the LiteralString whitelist (not the str-typed `columns`
+        # input) so the resulting clause is LiteralString.
+        null_clause = " OR ".join(
+            f"{c} IS NULL" for c in self._ENRICHMENT_COLUMNS if c in columns
+        )
         sql = (
             "SELECT job_id, title, ats_metadata FROM jobs "
             f"WHERE company_slug = %s AND listing_status = 'active' AND ({null_clause})"
@@ -598,7 +602,7 @@ class JobStore:
     # predicate (description IS NULL OR published_at IS NULL) matches
     # because of one missing column won't have its other already-populated
     # columns rewritten with re-parsed values.
-    _ENRICHMENT_WRITE_EXPR = {
+    _ENRICHMENT_WRITE_EXPR: dict[LiteralString, LiteralString] = {
         "description": "COALESCE(jobs.description, %s)",
         "salary": "COALESCE(jobs.salary, %s)",
         "published_at": "COALESCE(jobs.published_at, %s)",
@@ -629,7 +633,10 @@ class JobStore:
                 for jid, fields in payloads.items():
                     if not fields:
                         continue
-                    cols = sorted(fields)
+                    # Iterate the LiteralString whitelist (not str-typed
+                    # `fields`) so cols is list[LiteralString] and the
+                    # composed UPDATE stays LiteralString.
+                    cols: list[LiteralString] = sorted(c for c in self._ENRICHMENT_COLUMNS if c in fields)
                     set_clause = ", ".join(
                         f"{c} = {self._ENRICHMENT_WRITE_EXPR[c]}" for c in cols
                     )
