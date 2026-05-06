@@ -28,6 +28,7 @@ from typing import ClassVar, Generic, TypeVar
 import psycopg
 
 T = TypeVar("T")
+R = TypeVar("R")
 
 from jobbuddy.store import JobStore
 from jobbuddy.sync.display import PhaseState
@@ -59,15 +60,23 @@ class WriteQueue:
 
     On connection-level failures (closed connection, expired Entra token,
     server-side reset) the writer transparently reconnects via the supplied
-    `conninfo_factory` and retries the failed callable exactly once. Any
-    other exception is logged and the row is dropped -- those are per-row
-    data bugs that won't get better on retry.
+    `conninfo_factory` and retries the failed callable exactly once. Per-row
+    data bugs (a write that fails for non-connection reasons) are logged and
+    the row is dropped -- those won't get better on retry.
+
+    If reconnect itself fails, or the retry-after-reconnect fails for a
+    connection reason, the writer marks the queue fatal: it stops accepting
+    new writes, drains the existing queue without executing it, and the
+    fatal exception is re-raised to the caller from submit() and flush().
+    Silently dropping writes when the database is gone is worse than
+    crashing; bail loudly and let the caller decide.
     """
 
     def __init__(self, conninfo_factory: Callable[[], str]):
         self._queue: queue.Queue[Callable[[JobStore], None] | None] = queue.Queue()
         self._conninfo_factory = conninfo_factory
         self._thread: threading.Thread | None = None
+        self._fatal: BaseException | None = None
 
     def start(self) -> None:
         self._thread = threading.Thread(target=self._run, daemon=True)
@@ -76,8 +85,30 @@ class WriteQueue:
     def _open_store(self) -> JobStore:
         return JobStore(self._conninfo_factory())
 
+    def _bail(self, exc: BaseException) -> None:
+        """Mark the queue fatal and drain remaining items without executing.
+
+        Drain ensures flush() (which calls _queue.join()) returns instead of
+        hanging on task_done counts. The fatal exception is surfaced to the
+        caller from submit() and flush().
+        """
+        log.error("WriteQueue fatal: %s; bailing", exc)
+        self._fatal = exc
+        try:
+            while True:
+                item = self._queue.get_nowait()
+                self._queue.task_done()
+                if item is None:
+                    break
+        except queue.Empty:
+            pass
+
     def _run(self) -> None:
-        store = self._open_store()
+        try:
+            store = self._open_store()
+        except Exception as e:
+            self._bail(e)
+            return
         try:
             while True:
                 fn = self._queue.get()
@@ -98,15 +129,16 @@ class WriteQueue:
                         try:
                             store = self._open_store()
                         except Exception as reopen_err:
-                            log.warning(
-                                "WriteQueue reconnect failed: %s; dropping write",
-                                reopen_err,
-                            )
                             self._queue.task_done()
-                            continue
+                            self._bail(reopen_err)
+                            return
                         try:
                             fn(store)
                         except Exception as retry_err:
+                            if _is_connection_dead(store, retry_err):
+                                self._queue.task_done()
+                                self._bail(retry_err)
+                                return
                             log.warning(
                                 "WriteQueue write failed after reconnect: %s",
                                 retry_err,
@@ -121,11 +153,23 @@ class WriteQueue:
                 pass
 
     def submit(self, fn: Callable[[JobStore], None]) -> None:
+        if self._fatal is not None:
+            raise RuntimeError(
+                f"WriteQueue is fatal; cannot accept writes: {self._fatal}"
+            ) from self._fatal
         self._queue.put(fn)
 
     def flush(self) -> None:
-        """Block until all pending writes are committed."""
+        """Block until all pending writes are committed.
+
+        Re-raises the fatal exception if the writer bailed on a dead
+        connection it couldn't recover from.
+        """
         self._queue.join()
+        if self._fatal is not None:
+            raise RuntimeError(
+                f"WriteQueue bailed: {self._fatal}"
+            ) from self._fatal
 
     def stop(self) -> None:
         self._queue.put(None)
@@ -162,10 +206,47 @@ class WorkerPhase(ABC, Generic[T]):
         self._writer: WriteQueue | None = None
 
     def _get_reader(self) -> JobStore:
-        """Lazy reader connection -- created on the thread that calls run()."""
+        """Lazy reader connection -- created on the thread that calls run().
+
+        Uses the conninfo factory so the reader picks up a fresh Entra token
+        on first open (the static `self.conninfo` captured at sync startup is
+        stale by the time long-running phases reach distill). Recycles the
+        reader if its connection is closed, so a mid-run token expiry
+        recovers on the next query rather than crashing the phase.
+        """
+        if self._reader is not None:
+            conn = getattr(self._reader, "conn", None)
+            if conn is None or getattr(conn, "closed", False):
+                try:
+                    self._reader.close()
+                except Exception:
+                    pass
+                self._reader = None
         if self._reader is None:
-            self._reader = JobStore(self.conninfo)
+            self._reader = JobStore(self._conninfo_factory())
         return self._reader
+
+    def _run_reader_query(self, fn: Callable[[JobStore], R]) -> R:
+        """Run a reader query, reconnecting once on dead-connection errors.
+
+        Mirrors the WriteQueue's reconnect-on-stale-token behavior so reader
+        queries (count_remaining, poll_work) survive Entra token expiry that
+        happens mid-phase rather than crashing the whole sync.
+        """
+        reader = self._get_reader()
+        try:
+            return fn(reader)
+        except Exception as e:
+            if not _is_connection_dead(reader, e):
+                raise
+            log.warning("Reader connection dead (%s); reconnecting", e)
+            try:
+                reader.close()
+            except Exception:
+                pass
+            self._reader = None
+            reader = self._get_reader()
+            return fn(reader)
 
     def submit_write(self, fn: Callable[[JobStore], None]) -> None:
         """Submit a DB write to the single-threaded writer."""
