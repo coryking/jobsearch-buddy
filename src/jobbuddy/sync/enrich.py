@@ -41,11 +41,21 @@ class EnrichPhase(WorkerPhase["EnrichWorkItem"]):
         self._enrich_plan: list[EnrichWorkItem] = []
         self._fetcher_cache: dict[str, ATSFetcher] = {}
         # Per-company outcome counters surface what enrich actually produced —
-        # raw "done" hides the silent-empty case where the parser yields {}.
+        # raw "done" hides the silent-empty case where the parser yields {}
+        # and the partial case where the parser yields some but not all
+        # enrichment_fills columns (so the row stays in the enrich pool).
         self._outcomes: dict[str, dict[str, int]] = {}
+        # Pre-phase pending count per slug, captured during count_remaining.
+        # At phase end we re-query the DB for ground truth on what actually
+        # advanced — the parser-side counters can lie about progress (e.g.
+        # "filled" when only description landed and published_at stayed NULL).
+        self._initial_pending: dict[str, int] = {}
+
+    _OUTCOME_KEYS = ("filled", "filled_partial", "empty", "gone", "error")
 
     def _bump(self, slug: str, outcome: str) -> None:
-        self._outcomes.setdefault(slug, {"filled": 0, "empty": 0, "gone": 0, "error": 0})[outcome] += 1
+        bucket = self._outcomes.setdefault(slug, {k: 0 for k in self._OUTCOME_KEYS})
+        bucket[outcome] += 1
 
     def _get_fetcher(self, slug: str) -> ATSFetcher:
         """Get or create a fetcher for a company slug, caching to avoid FD leaks."""
@@ -82,6 +92,7 @@ class EnrichPhase(WorkerPhase["EnrichWorkItem"]):
                 for j in needing
             }
             self._enrich_plan.append({"slug": slug, "job_ids": job_ids, "jobs_meta": jobs_meta})
+            self._initial_pending[slug] = len(job_ids)
             total += len(job_ids)
         return total
 
@@ -102,12 +113,24 @@ class EnrichPhase(WorkerPhase["EnrichWorkItem"]):
         job_ids = item["job_ids"]
         jobs_meta = item["jobs_meta"]
         fetcher = self._get_fetcher(slug)
+        expected_cols = set(fetcher.enrichment_fills)
 
         def _on_fetched(job_id: str, payload: dict) -> None:
             self.submit_write(
                 lambda store, s=slug, jid=job_id, p=payload: store.update_enrichment(s, {jid: p})
             )
-            self._bump(slug, "filled")
+            # "filled_partial" = parser returned some but not all of the
+            # columns the fetcher's enrichment_fills declares. Caller can't
+            # tell from the parser alone whether THIS row needed the missing
+            # column, but at the per-company aggregate it's the right signal:
+            # if a TalentBrew tenant declares (description, published_at) and
+            # the parser keeps returning only description, that fetcher is
+            # incomplete on that tenant and rows that needed the missing
+            # column will keep cycling through enrich.
+            if expected_cols and not (expected_cols - set(payload.keys())):
+                self._bump(slug, "filled")
+            else:
+                self._bump(slug, "filled_partial")
             self.display.advance(detail=slug)
 
         def _on_gone(job_id: str) -> None:
@@ -140,20 +163,53 @@ class EnrichPhase(WorkerPhase["EnrichWorkItem"]):
             raise
 
     def on_phase_end(self) -> None:
-        """Log per-company outcome breakdown so silent-empty failures
-        (request succeeded, parser found nothing, row stays NULL) are
-        visible without --verbose."""
+        """Log per-company outcome breakdown plus a DB-ground-truth pending
+        count delta. The parser-side counters (filled/partial/empty/gone/
+        error) describe what enrichment *attempted*; the pending delta
+        describes what *actually advanced* in the DB. They should agree;
+        when they don't, the parser is lying and rows are looping."""
         if not self._outcomes:
             return
-        totals = {"filled": 0, "empty": 0, "gone": 0, "error": 0}
+
+        final_pending: dict[str, int] = {}
+        for slug in self._outcomes:
+            company = self.slug_to_company.get(slug)
+            if not company or not company.ats:
+                continue
+            fetcher = self._get_fetcher(slug)
+            cols = fetcher.enrichment_fills
+            try:
+                needing = self._run_reader_query(
+                    lambda r, s=slug, c=cols: r.get_jobs_needing_enrichment(s, c)
+                )
+                final_pending[slug] = len(needing)
+            except Exception as e:
+                log.warning("enrich summary: failed to re-query pending for %s: %s", slug, e)
+
+        totals = {k: 0 for k in self._OUTCOME_KEYS}
+        total_before = 0
+        total_after = 0
         for slug, counts in sorted(self._outcomes.items()):
+            before = self._initial_pending.get(slug, 0)
+            after = final_pending.get(slug)
+            after_str = str(after) if after is not None else "?"
+            advanced = (before - after) if after is not None else None
+            advanced_str = str(advanced) if advanced is not None else "?"
             log.info(
-                "enrich summary slug=%s filled=%d empty=%d gone=%d error=%d",
-                slug, counts["filled"], counts["empty"], counts["gone"], counts["error"],
+                "enrich summary slug=%s filled=%d partial=%d empty=%d gone=%d error=%d "
+                "pending=%d→%s advanced=%s",
+                slug, counts["filled"], counts["filled_partial"], counts["empty"],
+                counts["gone"], counts["error"], before, after_str, advanced_str,
             )
             for k, v in counts.items():
                 totals[k] += v
+            total_before += before
+            if after is not None:
+                total_after += after
         log.info(
-            "enrich summary total filled=%d empty=%d gone=%d error=%d",
-            totals["filled"], totals["empty"], totals["gone"], totals["error"],
+            "enrich summary total filled=%d partial=%d empty=%d gone=%d error=%d "
+            "pending=%d→%d advanced=%d",
+            totals["filled"], totals["filled_partial"], totals["empty"],
+            totals["gone"], totals["error"],
+            total_before, total_after, total_before - total_after,
         )
