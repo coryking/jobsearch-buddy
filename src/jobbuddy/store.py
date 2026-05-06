@@ -240,7 +240,9 @@ class JobStore:
                        (company_slug, job_id, title, location, url, published_at,
                         department, team, salary, description, ats_metadata, last_seen,
                         listing_status)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'active')
+                       VALUES (%s, %s, %s, %s, %s,
+                               COALESCE(%s, CURRENT_DATE),
+                               %s, %s, %s, %s, %s, %s, 'active')
                        ON CONFLICT(company_slug, job_id) DO UPDATE SET
                         -- Pure-insert model: a row's content (title, location,
                         -- description, salary, dates, etc.) is fixed at first

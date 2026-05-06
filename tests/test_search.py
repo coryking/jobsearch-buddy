@@ -26,7 +26,7 @@ def _seed_distilled(store, slug: str, job_id: str, *, title: str, short_jd: str,
         """INSERT INTO jobs (company_slug, job_id, title, location, url,
                              published_at, salary, description, short_jd,
                              description_normalized, last_seen, listing_status)
-           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now(), 'active')""",
+           VALUES (%s, %s, %s, %s, %s, COALESCE(%s, CURRENT_DATE), %s, %s, %s, %s, now(), 'active')""",
         (slug, job_id, title, location, f"https://example.com/{job_id}",
          published_at, salary, "raw body", short_jd,
          description_normalized or short_jd),

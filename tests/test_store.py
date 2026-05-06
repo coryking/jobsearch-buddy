@@ -124,18 +124,19 @@ class TestUpsertAndQuery:
         rows = store.query_jobs(companies=["acme"])
         assert rows[0]["description"] == "enriched"
 
-    def test_upsert_passes_null_published_at_through_on_insert(self, store):
-        """A fetcher with no posted-date signal (Tesla, Avature missing from
-        sitemap) inserts NULL. The upsert does NOT coerce on insert — a
-        separate backfill pass fills NULLs from last_seen before the NOT
-        NULL migration locks the column. This keeps the enrich phase's
-        `published_at IS NULL` retry predicate effective for rows whose
-        detail-page extraction can later succeed."""
+    def test_upsert_coerces_null_published_at_to_today(self, store):
+        """New rows with NULL published_at (Tesla, fresh stub-fetcher rows
+        before enrich runs) get CURRENT_DATE on insert via VALUES COALESCE.
+        This makes the column safe to mark NOT NULL — and the pure-insert
+        ON CONFLICT path doesn't touch published_at, so existing rows with
+        NULL are left alone (the enrich-phase backfill path stays open
+        for already-NULL rows)."""
+        from datetime import date
         store.upsert_jobs("acme", [make_job("1", published_at=None)])
         row = store.conn.execute(
             "SELECT published_at FROM jobs WHERE job_id = '1'"
         ).fetchone()
-        assert row["published_at"] is None
+        assert row["published_at"] == date.today()
 
     def test_upsert_preserves_existing_published_at_on_null_resync(self, store):
         """A row that already has a real posted date (from prior sync, or
@@ -413,13 +414,17 @@ class TestEnrichmentQuery:
         assert {j["job_id"] for j in needing} == {"2"}
 
     def test_or_predicate_matches_either_null(self, store):
+        """Use description + salary to exercise the OR-of-NULLs predicate.
+        Both columns are still nullable post-migration-013; published_at
+        is not (the upsert COALESCEs NULLs to today on insert), so it
+        can't be used in a "construct a NULL row" scenario."""
         store.upsert_jobs("acme", [
-            make_job("1", description="x", published_at=self.date(2026, 1, 1)),  # nothing missing
-            make_job("2", description=None, published_at=self.date(2026, 1, 1)),  # desc missing
-            make_job("3", description="x", published_at=None),                    # date missing
-            make_job("4", description=None, published_at=None),                   # both missing
+            make_job("1", description="x", salary="$100k"),  # nothing missing
+            make_job("2", description=None, salary="$100k"),  # desc missing
+            make_job("3", description="x", salary=None),      # salary missing
+            make_job("4", description=None, salary=None),     # both missing
         ])
-        needing = store.get_jobs_needing_enrichment("acme", ("description", "published_at"))
+        needing = store.get_jobs_needing_enrichment("acme", ("description", "salary"))
         assert {j["job_id"] for j in needing} == {"2", "3", "4"}
 
     def test_returns_same_columns_as_legacy(self, store):
@@ -447,28 +452,28 @@ class TestUpdateEnrichment:
     from datetime import date
 
     def test_writes_multiple_columns(self, store):
-        store.upsert_jobs("acme", [make_job("1", description=None)])
+        store.upsert_jobs("acme", [make_job("1", description=None, salary=None)])
         store.update_enrichment("acme", {
-            "1": {"description": "the desc", "published_at": self.date(2026, 3, 1)},
+            "1": {"description": "the desc", "salary": "$100k"},
         })
         row = store.conn.execute(
-            "SELECT description, published_at FROM jobs WHERE job_id = '1'"
+            "SELECT description, salary FROM jobs WHERE job_id = '1'"
         ).fetchone()
         assert row["description"] == "the desc"
-        assert row["published_at"] == self.date(2026, 3, 1)
+        assert row["salary"] == "$100k"
 
     def test_partial_payload_only_writes_present_columns(self, store):
-        """An enrichment that captured published_at but not description must
+        """An enrichment that captured salary but not description must
         leave description alone."""
-        store.upsert_jobs("acme", [make_job("1", description="existing")])
+        store.upsert_jobs("acme", [make_job("1", description="existing", salary=None)])
         store.update_enrichment("acme", {
-            "1": {"published_at": self.date(2026, 3, 1)},
+            "1": {"salary": "$100k"},
         })
         row = store.conn.execute(
-            "SELECT description, published_at FROM jobs WHERE job_id = '1'"
+            "SELECT description, salary FROM jobs WHERE job_id = '1'"
         ).fetchone()
         assert row["description"] == "existing"
-        assert row["published_at"] == self.date(2026, 3, 1)
+        assert row["salary"] == "$100k"
 
     def test_empty_payload_dict_is_noop(self, store):
         """An empty payload (detail page yielded nothing) must not blow up."""
@@ -501,19 +506,18 @@ class TestUpdateEnrichment:
         assert row["published_at"] == existing
 
     def test_description_preserved_when_existing(self, store):
-        """Old-wins applies to description too: when a row matches the OR
-        predicate because of a missing published_at, the re-fetched
-        description must NOT overwrite the existing one (which may differ
-        cosmetically from a fresh re-parse)."""
-        store.upsert_jobs("acme", [make_job("1", description="original")])
+        """Old-wins applies to description: when a row matches the OR
+        predicate because of a missing column (e.g. salary), the
+        re-fetched description must NOT overwrite the existing one."""
+        store.upsert_jobs("acme", [make_job("1", description="original", salary=None)])
         store.update_enrichment("acme", {
-            "1": {"description": "re-parsed", "published_at": self.date(2026, 5, 1)},
+            "1": {"description": "re-parsed", "salary": "$100k"},
         })
         row = store.conn.execute(
-            "SELECT description, published_at FROM jobs WHERE job_id = '1'"
+            "SELECT description, salary FROM jobs WHERE job_id = '1'"
         ).fetchone()
         assert row["description"] == "original"
-        assert row["published_at"] == self.date(2026, 5, 1)
+        assert row["salary"] == "$100k"
 
     def test_salary_preserved_when_existing(self, store):
         store.upsert_jobs("acme", [make_job("1", salary="$200k")])
@@ -523,16 +527,15 @@ class TestUpdateEnrichment:
         ).fetchone()
         assert row["salary"] == "$200k"
 
-    def test_published_at_written_when_existing_null(self, store):
-        """For rows with NULL published_at (the TalentBrew backfill case),
-        update_enrichment fills the date."""
-        store.upsert_jobs("acme", [make_job("1", published_at=None)])
-        new_date = self.date(2026, 5, 1)
-        store.update_enrichment("acme", {"1": {"published_at": new_date}})
+    def test_description_written_when_existing_null(self, store):
+        """For stub-fetcher rows that come in with NULL description,
+        update_enrichment fills the description."""
+        store.upsert_jobs("acme", [make_job("1", description=None)])
+        store.update_enrichment("acme", {"1": {"description": "filled"}})
         row = store.conn.execute(
-            "SELECT published_at FROM jobs WHERE job_id = '1'"
+            "SELECT description FROM jobs WHERE job_id = '1'"
         ).fetchone()
-        assert row["published_at"] == new_date
+        assert row["description"] == "filled"
 
     def test_rollback_on_bad_payload_in_batch(self, store):
         """All-or-nothing: a bad column in any one payload prevents the
