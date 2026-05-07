@@ -66,9 +66,10 @@ jsb save <company> <job_ids...> [-o DIR]    # Save listings as markdown
 jsb lookup <url>                            # Fetch single job details
 ```
 
-Application logging (`log_job_application`, `log_job_activity`) is
-MCP-only — every row in `activity_log` is owned by an authenticated
-account, so the write path is gated behind a verified OAuth token.
+Application logging and review (`log_job_application`,
+`log_job_activity`, `review_activity_log`) are MCP-only — every row in
+`activity_log` is owned by an authenticated account, so both the write
+and read paths are gated behind a verified OAuth token.
 
 ## Supported ATS Platforms
 
