@@ -443,8 +443,8 @@ def find_companies(
     ))],
     limit: Annotated[int, Field(default=20, ge=1, le=100, description=(
         "Max companies to return (default 20, hard cap 100). Each row is"
-        " a slug + name + short_bio + cosine score, ~140 tokens of bio per"
-        " row."
+        " a slug + name + short_bio + active_jobs count, ~140 tokens of"
+        " bio per row."
     ))] = 20,
 ) -> str:
     """Find registered companies by vibe or theme, returning slugs you can
@@ -460,13 +460,12 @@ def find_companies(
     every turn — re-run only when the user changes the theme or asks to
     expand the list.
 
-    Hybrid ranking: cosine similarity over the researched `long_bio` fused
-    via reciprocal rank fusion with Postgres FTS over `name + short_bio`.
-    Each row carries `vec_score`, `fts_score`, and `rrf_score`; absolute
-    values aren't portable across queries — use relative drop-off to pick
-    a cutoff. A top-level `coverage_hint` may be set when both arms miss;
-    in that case the named entity is likely not a registered company and
-    a web search is the right fallback.
+    Each row carries `slug`, `name`, `short_bio`, and `active_jobs` (the
+    number of currently-listed jobs at that company). Use `active_jobs` to
+    prefer companies that actually have openings when the user is hunting
+    for roles. A top-level `coverage_hint` may be set when ranking both
+    misses; in that case the named entity is likely not a registered
+    company and a web search is the right fallback.
 
     Trigger phrases: 'companies that do X', 'who builds Y', 'startups
     working on Z', 'AI-first companies', 'climate companies', 'find me

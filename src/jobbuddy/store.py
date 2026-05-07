@@ -206,11 +206,15 @@ class JobStore:
         Fusion: RRF with k=60. Each arm fetches LIMIT*3 candidates so the
         merge has room to surface rows ranked highly by only one arm.
 
-        Returns rows with `slug`, `name`, `short_bio`, plus three scores:
+        Returns rows with `slug`, `name`, `short_bio`, `active_jobs` (count
+        of jobs with `listing_status = 'active'`), plus three internal scores:
         - `vec_score`: cosine similarity in [-1, 1], or NULL if vector arm
           missed this row
         - `fts_score`: ts_rank, or NULL if FTS arm missed this row
         - `rrf_score`: fused rank score (sums to ~0.03 max with k=60)
+
+        The scores are used by `jsb search-debug` for tuning; `core.find_companies`
+        strips them before returning to MCP/CLI callers.
 
         At 693 companies the FTS arm runs as a sequential scan with inline
         to_tsvector — no GIN index needed. Add the index when row count
@@ -256,9 +260,16 @@ class JobStore:
                   FULL OUTER JOIN fts f ON v.slug = f.slug
             )
             SELECT c.slug, c.name, c.short_bio,
-                   fused.vec_score, fused.fts_score, fused.rrf_score
+                   fused.vec_score, fused.fts_score, fused.rrf_score,
+                   COALESCE(j.active_jobs, 0) AS active_jobs
               FROM fused
               JOIN companies c ON c.slug = fused.slug
+              LEFT JOIN (
+                  SELECT company_slug, COUNT(*) AS active_jobs
+                    FROM jobs
+                   WHERE listing_status = 'active'
+                   GROUP BY company_slug
+              ) j ON j.company_slug = c.slug
              ORDER BY fused.rrf_score DESC
              LIMIT %(limit)s
             """,

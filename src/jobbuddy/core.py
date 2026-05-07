@@ -61,22 +61,17 @@ def find_companies(
 ) -> dict:
     """Hybrid search over registered companies — vector + FTS, fused via RRF.
 
-    Returns `{"results": [{slug, name, short_bio, vec_score, fts_score,
-    rrf_score}], "coverage_hint": str | None}`.
+    Returns `{"results": [{slug, name, short_bio, active_jobs}],
+    "coverage_hint": str | None}`. `active_jobs` is the count of jobs with
+    `listing_status = 'active'` for the company.
 
-    - `vec_score`: cosine similarity in [-1, 1] when the vector arm
-      surfaced this row, else None. Useful for vibe queries.
-    - `fts_score`: Postgres ts_rank when the FTS arm surfaced this row,
-      else None. Useful for exact-name lookups where the vector arm scores
-      poorly because the query is too short to carry semantic signal.
-    - `rrf_score`: fused rank score. Used for ordering only; absolute
-      values aren't portable across queries — the LLM uses relative
-      drop-off, not a threshold.
+    Internal vec/fts/rrf scores drive ordering but aren't returned here —
+    use `jsb search-debug` to inspect them.
 
     `coverage_hint` is set when neither arm produced a strong match:
-    `max(top vec_score, top fts_score) < coverage_floor`. That tells the
-    LLM the named entity may not be a registered company and a web search
-    is the right fallback.
+    vector below `coverage_floor` AND no FTS match. That tells the caller
+    the named entity may not be a registered company and a web search is
+    the right fallback.
 
     Always returns top-N rows when any embeddings exist; never returns
     empty just because the query is unusual. Raises ValueError when query
@@ -138,9 +133,7 @@ def find_companies(
             "slug": r["slug"],
             "name": r["name"],
             "short_bio": r["short_bio"],
-            "vec_score": _round(r["vec_score"]),
-            "fts_score": _round(r["fts_score"]),
-            "rrf_score": _round(r["rrf_score"]),
+            "active_jobs": int(r["active_jobs"]),
         }
         for r in rows
     ]
@@ -148,9 +141,13 @@ def find_companies(
     # Audit log so a few weeks of real traffic answer the open Phase 2
     # questions: is the coverage_floor calibrated correctly, and does the
     # FTS arm earn its keep on real queries (the deferred tuning question
-    # from issue #41)? The `extra` dict makes structured-log scrapers
+    # from issue #41)? Scores aren't exposed in the response anymore but
+    # still belong in logs. The `extra` dict makes structured-log scrapers
     # happy; the formatted message is for grep.
     top_slugs = [r["slug"] for r in results[:3]]
+    top_rrf = next(
+        (_round(r["rrf_score"]) for r in rows), None
+    )
     log.info(
         "find_companies q=%r top_vec=%s top_fts=%s top_slugs=%s "
         "coverage_hint=%s n=%d",
@@ -160,7 +157,7 @@ def find_companies(
             "find_companies_query": query,
             "find_companies_top_vec": _round(top_vec),
             "find_companies_top_fts": _round(top_fts),
-            "find_companies_top_rrf": results[0]["rrf_score"] if results else None,
+            "find_companies_top_rrf": top_rrf,
             "find_companies_top_slugs": top_slugs,
             "find_companies_coverage_hint": bool(coverage_hint),
             "find_companies_result_count": len(results),

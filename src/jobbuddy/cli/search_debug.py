@@ -208,19 +208,27 @@ def companies(
 ):
     """Show top-K plus per-arm contribution stats for the hybrid company search.
 
-    Surfaces what `find_companies` actually returns: vec_score, fts_score,
-    rrf_score side by side. Useful for tuning the coverage_hint floor and
-    spotting cases where one arm is doing all the work.
+    Goes directly to the store to surface vec_score, fts_score, and
+    rrf_score — `core.find_companies` strips them from its public response,
+    so this command is the score-aware view used for tuning the
+    coverage_hint floor and spotting cases where one arm is doing all the
+    work.
     """
-    from jobbuddy.core import find_companies
+    import psycopg
 
+    from jobbuddy.embeddings import embed_text
+    from jobbuddy.store import JobStore
+
+    embedding, _tokens = embed_text(query)
+    store = JobStore()
     try:
-        result = find_companies(query, limit=limit)
-    except ValueError as e:
-        console.print(f"[red]{e}[/red]")
+        rows = store.find_companies(embedding, query, limit=limit)
+    except psycopg.Error as e:
+        console.print(f"[red]Invalid query: {e}[/red]")
         raise SystemExit(1)
+    finally:
+        store.close()
 
-    rows = result["results"]
     if not rows:
         console.print("[yellow]No companies returned[/yellow]")
         raise SystemExit(0)
@@ -241,9 +249,6 @@ def companies(
     console.print(
         f"  top fts_score: {top_fts:.4f}" if top_fts is not None else "  top fts_score: —"
     )
-    if result["coverage_hint"]:
-        console.print(f"[yellow]coverage_hint:[/yellow] {result['coverage_hint']}")
-
     table = Table(title=f"Top {len(rows)} (what the LLM sees)",
                   show_header=True, header_style="bold")
     table.add_column("#", justify="right", style="dim")

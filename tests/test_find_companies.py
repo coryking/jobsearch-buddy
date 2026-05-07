@@ -111,6 +111,32 @@ class TestHybridSearch:
         assert rows[0]["short_bio"] == "we make widgets"
         assert rows[0]["name"] == "Acme Corp"
 
+    def test_returns_active_job_count(self, store, pg_conninfo):
+        from tests.conftest import make_job, seed_jobs
+
+        _seed_company_with_bio(store, "acme", long_bio="x", name="Acme Corp",
+                               short_bio="we make widgets")
+        _seed_company_with_bio(store, "beta", long_bio="y", name="Beta Inc",
+                               short_bio="we sell socks")
+        store.update_company_embedding("acme", embedding=_vec([1.0, 0.0]))
+        store.update_company_embedding("beta", embedding=_vec([0.0, 1.0]))
+
+        seed_jobs(pg_conninfo, "acme", [
+            make_job(id="1", title="PM"),
+            make_job(id="2", title="Eng"),
+            make_job(id="3", title="Design"),
+        ])
+        # Beta has no jobs.
+        # Removed jobs should not count: insert one then mark removed.
+        seed_jobs(pg_conninfo, "acme", [make_job(id="1", title="PM"),
+                                        make_job(id="2", title="Eng")])
+        # Job id=3 is now stale (not in latest upsert) → listing_status='removed'
+
+        rows = store.find_companies(_vec([1.0, 0.0]), "widgets", limit=10)
+        by_slug = {r["slug"]: r for r in rows}
+        assert by_slug["acme"]["active_jobs"] == 2
+        assert by_slug["beta"]["active_jobs"] == 0
+
     def test_rrf_score_combines_both_arms(self, store):
         # acme matches both arms; beta matches only vector. acme should win.
         _seed_company_with_bio(store, "acme", long_bio="x", name="Acme Corp",
@@ -160,7 +186,7 @@ class TestCoreFindCompanies:
         with pytest.raises(ValueError, match="No company embeddings"):
             core.find_companies("anything")
 
-    def test_returns_top_n_with_scores(self, store, patch_embed):
+    def test_returns_top_n_without_scores(self, store, patch_embed):
         _seed_company_with_bio(store, "acme", long_bio="x", short_bio="we make widgets",
                                name="Acme Corp")
         _seed_company_with_bio(store, "beta", long_bio="y", short_bio="we sell socks",
@@ -174,11 +200,12 @@ class TestCoreFindCompanies:
         assert top["slug"] == "acme"
         assert top["name"] == "Acme Corp"
         assert top["short_bio"] == "we make widgets"
-        # vec_score from the patched embedding ([1,0]) hits acme's vector
-        assert math.isclose(top["vec_score"], 1.0, abs_tol=1e-3)
-        # rrf_score is always present and positive when matched
-        assert top["rrf_score"] is not None
-        assert top["rrf_score"] > 0
+        assert top["active_jobs"] == 0
+        # Scoring fields are dropped from the public response; use
+        # `jsb search-debug` for tuning.
+        assert "vec_score" not in top
+        assert "fts_score" not in top
+        assert "rrf_score" not in top
         assert result["coverage_hint"] is None
 
     def test_coverage_hint_when_both_arms_miss(self, store, patch_embed):
@@ -203,7 +230,7 @@ class TestCoreFindCompanies:
         store.update_company_embedding("acme", embedding=_vec([0.0, 0.0, 1.0]))
         result = core.find_companies("payments", limit=1)
         assert result["coverage_hint"] is None
-        assert result["results"][0]["fts_score"] is not None
+        assert result["results"][0]["slug"] == "acme"
 
 
 class TestResearchPhaseInlineEmbedding:

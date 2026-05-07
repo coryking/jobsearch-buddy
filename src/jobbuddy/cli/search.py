@@ -148,17 +148,12 @@ def find_companies_cmd(
     if result["coverage_hint"]:
         console.print(f"[yellow]{result['coverage_hint']}[/yellow]")
 
-    def _fmt(v):
-        return f"{v:.3f}" if v is not None else "—"
-
     buf = io.StringIO()
     writer = csv.writer(buf)
-    writer.writerow(["RRF", "Vec", "FTS", "Slug", "Name", "Short Bio"])
+    writer.writerow(["Active", "Slug", "Name", "Short Bio"])
     for r in result["results"]:
         writer.writerow([
-            _fmt(r["rrf_score"]),
-            _fmt(r["vec_score"]),
-            _fmt(r["fts_score"]),
+            r["active_jobs"],
             r["slug"],
             r["name"],
             (r["short_bio"] or "").replace("\n", " "),
