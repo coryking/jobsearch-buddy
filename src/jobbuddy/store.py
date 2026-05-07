@@ -1062,7 +1062,7 @@ class JobStore:
         current token — always reflects the most recent provider-side state.
         raw_claims captures the full last-seen claim set for forensics.
         """
-        external_id = _pick_external_id(provider, claims)
+        external_id = pick_external_id(provider, claims)
         if not external_id:
             raise ValueError(
                 f"Cannot derive external_id from claims for provider={provider!r}: "
@@ -1091,26 +1091,6 @@ class JobStore:
             "SELECT * FROM accounts WHERE id = %s", (account_id,),
         ).fetchone()
         return self._hydrate_account(row) if row else None
-
-
-def _pick_external_id(provider: str, claims: dict[str, Any]) -> str | None:
-    """Pick the stable identifier from a token's claims for a given provider.
-
-    For Entra, `oid` is the right choice — it's stable per user across the
-    tenant (`sub` is per-(user, app) and would change if the app
-    registration is replaced). FastMCP's AzureProvider also exposes a
-    filtered `upstream_claims` sub-dict; honor it as a fallback for callers
-    who hand us only that subset.
-
-    For GitHub, GitHubProvider sets `claims["sub"]` to the stringified
-    numeric user id; that's what we key on.
-    """
-    upstream = claims.get("upstream_claims") or {}
-    if provider == "entra":
-        return claims.get("oid") or upstream.get("oid") or claims.get("sub") or upstream.get("sub")
-    if provider == "github":
-        return claims.get("sub") or upstream.get("sub")
-    return claims.get("sub") or upstream.get("sub")
 
     # -------------------------------------------------------------------
     # CSV Migration
@@ -1167,3 +1147,23 @@ def _pick_external_id(provider: str, claims: dict[str, Any]) -> str | None:
                     log.info("Migrated %d rows from CSV activity log to PostgreSQL", count)
         except Exception as e:
             log.warning("CSV activity log migration failed: %s", e)
+
+
+def pick_external_id(provider: str, claims: dict[str, Any]) -> str | None:
+    """Pick the stable identifier from a token's claims for a given provider.
+
+    For Entra, `oid` is the right choice — it's stable per user across the
+    tenant (`sub` is per-(user, app) and would change if the app
+    registration is replaced). FastMCP's AzureProvider also exposes a
+    filtered `upstream_claims` sub-dict; honor it as a fallback for callers
+    who hand us only that subset.
+
+    For GitHub, GitHubProvider sets `claims["sub"]` to the stringified
+    numeric user id; that's what we key on.
+    """
+    upstream = claims.get("upstream_claims") or {}
+    if provider == "entra":
+        return claims.get("oid") or upstream.get("oid") or claims.get("sub") or upstream.get("sub")
+    if provider == "github":
+        return claims.get("sub") or upstream.get("sub")
+    return claims.get("sub") or upstream.get("sub")

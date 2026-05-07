@@ -8,7 +8,7 @@ so the DB always reflects the latest provider-side state.
 
 import pytest
 
-from jobbuddy.store import JobStore, _pick_external_id
+from jobbuddy.store import JobStore, pick_external_id
 
 
 class TestUpsertAccountFromClaims:
@@ -97,7 +97,7 @@ class TestUpsertAccountFromClaims:
 
 class TestPickExternalId:
     def test_unknown_provider_falls_back_to_sub(self):
-        assert _pick_external_id("custom", {"sub": "x"}) == "x"
+        assert pick_external_id("custom", {"sub": "x"}) == "x"
 
     def test_returns_none_when_nothing_present(self):
-        assert _pick_external_id("entra", {}) is None
+        assert pick_external_id("entra", {}) is None
