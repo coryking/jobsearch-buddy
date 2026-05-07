@@ -99,7 +99,7 @@ def _compact(d: dict) -> str:
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
 def get_job_post_details(
     jobs: Annotated[str, Field(description=(
         'JSON array of companies with job IDs to fetch. '
@@ -199,7 +199,12 @@ def get_job_post_details(
     return json.dumps(results, indent=2, default=str)
 
 
-@mcp.tool
+@mcp.tool(annotations={
+    "readOnlyHint": False,
+    "destructiveHint": False,
+    "idempotentHint": False,
+    "openWorldHint": True,
+})
 def log_job_application(
     url: Annotated[str, Field(default="", description="Job listing URL (Greenhouse, Ashby, Lever, etc.). Only use when user pastes a URL — prefer company + job_id when you already have them.")] = "",
     company: Annotated[str, Field(default="", description="Company name or slug from the registry. Pair with job_id.")] = "",
@@ -283,7 +288,12 @@ def log_job_application(
     return _compact(output)
 
 
-@mcp.tool
+@mcp.tool(annotations={
+    "readOnlyHint": False,
+    "destructiveHint": False,
+    "idempotentHint": False,
+    "openWorldHint": False,
+})
 def log_job_activity(
     company: Annotated[str, Field(description="Canonical company name (use ats://companies registry name if the company exists there)")],
     role: Annotated[str, Field(description="The job title or role name")],
@@ -342,7 +352,7 @@ def log_job_activity(
     })
 
 
-@mcp.tool
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": False})
 def search_jobs(
     query: Annotated[str, Field(default="", description=(
         "What the user is looking for, expressed in Postgres "
@@ -421,7 +431,7 @@ def search_jobs(
     return JobSearchResults.from_query(rows, log_entries, company_slug=single_slug).to_mcp_result()
 
 
-@mcp.tool
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": False})
 def find_companies(
     query: Annotated[str, Field(description=(
         "What kind of company the user is asking about — described in their"
@@ -476,7 +486,7 @@ def find_companies(
     return json.dumps(result, indent=2)
 
 
-@mcp.tool
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": False})
 def review_activity_log(
     company: Annotated[str, Field(default="", description="Company name or slug to filter by. Omit for summary of all companies.")] = "",
 ) -> str:
