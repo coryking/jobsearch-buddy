@@ -23,6 +23,7 @@ dependencies = [
     "redis>=5.0.0",
     "azure-monitor-opentelemetry>=1.6.0",
     "python-dateutil>=2.9.0",
+    "uncalled-for>=0.2.0",
 ]
 
 [project.scripts]

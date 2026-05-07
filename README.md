@@ -55,16 +55,19 @@ See `docs/azure-migration.md` for architecture details.
 
 ## Application Log
 
-Track job applications and activities in a local CSV (`data/job-search-log.csv`) designed for WA state unemployment audit compliance.
+Job applications and activities are stored per-account in PostgreSQL,
+designed for WA state unemployment audit compliance. Every row is owned
+by the authenticated MCP account that wrote it — there is no
+unauthenticated write path.
 
-```bash
-jsb log https://boards.greenhouse.io/acme/jobs/12345          # Log an application
-jsb log <url> -a "Phone Screen" -p "Jane Smith" -n "Went well"  # Log follow-up activity
-```
+The MCP server exposes three tools for application tracking, all of
+which require an authenticated session:
 
-Each `jsb log` call fetches the listing from the URL, saves it as a markdown file, checks for duplicate entries, and appends a row to the CSV with date, company, role, action, contact person, location, URL, and notes. The CSV is plain text — open it in Excel, import it into Google Sheets, or `cat` it.
-
-The MCP server exposes `log_job_application`, `log_job_activity`, and `review_activity_log` tools, so Claude Desktop can log applications conversationally.
+- `log_job_application` — record an application (URL or company+job_id)
+- `log_job_activity` — log freeform activity (recruiter call, interview,
+  referral) where there's no ATS job_id to attach
+- `review_activity_log` — read history per company or summarized across
+  all companies
 
 ## CLI Commands
 

@@ -63,12 +63,16 @@ class TestUpsertAccountFromClaims:
         )
         assert account.external_id == "oid-value"
 
-    def test_entra_falls_back_to_sub_when_oid_absent(self, store: JobStore):
-        account = store.upsert_account_from_claims(
-            "entra",
-            {"sub": "sub-only"},
-        )
-        assert account.external_id == "sub-only"
+    def test_entra_refuses_to_fall_back_to_sub_when_oid_absent(self, store: JobStore):
+        """Entra `sub` is per-(user, app) and would create duplicate account
+        rows if the app registration is replaced. We refuse the fallback."""
+        with pytest.raises(ValueError, match="external_id"):
+            store.upsert_account_from_claims("entra", {"sub": "sub-only"})
+
+    def test_entra_treats_empty_oid_as_missing(self, store: JobStore):
+        """Empty-string `oid` must not silently fall through to `sub`."""
+        with pytest.raises(ValueError, match="external_id"):
+            store.upsert_account_from_claims("entra", {"oid": "", "sub": "sub-value"})
 
     def test_entra_reads_upstream_claims_subdict(self, store: JobStore):
         """FastMCP's OAuthProxy embeds a filtered claim subset under
@@ -93,6 +97,39 @@ class TestUpsertAccountFromClaims:
         assert fetched is not None
         assert fetched.id == created.id
         assert fetched.display_name == "Cory"
+
+    def test_get_account_returns_none_for_missing_id(self, store: JobStore):
+        from uuid import uuid4
+        assert store.get_account(uuid4()) is None
+
+    def test_upsert_preserves_snapshot_when_later_token_drops_claim(self, store: JobStore):
+        """If a later token is missing `email` or `name`, the prior value
+        must survive — COALESCE in the UPSERT. Otherwise routine token
+        rotation could null out fields that were populated on the first
+        login."""
+        first = store.upsert_account_from_claims(
+            "entra",
+            {"oid": "drop-test", "email": "first@example.com", "name": "Original"},
+        )
+        second = store.upsert_account_from_claims(
+            "entra",
+            {"oid": "drop-test"},  # email and name absent
+        )
+        assert second.id == first.id
+        assert second.email == "first@example.com"
+        assert second.display_name == "Original"
+
+    def test_upsert_overwrites_snapshot_with_newer_value(self, store: JobStore):
+        """COALESCE only protects against NULL; a non-null new value still
+        wins — the IdP just renamed someone."""
+        first = store.upsert_account_from_claims(
+            "entra", {"oid": "rename-test", "name": "Old Name"},
+        )
+        second = store.upsert_account_from_claims(
+            "entra", {"oid": "rename-test", "name": "New Name"},
+        )
+        assert second.id == first.id
+        assert second.display_name == "New Name"
 
 
 class TestPickExternalId:

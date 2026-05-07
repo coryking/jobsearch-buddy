@@ -660,7 +660,35 @@ def build_azure_auth():
 # ---------------------------------------------------------------------------
 
 
+async def assert_account_dependency_stripped() -> None:
+    """Confirm FastMCP's DI machinery hides the `account` parameter from
+    every tool's JSON schema. If a fastmcp regression or downgrade ever
+    let `account` slip into the schema, the calling LLM could populate
+    it and bypass authentication. Fail loudly at startup rather than
+    discovering it the hard way."""
+    leaked: list[str] = []
+    for tool_name in (
+        "log_job_application", "log_job_activity", "search_jobs",
+        "find_companies", "review_activity_log",
+    ):
+        tool = await mcp.get_tool(tool_name)
+        schema = tool.parameters
+        props = schema.get("properties", {}) if isinstance(schema, dict) else {}
+        if "account" in props:
+            leaked.append(tool_name)
+    if leaked:
+        raise RuntimeError(
+            f"`account` parameter leaked into tool input schema for: {leaked}. "
+            f"FastMCP DI parameter-stripping is broken — refusing to start. "
+            f"Verify `fastmcp` is at the version pinned in pyproject.toml."
+        )
+
+
 def main():
+    import asyncio
+
+    from jobbuddy.settings import get_settings
+
     if os.environ.get("ENTRA_OAUTH_CLIENT_ID"):
         # Configure Azure Monitor telemetry before other setup so logging is captured
         conn_str = os.environ.get("APPLICATIONINSIGHTS_CONNECTION_STRING")
@@ -675,6 +703,19 @@ def main():
             level=logging.INFO,
             format="%(asctime)s %(name)s %(levelname)s %(message)s",
         )
+
+        # Authenticated tools require an auth_provider so claim shapes can
+        # be resolved deterministically. Fail at startup rather than on the
+        # first authenticated request.
+        if get_settings().auth_provider is None:
+            raise RuntimeError(
+                "JOBBUDDY_AUTH_PROVIDER must be set (\"entra\" or \"github\") "
+                "when the MCP server runs with OAuth configured. Authenticated "
+                "tools cannot resolve a claim shape without it."
+            )
+
+        asyncio.run(assert_account_dependency_stripped())
+
         auth = build_azure_auth()
         mcp.auth = auth
         mcp.run(transport="streamable-http", stateless_http=True)

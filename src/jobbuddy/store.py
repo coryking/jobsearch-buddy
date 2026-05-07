@@ -1071,13 +1071,18 @@ class JobStore:
         email = claims.get("email")
         display_name = claims.get("name")
         handle = claims.get("preferred_username") or claims.get("login") or claims.get("upn")
+        # COALESCE on the snapshot fields so a token missing an optional
+        # claim (Entra sometimes drops `email` for personal accounts; GitHub
+        # `name` is null when the user hasn't set one) doesn't null out a
+        # value the previous token gave us. raw_claims and last_seen_at
+        # always overwrite — they're meant to reflect the latest token.
         row = self.conn.execute(
             """INSERT INTO accounts (provider, external_id, email, display_name, handle, raw_claims)
                VALUES (%s, %s, %s, %s, %s, %s)
                ON CONFLICT (provider, external_id) DO UPDATE SET
-                   email = EXCLUDED.email,
-                   display_name = EXCLUDED.display_name,
-                   handle = EXCLUDED.handle,
+                   email = COALESCE(EXCLUDED.email, accounts.email),
+                   display_name = COALESCE(EXCLUDED.display_name, accounts.display_name),
+                   handle = COALESCE(EXCLUDED.handle, accounts.handle),
                    raw_claims = EXCLUDED.raw_claims,
                    last_seen_at = now()
                RETURNING *""",
@@ -1117,6 +1122,21 @@ class JobStore:
         if not csv_path.exists():
             return
 
+        # CSV-imported rows have no authenticated owner, so attribute them to
+        # the bootstrap account inserted by migration 015a. The operator can
+        # reattribute them after their first authenticated MCP request using
+        # the SQL documented in 015a's header comment.
+        bootstrap_row = conn.execute(
+            "SELECT id FROM accounts WHERE provider='local' AND external_id='bootstrap'"
+        ).fetchone()
+        if bootstrap_row is None:
+            log.warning(
+                "CSV activity log migration skipped: bootstrap account row missing — "
+                "did migration 015a run?"
+            )
+            return
+        bootstrap_id = bootstrap_row["id"]
+
         import csv
         try:
             with open(csv_path, newline="") as f:
@@ -1125,11 +1145,12 @@ class JobStore:
                 for r in reader:
                     conn.execute(
                         """INSERT INTO activity_log
-                           (log_date, company, role, job_id, action, person, location, status, url, notes)
-                           VALUES (COALESCE(NULLIF(%s,'')::date, CURRENT_DATE), %s, %s,
+                           (account_id, log_date, company, role, job_id, action, person, location, status, url, notes)
+                           VALUES (%s, COALESCE(NULLIF(%s,'')::date, CURRENT_DATE), %s, %s,
                                    NULLIF(%s,''), NULLIF(%s,''), NULLIF(%s,''),
                                    NULLIF(%s,''), NULLIF(%s,''), NULLIF(%s,''), NULLIF(%s,''))""",
                         (
+                            bootstrap_id,
                             r.get("date", ""),
                             r.get("company", ""),
                             r.get("role", ""),
@@ -1152,18 +1173,33 @@ class JobStore:
 def pick_external_id(provider: str, claims: dict[str, Any]) -> str | None:
     """Pick the stable identifier from a token's claims for a given provider.
 
-    For Entra, `oid` is the right choice — it's stable per user across the
-    tenant (`sub` is per-(user, app) and would change if the app
-    registration is replaced). FastMCP's AzureProvider also exposes a
-    filtered `upstream_claims` sub-dict; honor it as a fallback for callers
-    who hand us only that subset.
+    For Entra, `oid` is required — it's stable per user across the tenant.
+    `sub` is per-(user, app) and would change if the app registration is
+    replaced, fragmenting one human across two account rows. We refuse
+    that fallback rather than silently duplicating the row. FastMCP's
+    AzureProvider also surfaces a filtered `upstream_claims` sub-dict;
+    honor it as a fallback for callers handed only that subset.
 
     For GitHub, GitHubProvider sets `claims["sub"]` to the stringified
     numeric user id; that's what we key on.
+
+    Empty strings are treated as missing — a malformed token with `oid=""`
+    must not silently fall through. Returns None when no usable id is
+    present, and the caller raises.
     """
+    def nonempty(v: object) -> str | None:
+        return v if isinstance(v, str) and v else None
+
     upstream = claims.get("upstream_claims") or {}
     if provider == "entra":
-        return claims.get("oid") or upstream.get("oid") or claims.get("sub") or upstream.get("sub")
+        oid = nonempty(claims.get("oid")) or nonempty(upstream.get("oid"))
+        if oid is None:
+            log.warning(
+                "Entra token missing `oid` claim — refusing fallback to `sub` "
+                "to avoid account-row duplication. Verify the token is an "
+                "ID/access token from AzureProvider, not a stripped subset."
+            )
+        return oid
     if provider == "github":
-        return claims.get("sub") or upstream.get("sub")
-    return claims.get("sub") or upstream.get("sub")
+        return nonempty(claims.get("sub")) or nonempty(upstream.get("sub"))
+    return nonempty(claims.get("sub")) or nonempty(upstream.get("sub"))

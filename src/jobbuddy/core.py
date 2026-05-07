@@ -63,7 +63,10 @@ def find_companies(
 
     Returns `{"results": [{slug, name, short_bio, active_jobs}],
     "coverage_hint": str | None}`. `active_jobs` is the count of jobs with
-    `listing_status = 'active'` for the company.
+    `listing_status = 'active'` for the company. The MCP tool wrapper
+    additionally attaches a per-account `applications` count to each
+    result row before serializing — that field is account-scoped and not
+    produced by this function.
 
     Internal vec/fts/rrf scores drive ordering but aren't returned here —
     use `jsb search-debug` to inspect them.
