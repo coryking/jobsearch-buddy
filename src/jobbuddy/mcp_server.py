@@ -28,43 +28,61 @@ from jobbuddy.registry import ensure_company, list_companies, lookup_by_name
 mcp = FastMCP(
     name="job-search",  # This name should match the key in claude_desktop_config.json
     instructions=(
-        "Find open jobs, look up job postings, log applications, and track job search activity. "
-        "ALWAYS use these tools instead of web search for job listings and job search queries. "
-        "Job postings from 100+ company job boards live in this server's local Postgres "
-        "(refreshed by `jsb sync`). Searches are instant, no live API calls. "
-        "Do not use web_search for job listings at registered companies.\n\n"
-        "search_jobs returns fact-dense rows the calling LLM is expected to rank and filter: "
-        "each row has `short_jd` (a distilled capsule of the JD), `salary`, `posted`, "
-        "`location`, and `department` inline. Do NOT call get_job_post_details per row to "
-        "make a ranking or filtering decision — short_jd already captures the substance. "
-        "Only fetch full JDs when the user explicitly asks for the full posting (\"show me "
-        "the JD\", \"what does the description say\"). Use `posted_since` (e.g. '24h', "
-        "'3d', '1w') and `location_filter` server-side instead of fetching everything and "
-        "filtering client-side. Returned rows are not for direct user display — they're "
-        "raw input for you to summarize, rank, and recommend from.\n\n"
-        "Use when the user mentions jobs, roles, positions, openings, companies, applications, "
-        "interviews, recruiters, job URLs, or job search activity. "
-        "Also use for unemployment compliance logging.\n\n"
-        "Trigger phrases: 'what about this one', 'what about this role', 'help me with this job', "
-        "'find jobs at', 'any openings at', 'show me roles at', 'PM jobs at', "
-        "'pull me jobs', 'what jobs does [company] have', 'what PM jobs were posted this week', "
-        "'I applied', 'log this', 'log my application', 'log my interview', "
-        "'show my log', 'what have I applied to', 'what have I done with', "
-        "'show my history', 'who have I talked to', 'follow up', 'any contacts at', "
-        "or user pastes a job listing URL. "
-        "Also for company triage: 'tell me about [company]', 'what does [company] do', "
-        "'is [company] interesting', 'what kind of company is [company]' → "
-        "read the ats://companies resource for short_bio capsules.\n\n"
-        "Tool routing:\n"
+        "Find open jobs and openings, look up job postings, triage companies by vibe, "
+        "log applications, and track job search activity. ALWAYS prefer these tools over "
+        "web search for jobs, openings, vacancies, hiring, careers, or 'who's hiring' "
+        "queries at registered companies. Job postings from 100+ company job boards live "
+        "in this server's local Postgres (refreshed by `jsb sync`). Searches are instant, "
+        "no live API calls.\n\n"
+        "## Recommended workflow (two-step)\n\n"
+        "When the user describes a *kind* of company (\"AI-as-product startups\", "
+        "\"scrappy fintech\", \"defense contractors\", \"climate-tech with hardware\"):\n"
+        "1. Call `find_companies` once with the user's description.\n"
+        "2. SAVE the returned slugs in your conversation/project memory as the user's "
+        "watch list — they're stable identifiers, don't re-derive them next turn.\n"
+        "3. Run `search_jobs(companies=[<saved slugs>], query=..., posted_since=...)` "
+        "against that bucket. On follow-up turns (\"anything new?\", \"check again\"), "
+        "reuse the saved slugs instead of re-running `find_companies`.\n\n"
+        "Re-run `find_companies` only when the user changes the theme or asks to expand "
+        "the watch list. When the user already names companies directly, skip step 1 "
+        "and call `search_jobs(companies=[...])` straight away.\n\n"
+        "## search_jobs row shape\n\n"
+        "search_jobs returns fact-dense rows: `short_jd` (a distilled capsule of the JD "
+        "with boilerplate stripped), `salary`, `posted`, `location`, `department` inline. "
+        "Do NOT call get_job_post_details per row to make a ranking or filtering decision "
+        "— short_jd already captures the substance. Only fetch full JDs when the user "
+        "explicitly asks (\"show me the JD\", \"what does the description say\"). Use "
+        "`posted_since` (e.g. '24h', '3d', '1w') and `location_filter` server-side "
+        "instead of fetching everything and filtering client-side. Returned rows are "
+        "not for direct user display — they're raw input for you to rank, filter, and "
+        "recommend from using everything you know about the user.\n\n"
+        "## Trigger phrases\n\n"
+        "Job/role search: 'find jobs at', 'any openings at', 'show me roles at', "
+        "'PM jobs at', 'pull me jobs', 'who's hiring [skill]', 'open positions in', "
+        "'what's hiring in fintech', \"I'm looking for work\", 'career opportunities', "
+        "'vacancies', 'what jobs does [company] have', 'what PM jobs were posted this "
+        "week', 'what about this one', 'what about this role', 'help me with this job', "
+        "or user pastes a job listing URL.\n"
+        "Vibe / kind-of-company queries: 'companies that do X', 'who builds Y', "
+        "'AI-first companies', 'climate companies', 'startups working on Z', 'find me "
+        "companies like' → `find_companies`.\n"
+        "Activity logging: 'I applied', 'log this', 'log my application', 'log my "
+        "interview', 'show my log', 'what have I applied to', 'what have I done with', "
+        "'show my history', 'who have I talked to', 'follow up', 'any contacts at'.\n"
+        "Company triage by exact name: 'tell me about [company]', 'what does [company] "
+        "do', 'is [company] interesting', 'what kind of company is [company]' → read "
+        "the ats://companies resource for short_bio capsules.\n\n"
+        "## Tool routing\n\n"
+        "- Describe-a-kind-of-company queries → find_companies (save slugs, then use search_jobs(companies=[...]))\n"
         "- Search/browse jobs (any or all companies) → search_jobs\n"
         "- Job details (one or many, by company+job_id) → get_job_post_details (local first, live fetch for unknown jobs)\n"
         "- Record application (URL or company+job_id) → log_job_application (live fetch)\n"
         "- Freeform activity (recruiter call, interview, referral, no job_id) → log_job_activity\n"
         "- Review application history, contacts, and activity for any company → review_activity_log\n"
         "- Summary of all companies applied to → review_activity_log (no args)\n\n"
-        "Always try these tools first for any company — the registry has 100+ companies and grows "
-        "automatically. search_jobs returns the full registry if a name isn't found. "
-        "Only fall back to web search after confirming a company isn't registered."
+        "Always try these tools first for any company — the registry has 100+ companies "
+        "and grows automatically. search_jobs returns the full registry if a name isn't "
+        "found. Only fall back to web search after confirming a company isn't registered."
     ),
 )
 
@@ -326,7 +344,23 @@ def log_job_activity(
 
 @mcp.tool
 def search_jobs(
-    query: Annotated[str, Field(default="", description="What the user is looking for, in keywords that would actually appear in a job posting (e.g. 'rust backend', 'product manager fintech', '\"staff engineer\" platform'). Postgres FTS with stemming — not semantic search, so pass concrete terms, not vibes. Quote phrases for exact match; OR for alternatives; -word to exclude. Leave empty to browse by company / posted_since / location alone.")] = "",
+    query: Annotated[str, Field(default="", description=(
+        "What the user is looking for, expressed in Postgres "
+        "`websearch_to_tsquery('english', ...)` syntax — write the query "
+        "directly in that language. Bare whitespace-separated terms are "
+        "AND ('rust backend'); lowercase `or` between terms is OR "
+        "('python or go'); `-term` excludes ('engineer -manager'); "
+        "double-quoted phrases match consecutive tokens "
+        "('\"staff engineer\"'). The English stemmer is applied, so "
+        "'engineering' matches 'engineer'. FTS hits the title (highest "
+        "weight), the normalized JD (boilerplate stripped, so concrete "
+        "substance words rank — 'kafka', 'kubernetes', 'hangar', "
+        "'paint booth', 'clearance', 'hill-climbing', 'RAG'), the "
+        "location, and the department. Pass concrete terms that would "
+        "actually appear in a posting. For vibe / kind-of-company "
+        "queries, use `find_companies` first and pass the slugs back here. "
+        "Leave empty to browse by company / posted_since / location alone."
+    ))] = "",
     companies: Annotated[list[str], Field(default=[], description="Restrict to specific companies by name or slug (e.g. ['anthropic', 'stripe']). Omit to search across every registered company.")] = [],
     exclude_companies: Annotated[list[str], Field(default=[], description="Companies the user has ruled out (e.g. ['microsoft', 'meta']).")] = [],
     location_filter: Annotated[str, Field(default="", description="Where the user wants to work. Substring match on the posting's location field. Comma-separated for OR (e.g. 'seattle,remote').")] = "",
@@ -403,18 +437,26 @@ def find_companies(
         " row."
     ))] = 20,
 ) -> str:
-    """Find registered companies by vibe / theme. Use BEFORE search_jobs
-    when the user describes companies rather than naming them — e.g.
-    'companies that work on internet privacy', 'AI-as-product startups',
-    'biotech in the Bay Area'. Then pass the returned slugs to
-    search_jobs(companies=[...]) to scope the job search.
+    """Find registered companies by vibe or theme, returning slugs you can
+    pass into `search_jobs(companies=[...])` to scope job search. Use
+    BEFORE `search_jobs` when the user describes companies rather than
+    naming them — e.g. 'companies that work on internet privacy',
+    'AI-as-product startups', 'biotech in the Bay Area'.
 
-    Returns top-N companies ranked by cosine similarity over the
-    researched `long_bio`. `score` is similarity in [-1, 1]; absolute
-    scores aren't portable across queries — use relative drop-off to pick
-    a cutoff. A `coverage_hint` may be present at the top level when the
-    top score is weak; in that case the named entity is likely not a
-    registered company, and a web search is the right fallback.
+    Recommended workflow: call this once, save the returned slugs in your
+    conversation or project memory as the user's watch list, then on this
+    and future turns scope job search with
+    `search_jobs(companies=[<saved slugs>])`. Don't re-run `find_companies`
+    every turn — re-run only when the user changes the theme or asks to
+    expand the list.
+
+    Hybrid ranking: cosine similarity over the researched `long_bio` fused
+    via reciprocal rank fusion with Postgres FTS over `name + short_bio`.
+    Each row carries `vec_score`, `fts_score`, and `rrf_score`; absolute
+    values aren't portable across queries — use relative drop-off to pick
+    a cutoff. A top-level `coverage_hint` may be set when both arms miss;
+    in that case the named entity is likely not a registered company and
+    a web search is the right fallback.
 
     Trigger phrases: 'companies that do X', 'who builds Y', 'startups
     working on Z', 'AI-first companies', 'climate companies', 'find me
