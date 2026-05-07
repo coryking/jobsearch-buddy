@@ -64,8 +64,11 @@ jsb search [--query Q] [--posted-since S] [--limit N]  # FTS search across store
 jsb companies                               # List registered companies
 jsb save <company> <job_ids...> [-o DIR]    # Save listings as markdown
 jsb lookup <url>                            # Fetch single job details
-jsb log <url> [-a ACTION] [-p PERSON] [-n NOTES] [-d DATE]  # Log application
 ```
+
+Application logging (`log_job_application`, `log_job_activity`) is
+MCP-only — every row in `activity_log` is owned by an authenticated
+account, so the write path is gated behind a verified OAuth token.
 
 ## Supported ATS Platforms
 

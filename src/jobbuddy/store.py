@@ -7,13 +7,14 @@ on (company_slug, job_id).
 import json
 import logging
 from datetime import date, datetime, timezone
-from typing import LiteralString
+from typing import Any, LiteralString
+from uuid import UUID
 
 import psycopg
 from psycopg.rows import DictRow, dict_row
 from psycopg.types.json import Json
 
-from jobbuddy.models import Company, Job
+from jobbuddy.models import Account, Company, Job
 from jobbuddy.types import DistillWorkItem, ResearchWorkItem
 
 log = logging.getLogger(__name__)
@@ -944,6 +945,7 @@ class JobStore:
 
     def append_activity(
         self,
+        account_id: UUID,
         company: str,
         role: str,
         action: str,
@@ -959,58 +961,156 @@ class JobStore:
         """Append an activity to the log. Returns the row dict."""
         row = self.conn.execute(
             """INSERT INTO activity_log
-               (log_date, company, role, job_id, action, person, location, status, url, notes)
-               VALUES (COALESCE(%s::date, CURRENT_DATE), %s, %s, NULLIF(%s,''), NULLIF(%s,''),
+               (account_id, log_date, company, role, job_id, action, person, location, status, url, notes)
+               VALUES (%s, COALESCE(%s::date, CURRENT_DATE), %s, %s, NULLIF(%s,''), NULLIF(%s,''),
                        NULLIF(%s,''), NULLIF(%s,''), NULLIF(%s,''), NULLIF(%s,''), NULLIF(%s,''))
                RETURNING *""",
-            (row_date, company, role, job_id, action, person, location, status, url, notes),
+            (account_id, row_date, company, role, job_id, action, person, location, status, url, notes),
         ).fetchone()
         assert row is not None  # INSERT ... RETURNING * always yields the inserted row
         return self._activity_row_to_dict(row)
 
-    def read_activity_log(self) -> list[dict]:
-        """Read all activity log rows, most recent first."""
+    def read_activity_log(self, account_id: UUID) -> list[dict]:
+        """Read all activity log rows for one account, most recent first."""
         rows = self.conn.execute(
-            "SELECT * FROM activity_log ORDER BY log_date DESC, id DESC"
+            "SELECT * FROM activity_log WHERE account_id = %s ORDER BY log_date DESC, id DESC",
+            (account_id,),
         ).fetchall()
         return [self._activity_row_to_dict(r) for r in rows]
 
     def find_activity_duplicates(
-        self, url: str = "", company: str = "", role: str = ""
+        self, account_id: UUID, url: str = "", company: str = "", role: str = ""
     ) -> list[dict]:
-        """Find rows matching a URL, or company+role combo."""
+        """Find rows for one account matching a URL, or company+role combo."""
         if url:
             rows = self.conn.execute(
-                "SELECT * FROM activity_log WHERE url = %s ORDER BY log_date DESC, id DESC",
-                (url.strip(),),
+                """SELECT * FROM activity_log
+                   WHERE account_id = %s AND url = %s
+                   ORDER BY log_date DESC, id DESC""",
+                (account_id, url.strip()),
             ).fetchall()
         elif company and role:
             rows = self.conn.execute(
                 """SELECT * FROM activity_log
-                   WHERE lower(company) = lower(%s) AND lower(role) = lower(%s)
+                   WHERE account_id = %s AND lower(company) = lower(%s) AND lower(role) = lower(%s)
                    ORDER BY log_date DESC, id DESC""",
-                (company, role),
+                (account_id, company, role),
             ).fetchall()
         else:
             return []
         return [self._activity_row_to_dict(r) for r in rows]
 
-    def find_activity_by_company(self, company: str) -> list[dict]:
-        """Find all activity rows for a company (case-insensitive)."""
+    def find_activity_by_company(self, account_id: UUID, company: str) -> list[dict]:
+        """Find one account's activity rows for a company (case-insensitive)."""
         rows = self.conn.execute(
             """SELECT * FROM activity_log
-               WHERE lower(company) = lower(%s)
+               WHERE account_id = %s AND lower(company) = lower(%s)
                ORDER BY log_date DESC, id DESC""",
-            (company,),
+            (account_id, company),
         ).fetchall()
         return [self._activity_row_to_dict(r) for r in rows]
 
-    def unique_activity_companies(self) -> set[str]:
-        """Return deduplicated company names from the activity log."""
+    def unique_activity_companies(self, account_id: UUID) -> set[str]:
+        """Return deduplicated company names from one account's activity log."""
         rows = self.conn.execute(
-            "SELECT DISTINCT company FROM activity_log WHERE company != ''"
+            "SELECT DISTINCT company FROM activity_log WHERE account_id = %s AND company != ''",
+            (account_id,),
         ).fetchall()
         return {r["company"] for r in rows}
+
+    def application_counts_by_company(self, account_id: UUID) -> dict[str, int]:
+        """How many `Application` rows this account has logged per company.
+
+        Keys are lower-cased company display names so callers can join
+        case-insensitively against `companies.name`. Other actions
+        (Contact, Screen, Interview, Referral, Reach-out, Inquery) are
+        excluded — only the act of applying counts here.
+        """
+        rows = self.conn.execute(
+            """SELECT lower(company) AS company_lower, COUNT(*) AS n
+               FROM activity_log
+               WHERE account_id = %s AND action = 'Application' AND company != ''
+               GROUP BY lower(company)""",
+            (account_id,),
+        ).fetchall()
+        return {r["company_lower"]: r["n"] for r in rows}
+
+    # -------------------------------------------------------------------
+    # Accounts
+    # -------------------------------------------------------------------
+
+    def _hydrate_account(self, row: dict) -> Account:
+        return Account(
+            id=row["id"],
+            provider=row["provider"],
+            external_id=row["external_id"],
+            email=row["email"],
+            display_name=row["display_name"],
+            handle=row["handle"],
+        )
+
+    def upsert_account_from_claims(
+        self, provider: str, claims: dict[str, Any]
+    ) -> Account:
+        """Resolve or create the account row matching this OAuth identity.
+
+        external_id picks the most stable claim per provider:
+          - entra: `oid` (per-user-per-tenant, stable across rename) → fallback `sub`
+          - github: `sub` (stringified numeric user id from GitHubProvider)
+
+        email / display_name / handle are refreshed on every call from the
+        current token — always reflects the most recent provider-side state.
+        raw_claims captures the full last-seen claim set for forensics.
+        """
+        external_id = _pick_external_id(provider, claims)
+        if not external_id:
+            raise ValueError(
+                f"Cannot derive external_id from claims for provider={provider!r}: "
+                f"missing oid/sub"
+            )
+        email = claims.get("email")
+        display_name = claims.get("name")
+        handle = claims.get("preferred_username") or claims.get("login") or claims.get("upn")
+        row = self.conn.execute(
+            """INSERT INTO accounts (provider, external_id, email, display_name, handle, raw_claims)
+               VALUES (%s, %s, %s, %s, %s, %s)
+               ON CONFLICT (provider, external_id) DO UPDATE SET
+                   email = EXCLUDED.email,
+                   display_name = EXCLUDED.display_name,
+                   handle = EXCLUDED.handle,
+                   raw_claims = EXCLUDED.raw_claims,
+                   last_seen_at = now()
+               RETURNING *""",
+            (provider, external_id, email, display_name, handle, Json(claims)),
+        ).fetchone()
+        assert row is not None
+        return self._hydrate_account(row)
+
+    def get_account(self, account_id: UUID) -> Account | None:
+        row = self.conn.execute(
+            "SELECT * FROM accounts WHERE id = %s", (account_id,),
+        ).fetchone()
+        return self._hydrate_account(row) if row else None
+
+
+def _pick_external_id(provider: str, claims: dict[str, Any]) -> str | None:
+    """Pick the stable identifier from a token's claims for a given provider.
+
+    For Entra, `oid` is the right choice — it's stable per user across the
+    tenant (`sub` is per-(user, app) and would change if the app
+    registration is replaced). FastMCP's AzureProvider also exposes a
+    filtered `upstream_claims` sub-dict; honor it as a fallback for callers
+    who hand us only that subset.
+
+    For GitHub, GitHubProvider sets `claims["sub"]` to the stringified
+    numeric user id; that's what we key on.
+    """
+    upstream = claims.get("upstream_claims") or {}
+    if provider == "entra":
+        return claims.get("oid") or upstream.get("oid") or claims.get("sub") or upstream.get("sub")
+    if provider == "github":
+        return claims.get("sub") or upstream.get("sub")
+    return claims.get("sub") or upstream.get("sub")
 
     # -------------------------------------------------------------------
     # CSV Migration

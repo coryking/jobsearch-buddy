@@ -19,4 +19,4 @@ def main():
 
 
 # Import submodules — each adds its commands to `app` via @app.command()
-from jobbuddy.cli import migrate, sync, search, search_debug, jobs, log, research  # noqa: E402, F401
+from jobbuddy.cli import migrate, sync, search, search_debug, jobs, research  # noqa: E402, F401

@@ -8,6 +8,7 @@ from collections import Counter
 from datetime import date, datetime, timezone
 from html.parser import HTMLParser
 from typing import Any, TypeAlias
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -97,6 +98,27 @@ class Company(BaseModel):
 class FetchResult(BaseModel):
     company: Company
     job: Job
+
+
+class Account(BaseModel):
+    """Authenticated identity. One row per (provider, external_id) — keyed
+    on the OAuth provider's stable user identifier (`oid` for Entra,
+    numeric `sub` for GitHub). Created lazily on the first authenticated
+    MCP request that carries a verified token; never via signup form.
+
+    `id` is the FK target on `activity_log.account_id`. The other fields
+    are best-effort snapshots refreshed on each call from the token's
+    claims — useful for display, never for identity decisions.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    id: UUID
+    provider: str
+    external_id: str
+    email: str | None = None
+    display_name: str | None = None
+    handle: str | None = None
 
 
 # ---------------------------------------------------------------------------
