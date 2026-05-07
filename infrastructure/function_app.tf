@@ -139,6 +139,12 @@ resource "azurerm_function_app_flex_consumption" "mcp" {
     JOBBUDDY_OPENAI_AZURE_API_VERSION = "2024-12-01-preview"
     JOBBUDDY_STRIP_MODEL              = "gpt-5-nano"
     JOBBUDDY_EMBEDDING_MODEL          = "text-embedding-3-small"
+
+    # MCP authentication. Required by mcp_server.main()'s startup guard —
+    # the worker refuses to boot without it. Pinned to "entra" because the
+    # ENTRA_OAUTH_* settings above wire AzureProvider; if you ever swap to
+    # GitHubProvider, change this to "github" and replace those settings.
+    JOBBUDDY_AUTH_PROVIDER = "entra"
   }
 
   lifecycle {
