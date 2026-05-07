@@ -165,12 +165,11 @@ def find_companies_cmd(
 def search(
     query: Optional[str] = typer.Option(None, "--query", "-q", help="Postgres FTS query over title, short_jd, description_normalized, location, department"),
     location: Optional[str] = typer.Option(None, "--location", "-l", help="Location substring filter (comma-separated for OR)"),
-    company: Optional[str] = typer.Option(None, "--company", "-c", help="Company name or slug"),
     exclude: Optional[str] = typer.Option(None, "--exclude", "-x", help="Comma-separated company names/slugs to exclude"),
     posted_since: Optional[str] = typer.Option(None, "--posted-since", "-s", help="Only show jobs posted within this period (e.g. 24h, 3d, 1w, 2w)"),
     limit: int = typer.Option(50, "--limit", "-n", help="Max rows to return"),
 ):
-    """Search jobs across all companies (CLI parity with the search_jobs MCP tool)."""
+    """Flat ranked job search across all companies — CLI parity with `search_jobs` MCP tool."""
     from jobbuddy.core import search_jobs
 
     exclude_list = None
@@ -180,7 +179,6 @@ def search(
     try:
         rows = search_jobs(
             query=query or "",
-            companies=[company] if company else None,
             exclude_companies=exclude_list,
             location=location or "",
             posted_since=posted_since or "",
@@ -201,18 +199,17 @@ def search(
 
     buf = io.StringIO()
     writer = csv.writer(buf)
-    writer.writerow(["Company", "Title", "Location", "Posted", "Job ID", "Salary", "Team", "Short JD", "URL"])
+    writer.writerow(["Company", "Title", "Location", "Posted", "Job ID", "Salary", "Snippet", "URL"])
     for r in rows:
         writer.writerow([
-            r["company_slug"],
-            r["title"],
-            r["location"] or "",
-            r["published_at"] or "",
-            r["job_id"],
-            r["salary"] or "",
-            r["team"] or r["department"] or "",
-            (r.get("short_jd") or "").replace("\n", " "),
-            r["url"] or "",
+            r.company_slug,
+            r.title,
+            r.location or "",
+            r.posted or "",
+            r.job_id,
+            r.salary or "",
+            (r.snippet or "").replace("\n", " "),
+            r.url or "",
         ])
     print(buf.getvalue(), end="")
 

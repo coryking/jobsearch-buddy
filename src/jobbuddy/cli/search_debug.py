@@ -29,24 +29,23 @@ def jobs(
     pool: int = typer.Option(200, "--pool", help="Candidate pool size for stats (independent of --limit)"),
 ):
     """Show top-K plus ranker-quality stats for a query."""
-    from jobbuddy.core import parse_duration_to_date, search_jobs
+    from jobbuddy.core import parse_duration_to_date
     from jobbuddy.store import JobStore
 
     posted_after = parse_duration_to_date(posted_since) if posted_since else None
 
-    try:
-        rows = search_jobs(
-            query=query,
-            location=location or "",
-            posted_since=posted_since or "",
-            limit=limit,
-        )
-    except ValueError as e:
-        console.print(f"[red]{e}[/red]")
-        raise SystemExit(1)
-
     store = JobStore()
     try:
+        try:
+            rows = store.search_jobs_fts(
+                query=query or None,
+                location=location or None,
+                posted_after=posted_after,
+                limit=limit,
+            )
+        except ValueError as e:
+            console.print(f"[red]{e}[/red]")
+            raise SystemExit(1)
         stats = _candidate_stats(store, query, location, posted_after, pool)
     finally:
         store.close()

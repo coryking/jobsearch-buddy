@@ -112,41 +112,20 @@ class TestSearchJobsFts:
         rows = store.search_jobs_fts(exclude_companies=["beta"], limit=20)
         assert {r["company_slug"] for r in rows} == {"acme"}
 
-    def test_per_company_cap_caps_default(self, store):
-        # Default cap of 3 prevents one employer from flooding the result set.
-        # Without the cap the top-5 would be 5 acme rows; with it, beta breaks in.
+    def test_no_per_company_cap_returns_all_matches(self, store):
+        # The old PER_COMPANY_CAP_DEFAULT silently hid rows. Now the flat
+        # search returns everything in rank order — callers that want
+        # per-company breakdowns use survey_jobs_by_company.
         today = date.today()
         for i in range(5):
             _seed_distilled(store, "acme", f"a{i}", title=f"A{i}", short_jd="x",
                             published_at=today - timedelta(days=i))
         _seed_distilled(store, "beta", "b1", title="B1", short_jd="x",
                         published_at=today - timedelta(days=10))
-        rows = store.search_jobs_fts(limit=5)
+        rows = store.search_jobs_fts(limit=10)
         slugs = [r["company_slug"] for r in rows]
-        assert slugs.count("acme") == 3
+        assert slugs.count("acme") == 5
         assert slugs.count("beta") == 1
-        # Within acme, the 3 newest should win (a0, a1, a2 by recency).
-        acme_ids = [r["job_id"] for r in rows if r["company_slug"] == "acme"]
-        assert acme_ids == ["a0", "a1", "a2"]
-
-    def test_per_company_cap_disabled_returns_all(self, store):
-        # Caller can opt out by passing per_company_cap=None.
-        today = date.today()
-        for i in range(5):
-            _seed_distilled(store, "acme", f"a{i}", title=f"A{i}", short_jd="x",
-                            published_at=today - timedelta(days=i))
-        rows = store.search_jobs_fts(limit=5, per_company_cap=None)
-        assert len(rows) == 5
-
-    def test_per_company_cap_skipped_when_single_company_filter(self, store):
-        # Scoping to a single company means "I want depth here." Cap shouldn't
-        # silently truncate that to 3.
-        today = date.today()
-        for i in range(5):
-            _seed_distilled(store, "acme", f"a{i}", title=f"A{i}", short_jd="x",
-                            published_at=today - timedelta(days=i))
-        rows = store.search_jobs_fts(companies=["acme"], limit=10)
-        assert len(rows) == 5
 
     def test_limit_cap(self, store):
         for i in range(10):
@@ -191,13 +170,145 @@ class TestSearchJobsFts:
         assert [r["job_id"] for r in rows] == ["raw"]
 
 
-class TestCoreSearchJobs:
-    def test_unknown_company_raises_value_error(self, store):
-        from jobbuddy.core import search_jobs
-        with pytest.raises(ValueError, match="Unknown company"):
-            search_jobs(companies=["nonexistent-co"])
+class TestSurveyJobsByCompany:
+    def test_returns_envelope_keyed_by_slug(self, store):
+        _seed_distilled(store, "acme", "a1", title="A1", short_jd="x")
+        _seed_distilled(store, "beta", "b1", title="B1", short_jd="x")
+        env = store.survey_jobs_by_company(companies=["acme", "beta"])
+        assert set(env.keys()) == {"acme", "beta"}
+        assert env["acme"]["matches"] == 1
+        assert env["beta"]["matches"] == 1
+        assert len(env["acme"]["top"]) == 1
+        assert env["acme"]["top"][0]["job_id"] == "a1"
+        assert env["acme"]["top"][0]["company_slug"] == "acme"
+        assert env["acme"]["top"][0]["company_name"] == "Acme Corp"
 
+    def test_zero_match_company_is_first_class(self, store):
+        _seed_distilled(store, "acme", "a1", title="A1", short_jd="x")
+        env = store.survey_jobs_by_company(companies=["acme", "beta"])
+        assert env["beta"] == {"matches": 0, "top": []}
+
+    def test_matches_without_date_only_when_posted_after_set(self, store):
+        today = date.today()
+        _seed_distilled(store, "acme", "old", title="Old", short_jd="x",
+                        published_at=today - timedelta(days=30))
+        _seed_distilled(store, "acme", "new", title="New", short_jd="x",
+                        published_at=today - timedelta(days=2))
+        # Without posted_after — no matches_without_date key.
+        env = store.survey_jobs_by_company(companies=["acme"])
+        assert "matches_without_date" not in env["acme"]
+        # With posted_after — present and counts the wider window.
+        cutoff = (today - timedelta(days=7)).isoformat()
+        env = store.survey_jobs_by_company(companies=["acme"], posted_after=cutoff)
+        assert env["acme"]["matches"] == 1
+        assert env["acme"]["matches_without_date"] == 2
+
+    def test_top_includes_snippet_when_query_present(self, store):
+        _seed_distilled(store, "acme", "1",
+                        title="Senior Engineer",
+                        short_jd="Operate Kubernetes clusters at scale across many production fleets daily.")
+        env = store.survey_jobs_by_company(companies=["acme"], query="kubernetes")
+        top = env["acme"]["top"]
+        assert len(top) == 1
+        assert "snippet" in top[0]
+        assert "**" in top[0]["snippet"]  # ts_headline bold markers
+
+    def test_top_omits_snippet_field_format_when_no_query(self, store):
+        # No query → snippet falls back to the first ~25 words of short_jd
+        # (no ts_headline bold markers).
+        _seed_distilled(store, "acme", "1", title="A",
+                        short_jd="One two three four five six seven eight nine ten.")
+        env = store.survey_jobs_by_company(companies=["acme"])
+        snippet = env["acme"]["top"][0].get("snippet")
+        assert snippet is not None
+        assert "**" not in snippet
+
+    def test_top_orders_by_ts_rank_when_query_present(self, store):
+        _seed_distilled(store, "acme", "title-hit",
+                        title="Senior Rust Engineer",
+                        short_jd="Backend services.")
+        _seed_distilled(store, "acme", "body-hit",
+                        title="Senior Backend Engineer",
+                        short_jd="Build services in Rust.")
+        env = store.survey_jobs_by_company(companies=["acme"], query="rust")
+        ids = [r["job_id"] for r in env["acme"]["top"]]
+        assert ids[0] == "title-hit"
+
+    def test_top_orders_by_published_at_when_no_query(self, store):
+        today = date.today()
+        _seed_distilled(store, "acme", "old", title="Old", short_jd="x",
+                        published_at=today - timedelta(days=30))
+        _seed_distilled(store, "acme", "new", title="New", short_jd="x",
+                        published_at=today - timedelta(days=1))
+        env = store.survey_jobs_by_company(companies=["acme"])
+        ids = [r["job_id"] for r in env["acme"]["top"]]
+        assert ids == ["new", "old"]
+
+    def test_top_per_company_limits_rows(self, store):
+        for i in range(5):
+            _seed_distilled(store, "acme", f"a{i}", title=f"A{i}", short_jd="x")
+        env = store.survey_jobs_by_company(companies=["acme"], top_per_company=2)
+        assert env["acme"]["matches"] == 5
+        assert len(env["acme"]["top"]) == 2
+
+    def test_top_omits_snippet_when_short_jd_null(self, store):
+        from conftest import make_job
+        store.upsert_jobs("acme", [make_job(id="raw", title="Plumber", description="raw body")])
+        env = store.survey_jobs_by_company(companies=["acme"], query="plumber")
+        top = env["acme"]["top"]
+        assert len(top) == 1
+        assert "snippet" not in top[0]
+
+
+class TestCoreSearchJobs:
     def test_invalid_posted_since_raises_value_error(self, store):
         from jobbuddy.core import search_jobs
         with pytest.raises(ValueError, match="Invalid duration"):
             search_jobs(posted_since="garbage")
+
+    def test_unknown_excluded_company_raises_value_error(self, store):
+        from jobbuddy.core import search_jobs
+        with pytest.raises(ValueError, match="Unknown company"):
+            search_jobs(exclude_companies=["nonexistent-co"])
+
+    def test_core_search_jobs_returns_flat_list(self, store):
+        from jobbuddy.core import JobRow, search_jobs
+        _seed_distilled(store, "acme", "a1", title="A1", short_jd="x")
+        result = search_jobs()
+        assert isinstance(result, list)
+        assert len(result) == 1
+        assert isinstance(result[0], JobRow)
+        assert result[0].job_id == "a1"
+        assert result[0].company_slug == "acme"
+
+
+class TestCoreSurveyJobsByCompanies:
+    def test_core_survey_returns_envelope(self, store):
+        from jobbuddy.core import CompanyEnvelope, JobRow, survey_jobs_by_companies
+        _seed_distilled(store, "acme", "a1", title="A1", short_jd="x")
+        _seed_distilled(store, "beta", "b1", title="B1", short_jd="x")
+        result = survey_jobs_by_companies(companies=["Acme Corp", "Beta Inc"])
+        assert isinstance(result, dict)
+        assert set(result.keys()) == {"acme", "beta"}
+        env = result["acme"]
+        assert isinstance(env, CompanyEnvelope)
+        assert env.matches == 1
+        assert len(env.top) == 1
+        assert isinstance(env.top[0], JobRow)
+        assert env.top[0].job_id == "a1"
+
+    def test_core_survey_single_company(self, store):
+        from jobbuddy.core import survey_jobs_by_companies
+        _seed_distilled(store, "acme", "a1", title="A1", short_jd="x")
+        result = survey_jobs_by_companies(companies=["acme"])
+        assert list(result.keys()) == ["acme"]
+
+    def test_core_survey_requires_companies(self, store):
+        from jobbuddy.core import survey_jobs_by_companies
+        with pytest.raises(ValueError, match="non-empty"):
+            survey_jobs_by_companies(companies=[])
+
+    def test_core_survey_unknown_company_raises(self, store):
+        from jobbuddy.core import survey_jobs_by_companies
+        with pytest.raises(ValueError, match="Unknown company"):
+            survey_jobs_by_companies(companies=["nonexistent-co"])

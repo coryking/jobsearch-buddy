@@ -16,6 +16,8 @@ from pydantic import Field
 
 from jobbuddy.core import (
     SUPPORTED_DOMAINS,
+    CompanyEnvelope,
+    JobRow,
     fetch_by_id,
     fetch_from_url,
     is_supported_ats_url,
@@ -23,13 +25,7 @@ from jobbuddy.core import (
 )
 from jobbuddy.job_log import append_row, find_duplicates, read_log, unique_companies
 from jobbuddy.mcp_auth import CurrentAccount
-from jobbuddy.models import (
-    Account,
-    ActivityDetail,
-    ActivitySummary,
-    CompactJob,
-    JobSearchResults,
-)
+from jobbuddy.models import Account, ActivityDetail, ActivitySummary, CompactJob
 from jobbuddy.registry import ensure_company, list_companies, lookup_by_name
 
 mcp = FastMCP(
@@ -41,28 +37,30 @@ mcp = FastMCP(
         "queries at registered companies. Job postings from 100+ company job boards live "
         "in this server's local Postgres (refreshed by `jsb sync`). Searches are instant, "
         "no live API calls.\n\n"
-        "## Recommended workflow (two-step)\n\n"
-        "When the user describes a *kind* of company (\"AI-as-product startups\", "
-        "\"scrappy fintech\", \"defense contractors\", \"climate-tech with hardware\"):\n"
-        "1. Call `find_companies` once with the user's description.\n"
-        "2. SAVE the returned slugs in your conversation/project memory as the user's "
-        "watch list — they're stable identifiers, don't re-derive them next turn.\n"
-        "3. Run `search_jobs(companies=[<saved slugs>], query=..., posted_since=...)` "
-        "against that bucket. On follow-up turns (\"anything new?\", \"check again\"), "
-        "reuse the saved slugs instead of re-running `find_companies`.\n\n"
-        "Re-run `find_companies` only when the user changes the theme or asks to expand "
-        "the watch list. When the user already names companies directly, skip step 1 "
-        "and call `search_jobs(companies=[...])` straight away.\n\n"
-        "## search_jobs row shape\n\n"
-        "search_jobs returns fact-dense rows: `short_jd` (a distilled capsule of the JD "
-        "with boilerplate stripped), `salary`, `posted`, `location`, `department` inline. "
-        "Do NOT call get_job_post_details per row to make a ranking or filtering decision "
-        "— short_jd already captures the substance. Only fetch full JDs when the user "
-        "explicitly asks (\"show me the JD\", \"what does the description say\"). Use "
-        "`posted_since` (e.g. '24h', '3d', '1w') and `location_filter` server-side "
-        "instead of fetching everything and filtering client-side. Returned rows are "
-        "not for direct user display — they're raw input for you to rank, filter, and "
-        "recommend from using everything you know about the user.\n\n"
+        "## Picking the right job-search tool\n\n"
+        "1. User describes a *kind* of company (\"AI-as-product startups\", "
+        "\"climate-tech with hardware\"): call `find_companies` once, SAVE the "
+        "returned slugs as the user's watch list, then call "
+        "`survey_jobs_by_companies(companies=[<saved slugs>])`. On follow-up "
+        "turns (\"anything new?\"), reuse the saved slugs. Re-run "
+        "`find_companies` only when the theme changes.\n"
+        "2. User has a specific role/keyword + maybe a location, no watch list "
+        "(\"any rust roles posted this week\", \"PM jobs in Seattle\"): call "
+        "`search_jobs` — flat ranked list across every registered company.\n"
+        "3. User asks \"anything new at <my watch list>?\": call "
+        "`survey_jobs_by_companies(companies=[<saved slugs>])`.\n"
+        "4. Drill into one company: `survey_jobs_by_companies(companies=[<one slug>])` "
+        "— same envelope, single entry, full top-N.\n\n"
+        "## Row shape\n\n"
+        "Both tools return fact-dense rows: title, location, posted, salary, "
+        "snippet, url, company. Do NOT call `get_job_post_details` per row to "
+        "make a ranking or filtering decision — the snippet already captures "
+        "the substance. Only fetch full JDs when the user explicitly asks "
+        "(\"show me the JD\", \"what does the description say\"). Use "
+        "`posted_since` (e.g. '24h', '3d', '1w') and `location_filter` "
+        "server-side instead of fetching everything and filtering "
+        "client-side. Returned rows are raw input for you to rank, filter, "
+        "and recommend from — not for direct user display.\n\n"
         "## Trigger phrases\n\n"
         "Job/role search: 'find jobs at', 'any openings at', 'show me roles at', "
         "'PM jobs at', 'pull me jobs', 'who's hiring [skill]', 'open positions in', "
@@ -80,16 +78,17 @@ mcp = FastMCP(
         "do', 'is [company] interesting', 'what kind of company is [company]' → read "
         "the ats://companies resource for short_bio capsules.\n\n"
         "## Tool routing\n\n"
-        "- Describe-a-kind-of-company queries → find_companies (save slugs, then use search_jobs(companies=[...]))\n"
-        "- Search/browse jobs (any or all companies) → search_jobs\n"
+        "- Describe-a-kind-of-company queries → find_companies (save slugs, then survey_jobs_by_companies)\n"
+        "- Watch-list scan or single-company drill-down → survey_jobs_by_companies\n"
+        "- Open-ended role/keyword search across the whole corpus → search_jobs\n"
         "- Job details (one or many, by company+job_id) → get_job_post_details (local first, live fetch for unknown jobs)\n"
         "- Record application (URL or company+job_id) → log_job_application (live fetch)\n"
         "- Freeform activity (recruiter call, interview, referral, no job_id) → log_job_activity\n"
         "- Review application history, contacts, and activity for any company → review_activity_log\n"
         "- Summary of all companies applied to → review_activity_log (no args)\n\n"
         "Always try these tools first for any company — the registry has 100+ companies "
-        "and grows automatically. search_jobs returns the full registry if a name isn't "
-        "found. Only fall back to web search after confirming a company isn't registered."
+        "and grows automatically. Only fall back to web search after confirming a "
+        "company isn't registered."
     ),
 )
 
@@ -99,6 +98,41 @@ VALID_ACTIONS = {"Application", "Contact", "Screen", "Interview", "Referral", "R
 def _compact(d: dict) -> str:
     """JSON-serialize a dict, stripping empty/None values and using no indent."""
     return json.dumps({k: v for k, v in d.items() if v is not None and v != ""})
+
+
+def _decorate_applied(rows: list[JobRow], account_id) -> None:
+    """Set `applied` on each JobRow that the account has logged activity against.
+
+    Matches first by `job_id` (the precise hit) and falls back to
+    (company_name, role-title) for log entries written before a job_id was
+    captured. Mutates the rows in place.
+    """
+    if not rows:
+        return
+    log_entries = read_log(account_id)
+    if not log_entries:
+        return
+    by_job_id: dict[str, list[dict]] = {}
+    by_company: dict[str, list[dict]] = {}
+    for entry in log_entries:
+        if entry.get("job_id"):
+            by_job_id.setdefault(entry["job_id"], []).append(entry)
+        co = (entry.get("company") or "").lower()
+        if co:
+            by_company.setdefault(co, []).append(entry)
+    for row in rows:
+        matched = by_job_id.get(row.job_id, [])
+        if not matched and row.company_name:
+            co_entries = by_company.get(row.company_name.lower(), [])
+            matched = [
+                e for e in co_entries
+                if (e.get("role") or "").lower() == row.title.lower()
+            ]
+        if matched:
+            row.applied = ", ".join(
+                f"{m.get('date', '')} {m.get('action', '')}".strip()
+                for m in matched
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -362,84 +396,109 @@ def log_job_activity(
     })
 
 
-@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": False})
+_QUERY_FIELD_DESC = (
+    "What the user is looking for, expressed in Postgres "
+    "`websearch_to_tsquery('english', ...)` syntax. Bare whitespace-separated "
+    "terms are AND ('rust backend'); lowercase `or` between terms is OR "
+    "('python or go'); `-term` excludes ('engineer -manager'); double-quoted "
+    "phrases match consecutive tokens ('\"staff engineer\"'). The English "
+    "stemmer is applied, so 'engineering' matches 'engineer'. Pass concrete "
+    "substance words like 'kafka' or 'paint booth' that would actually "
+    "appear in a posting. For vibe / kind-of-company queries, use "
+    "`find_companies` first and pass the slugs to `survey_jobs_by_companies`. "
+    "Leave empty to browse by posted_since / location alone."
+)
+
+
+@mcp.tool(annotations={
+    "readOnlyHint": True,
+    "idempotentHint": True,
+    "openWorldHint": False,
+})
 def search_jobs(
-    query: Annotated[str, Field(default="", description=(
-        "What the user is looking for, expressed in Postgres "
-        "`websearch_to_tsquery('english', ...)` syntax — write the query "
-        "directly in that language. Bare whitespace-separated terms are "
-        "AND ('rust backend'); lowercase `or` between terms is OR "
-        "('python or go'); `-term` excludes ('engineer -manager'); "
-        "double-quoted phrases match consecutive tokens "
-        "('\"staff engineer\"'). The English stemmer is applied, so "
-        "'engineering' matches 'engineer'. FTS hits the title (highest "
-        "weight), the normalized JD (boilerplate stripped, so concrete "
-        "substance words rank — 'kafka', 'kubernetes', 'hangar', "
-        "'paint booth', 'clearance', 'hill-climbing', 'RAG'), the "
-        "location, and the department. Pass concrete terms that would "
-        "actually appear in a posting. For vibe / kind-of-company "
-        "queries, use `find_companies` first and pass the slugs back here. "
-        "Leave empty to browse by company / posted_since / location alone."
-    ))] = "",
-    companies: Annotated[list[str], Field(default=[], description="Restrict to specific companies by name or slug (e.g. ['anthropic', 'stripe']). Omit to search across every registered company.")] = [],
+    query: Annotated[str, Field(default="", description=_QUERY_FIELD_DESC)] = "",
     exclude_companies: Annotated[list[str], Field(default=[], description="Companies the user has ruled out (e.g. ['microsoft', 'meta']).")] = [],
     location_filter: Annotated[str, Field(default="", description="Where the user wants to work. Substring match on the posting's location field. Comma-separated for OR (e.g. 'seattle,remote').")] = "",
     posted_since: Annotated[str, Field(default="", description="How recent the user wants. Examples: '24h', '3d', '1w', '2w'. Use this instead of fetching everything and filtering client-side.")] = "",
-    limit: Annotated[int, Field(default=20, ge=1, le=100, description="Max rows to return (default 20, hard cap 100). Each row is fact-dense — short_jd + salary + posted are inline, so the calling LLM can rank and filter without re-fetching.")] = 20,
+    limit: Annotated[int, Field(default=20, ge=1, le=100, description="Max rows to return across the whole corpus. Default 20, hard cap 100.")] = 20,
     account: Account = CurrentAccount(),
-) -> str:
-    """Search stored job postings. Results are fact-dense rows the calling
-    LLM is expected to rank and filter — `short_jd` (a distilled capsule of
-    the JD), `salary`, `posted`, and `location` come back inline, so you
-    should NOT call `get_job_post_details` per row to make a decision unless
-    the user asks for the full description.
+) -> list[JobRow]:
+    """Search every registered company's job postings as a flat ranked list.
 
-    Use when the user says "find jobs at", "any openings at", "show me roles
-    at", "PM jobs at", "what about ML roles", or describes a role/company
-    they want to look at. Prefer this over web search — this server covers
-    100+ registered companies, refreshed by `jsb sync`.
+    Use when the user has a concrete role/keyword (and maybe a location or
+    recency window) but no specific watch list — \"any rust roles posted
+    this week\", \"PM jobs in Seattle\", \"find me staff engineer roles\".
+    For a watch-list-scoped scan or per-company breakdown, use
+    `survey_jobs_by_companies` instead.
 
-    Ranking: when `query` is set, results are ordered by Postgres FTS rank
-    (title weighted highest, then short_jd / normalized JD, then location,
-    then department) with `published_at DESC` as tie-breaker. When `query`
-    is empty, results are ordered by `published_at DESC`. No per-company
-    diversity cap — the calling LLM does semantic reranking over short_jd.
-
-    Each row's `last_sync` indicates how fresh it is. Rows already in the
-    user's activity log are tagged with the action and date. If no rows
-    match, tells the user to run `jsb sync`."""
+    Rows are fact-dense (snippet + salary + posted + location inline), so
+    do NOT call `get_job_post_details` per row to rank or filter — only
+    when the user asks for the full description. Rows the user has already
+    logged activity against carry an `applied` summary so you don't surface
+    them as fresh leads. Returns an empty list when nothing matches; if
+    the registry seems empty, suggest the human run `jsb sync` to refresh."""
     from jobbuddy.core import search_jobs as core_search_jobs
 
-    try:
-        rows = core_search_jobs(
-            query=query,
-            companies=companies or None,
-            exclude_companies=exclude_companies or None,
-            location=location_filter,
-            posted_since=posted_since,
-            limit=limit,
-        )
-    except ValueError as e:
-        return f"Error: {e}"
+    rows = core_search_jobs(
+        query=query,
+        exclude_companies=exclude_companies or None,
+        location=location_filter,
+        posted_since=posted_since,
+        limit=limit,
+    )
+    _decorate_applied(rows, account.id)
+    return rows
 
-    if not rows:
-        filters = []
-        if query:
-            filters.append(f"query='{query}'")
-        if location_filter:
-            filters.append(f"location='{location_filter}'")
-        if posted_since:
-            filters.append(f"posted_since='{posted_since}'")
-        filter_desc = f" matching {', '.join(filters)}" if filters else ""
-        scope = ", ".join(companies) if companies else "any company"
-        return f"No jobs found for {scope}{filter_desc}. Try running `jsb sync` to refresh."
 
-    log_entries = read_log(account.id)
-    single_slug = None
-    if companies and len(companies) == 1:
-        resolved = lookup_by_name(companies[0])
-        single_slug = resolved.slug if resolved else companies[0]
-    return JobSearchResults.from_query(rows, log_entries, company_slug=single_slug).to_mcp_result()
+@mcp.tool(annotations={
+    "readOnlyHint": True,
+    "idempotentHint": True,
+    "openWorldHint": False,
+})
+def survey_jobs_by_companies(
+    companies: Annotated[list[str], Field(min_length=1, description="The watch list to scan: company slugs or display names (e.g. ['anthropic', 'stripe']). Required, must be non-empty. To drill into one company, pass a single-element list.")],
+    query: Annotated[str, Field(default="", description=_QUERY_FIELD_DESC)] = "",
+    exclude_companies: Annotated[list[str], Field(default=[], description="Companies the user has ruled out (e.g. ['microsoft', 'meta']).")] = [],
+    location_filter: Annotated[str, Field(default="", description="Where the user wants to work. Substring match on the posting's location field. Comma-separated for OR (e.g. 'seattle,remote').")] = "",
+    posted_since: Annotated[str, Field(default="", description="How recent the user wants. Examples: '24h', '3d', '1w', '2w'. Use this instead of fetching everything and filtering client-side.")] = "",
+    top_per_company: Annotated[int, Field(default=20, ge=1, le=100, description="Max top rows returned per company in the envelope's `top`. Default 20, hard cap 100. Per-company `matches` is always the full count regardless of this cap.")] = 20,
+    account: Account = CurrentAccount(),
+) -> dict[str, CompanyEnvelope]:
+    """Scan a watch list of companies and return a per-company envelope.
+
+    Each entry has `matches` (full count under all filters), optional
+    `matches_without_date` (only present when `posted_since` was set), and
+    `top` (up to `top_per_company` ranked rows). Zero-match companies stay
+    in the result with `matches: 0, top: []` — distinguishing \"no jobs
+    here\" from \"capped out.\"
+
+    Use when the user has a specific watch list (\"anything new at my
+    saved companies?\"), or when drilling into one company
+    (`companies=[<one slug>]` — same shape, single entry). For open-ended
+    keyword search across every registered company, use `search_jobs`.
+
+    Read the per-company `matches` as a diagnostic. Wildly varying counts
+    across companies in the same vertical usually mean the query is
+    hitting substrate words (the technology) rather than role/seniority —
+    narrow and re-survey. A large `matches_without_date / matches` ratio
+    means the date filter dropped candidates worth widening to.
+
+    Rows the user has already logged activity against carry an `applied`
+    summary. If everything comes back zero, suggest the human run `jsb
+    sync` to refresh the local store."""
+    from jobbuddy.core import survey_jobs_by_companies as core_survey
+
+    envelope = core_survey(
+        companies=companies,
+        query=query,
+        exclude_companies=exclude_companies or None,
+        location=location_filter,
+        posted_since=posted_since,
+        top_per_company=top_per_company,
+    )
+    for entry in envelope.values():
+        _decorate_applied(entry.top, account.id)
+    return envelope
 
 
 @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": False})

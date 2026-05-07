@@ -10,12 +10,83 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
+from pydantic import BaseModel
+
 log = logging.getLogger(__name__)
 
 from jobbuddy.fetchers import SUPPORTED_ATS_TYPES, create_fetcher, get_fetcher
 from jobbuddy.models import Company, FetchResult, Job, slugify
 from jobbuddy.registry import list_companies, lookup_by_board, lookup_by_name, lookup_by_slug, register_company
 from jobbuddy.url import parse_url
+
+
+class JobRow(BaseModel):
+    """One ranked job row returned by search_jobs / survey_jobs_by_companies.
+
+    `posted` is an ISO date string when known; `snippet` is a ts_headline
+    excerpt (when query is set) or a passive prefix of `short_jd` (when not).
+    """
+
+    job_id: str
+    title: str
+    location: str | None = None
+    posted: str | None = None
+    snippet: str | None = None
+    url: str | None = None
+    salary: str | None = None
+    company_slug: str
+    company_name: str | None = None
+    # Populated by MCP wrappers from the per-account activity log; None when
+    # the user has not logged anything against this row.
+    applied: str | None = None
+
+
+class CompanyEnvelope(BaseModel):
+    """Per-company match envelope for survey_jobs_by_companies.
+
+    `matches` is the count under the active filter set. `matches_without_date`
+    is populated only when `posted_since` was set (lets the caller see how
+    many candidates the date filter dropped). `top` is the top-N rows.
+    """
+
+    matches: int
+    matches_without_date: int | None = None
+    top: list[JobRow]
+
+
+def _to_jobrow(row: dict) -> JobRow:
+    """Convert a store row to a typed JobRow.
+
+    Accepts both raw rows from `search_jobs_fts` (carrying `published_at`
+    and `short_jd`) and pre-normalized rows from `survey_jobs_by_company`
+    (carrying `posted` and `snippet`). Falls back to the raw fields when
+    the normalized ones are absent so the flat path also gets a passive
+    snippet (first ~25 words of `short_jd`).
+    """
+    posted = row.get("posted")
+    if posted is None:
+        pa = row.get("published_at")
+        posted = pa.isoformat() if hasattr(pa, "isoformat") else (pa or None)
+
+    snippet = row.get("snippet")
+    if snippet is None:
+        short_jd = row.get("short_jd")
+        if short_jd:
+            words = short_jd.split()
+            if words:
+                snippet = " ".join(words[:25])
+
+    return JobRow(
+        job_id=row["job_id"],
+        title=row["title"],
+        location=row.get("location") or None,
+        posted=posted,
+        snippet=snippet,
+        url=row.get("url") or None,
+        salary=row.get("salary"),
+        company_slug=row["company_slug"],
+        company_name=row.get("company_name") or row["company_slug"],
+    )
 
 
 def parse_duration_to_date(value: str) -> str:
@@ -176,30 +247,29 @@ def find_companies(
 def search_jobs(
     *,
     query: str = "",
-    companies: list[str] | None = None,
     exclude_companies: list[str] | None = None,
     location: str = "",
     posted_since: str = "",
     limit: int = 20,
-) -> list[dict]:
-    """Search stored job listings — shared entry point for CLI and MCP.
+) -> list[JobRow]:
+    """Flat ranked job search across the whole stored corpus.
 
-    Resolves company names to slugs, parses the duration filter, and delegates
-    to JobStore.search_jobs_fts. Raises ValueError on unknown company or bad
-    duration.
+    Returns rows ranked by Postgres FTS when `query` is set, or by
+    `published_at DESC` when it is not. Use `survey_jobs_by_companies` for
+    a per-company envelope keyed by slug.
+
+    Raises ValueError on an unknown excluded company or a bad duration.
     """
     from jobbuddy.store import JobStore
 
-    company_slugs = resolve_company_slugs(companies) if companies else None
     exclude_slugs = resolve_company_slugs(exclude_companies) if exclude_companies else None
-
     posted_after = parse_duration_to_date(posted_since) if posted_since else None
 
     store = JobStore()
     try:
-        return store.search_jobs_fts(
+        rows = store.search_jobs_fts(
             query=query or None,
-            companies=company_slugs,
+            companies=None,
             exclude_companies=exclude_slugs,
             location=location or None,
             posted_after=posted_after,
@@ -207,6 +277,60 @@ def search_jobs(
         )
     finally:
         store.close()
+
+    return [_to_jobrow(r) for r in rows]
+
+
+def survey_jobs_by_companies(
+    *,
+    companies: list[str],
+    query: str = "",
+    exclude_companies: list[str] | None = None,
+    location: str = "",
+    posted_since: str = "",
+    top_per_company: int = 20,
+) -> dict[str, CompanyEnvelope]:
+    """Per-company envelope of matches for a watch list.
+
+    Returns a dict keyed by company slug. Each entry carries `matches`
+    (count under all filters), optional `matches_without_date` (only when
+    `posted_since` was set), and `top` (up to `top_per_company` JobRows).
+    Zero-match companies are first-class entries — distinguishing "no jobs
+    match this company" from a silently-applied cap.
+
+    Raises ValueError when `companies` is empty, when any company is
+    unknown, or when `posted_since` is malformed.
+    """
+    if not companies:
+        raise ValueError("survey_jobs_by_companies requires a non-empty companies list")
+
+    from jobbuddy.store import JobStore
+
+    company_slugs = resolve_company_slugs(companies)
+    exclude_slugs = resolve_company_slugs(exclude_companies) if exclude_companies else None
+    posted_after = parse_duration_to_date(posted_since) if posted_since else None
+
+    store = JobStore()
+    try:
+        raw = store.survey_jobs_by_company(
+            companies=company_slugs,
+            query=query or None,
+            exclude_companies=exclude_slugs,
+            location=location or None,
+            posted_after=posted_after,
+            top_per_company=top_per_company,
+        )
+    finally:
+        store.close()
+
+    out: dict[str, CompanyEnvelope] = {}
+    for slug, entry in raw.items():
+        out[slug] = CompanyEnvelope(
+            matches=entry["matches"],
+            matches_without_date=entry.get("matches_without_date"),
+            top=[_to_jobrow(r) for r in entry.get("top", [])],
+        )
+    return out
 
 
 def resolve_exclude_companies(exclude_csv: str) -> list[str]:

@@ -452,8 +452,6 @@ class JobStore:
         rows = self.conn.execute(sql, params).fetchall()
         return [{k: v for k, v in dict(row).items() if k != "rn"} for row in rows]
 
-    PER_COMPANY_CAP_DEFAULT = 3
-
     def search_jobs_fts(
         self,
         *,
@@ -464,7 +462,6 @@ class JobStore:
         posted_after: str | None = None,
         include_removed: bool = False,
         limit: int = 20,
-        per_company_cap: int | None = PER_COMPANY_CAP_DEFAULT,
     ) -> list[dict]:
         """Phase 1 search: FTS over fts_vector with deterministic ranking.
 
@@ -472,13 +469,11 @@ class JobStore:
           (published_at DESC NULLS LAST, company_slug, job_id).
         - When `query` is empty: pure published_at DESC NULLS LAST,
           tie-break on (company_slug, job_id).
-        - Per-company cap: keeps the top N rows per company in the result
-          set so a single dominant employer (Carvana auto-body, Anduril
-          robotics) doesn't crowd cross-employer evidence out of the
-          fixed-size top-K. Skipped when the caller already scoped to a
-          single company or passes None.
         - Returns rows including short_jd, salary, published_at — the
           fact-dense shape the calling LLM filters on.
+
+        Callers that want a per-company breakdown (with match counts and
+        snippets) should use `survey_jobs_by_company` instead.
         """
         conditions, params = self._build_filter_conditions(
             companies=companies, exclude_companies=exclude_companies,
@@ -486,74 +481,192 @@ class JobStore:
             include_removed=include_removed,
         )
 
-        # Three ORDER BY contexts:
-        #  - `order_window`: inside row_number() OVER. Cannot use the `rank`
-        #    alias (window evaluation precedes SELECT-list aliasing in PG).
-        #    Must repeat the full ts_rank() expression and use `j.` prefixes.
-        #  - `order_inner`: top-level ORDER BY of the cap-less query. Can use
-        #    the `rank` alias. Uses `j.` prefixes for unambiguous join columns.
-        #  - `order_outer`: ORDER BY over the CTE result in the cap path.
-        #    Uses unqualified column names since CTE columns are flat.
         ts_rank_expr = "ts_rank(j.fts_vector, websearch_to_tsquery('english', %s))"
         select_extra = ""
-        order_window = "j.published_at DESC NULLS LAST, j.company_slug, j.job_id"
-        order_inner = order_window
-        order_outer = "published_at DESC NULLS LAST, company_slug, job_id"
+        order_inner = "j.published_at DESC NULLS LAST, j.company_slug, j.job_id"
         if query:
             select_extra = f", {ts_rank_expr} AS rank"
             params.insert(0, query)  # bound to the SELECT-list ts_rank
-            order_window = f"{ts_rank_expr} DESC, " + order_window
             order_inner = "rank DESC, " + order_inner
-            order_outer = "rank DESC, " + order_outer
 
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
 
-        # Skip the cap when the caller explicitly scoped to one company —
-        # the user wants depth there, not breadth.
-        apply_cap = (
-            per_company_cap is not None
-            and per_company_cap > 0
-            and not (companies and len(companies) == 1)
-        )
-
-        if apply_cap:
-            sql = f"""
-                WITH ranked AS (
-                    SELECT j.*, s.last_sync, c.name AS company_name{select_extra},
-                           row_number() OVER (
-                               PARTITION BY j.company_slug
-                               ORDER BY {order_window}
-                           ) AS company_rn
-                      FROM jobs j
-                      LEFT JOIN sync_status s ON j.company_slug = s.company_slug
-                      LEFT JOIN companies c ON j.company_slug = c.slug
-                      {where}
-                )
-                SELECT * FROM ranked
-                 WHERE company_rn <= %s
-                 ORDER BY {order_outer}
-                 LIMIT %s
-            """
-            # When `query` is set, the OVER clause's ts_rank expression needs
-            # its own bound copy of the query (right after the SELECT-list one
-            # we already inserted, before the WHERE-clause params).
-            if query:
-                params.insert(1, query)
-            params.extend([per_company_cap, limit])
-        else:
-            sql = f"""
-                SELECT j.*, s.last_sync, c.name AS company_name{select_extra}
-                  FROM jobs j
-                  LEFT JOIN sync_status s ON j.company_slug = s.company_slug
-                  LEFT JOIN companies c ON j.company_slug = c.slug
-                  {where}
-                  ORDER BY {order_inner}
-                  LIMIT %s
-            """
-            params.append(limit)
+        sql = f"""
+            SELECT j.*, s.last_sync, c.name AS company_name{select_extra}
+              FROM jobs j
+              LEFT JOIN sync_status s ON j.company_slug = s.company_slug
+              LEFT JOIN companies c ON j.company_slug = c.slug
+              {where}
+              ORDER BY {order_inner}
+              LIMIT %s
+        """
+        params.append(limit)
 
         rows = self.conn.execute(sql, params).fetchall()
-        return [{k: v for k, v in dict(r).items() if k != "company_rn"} for r in rows]
+        return [dict(r) for r in rows]
+
+    # ts_headline options for snippet generation. Bold the matched terms with
+    # **markdown** so the calling LLM can keep them readable when echoed back.
+    _HEADLINE_OPTS = (
+        "MaxWords=25, MinWords=15, StartSel=**, StopSel=**, "
+        "MaxFragments=2, FragmentDelimiter= ... "
+    )
+
+    def survey_jobs_by_company(
+        self,
+        *,
+        companies: list[str],
+        query: str | None = None,
+        exclude_companies: list[str] | None = None,
+        location: str | None = None,
+        posted_after: str | None = None,
+        include_removed: bool = False,
+        top_per_company: int = 3,
+    ) -> dict[str, dict]:
+        """Per-company envelope of FTS matches.
+
+        Returns a dict keyed by company slug. Each entry is:
+            {
+                "matches": <int>,                 # rows matching all filters
+                "matches_without_date": <int>,    # only when posted_after is set
+                "top": [<row>, ...],              # up to top_per_company rows
+            }
+
+        Top rows include a `snippet` field (ts_headline output) when `query`
+        is non-empty. Zero-match companies are first-class entries with
+        `{"matches": 0, "top": []}` so the caller can distinguish "no jobs
+        match this company" from "company fell off a cap."
+        """
+        if not companies:
+            raise ValueError("survey_jobs_by_company: companies must be non-empty")
+
+        envelope: dict[str, dict] = {}
+        for slug in companies:
+            envelope[slug] = self._survey_one_company(
+                slug=slug,
+                query=query,
+                exclude_companies=exclude_companies,
+                location=location,
+                posted_after=posted_after,
+                include_removed=include_removed,
+                top_per_company=top_per_company,
+            )
+        return envelope
+
+    def _survey_one_company(
+        self,
+        *,
+        slug: str,
+        query: str | None,
+        exclude_companies: list[str] | None,
+        location: str | None,
+        posted_after: str | None,
+        include_removed: bool,
+        top_per_company: int,
+    ) -> dict:
+        # --- count with all filters
+        count_conditions, count_params = self._build_filter_conditions(
+            companies=[slug],
+            exclude_companies=exclude_companies,
+            title=query,
+            location=location,
+            posted_after=posted_after,
+            include_removed=include_removed,
+        )
+        count_where = f"WHERE {' AND '.join(count_conditions)}" if count_conditions else ""
+        matches = self.conn.execute(
+            f"SELECT COUNT(*) AS n FROM jobs j {count_where}",
+            count_params,
+        ).fetchone()["n"]
+
+        entry: dict = {"matches": matches}
+
+        # --- count without the date filter (diagnostic for "should the user widen the window?")
+        if posted_after:
+            no_date_conditions, no_date_params = self._build_filter_conditions(
+                companies=[slug],
+                exclude_companies=exclude_companies,
+                title=query,
+                location=location,
+                posted_after=None,
+                include_removed=include_removed,
+            )
+            no_date_where = (
+                f"WHERE {' AND '.join(no_date_conditions)}" if no_date_conditions else ""
+            )
+            entry["matches_without_date"] = self.conn.execute(
+                f"SELECT COUNT(*) AS n FROM jobs j {no_date_where}",
+                no_date_params,
+            ).fetchone()["n"]
+
+        # --- top N rows
+        if matches == 0:
+            entry["top"] = []
+            return entry
+
+        top_conditions, top_params = self._build_filter_conditions(
+            companies=[slug],
+            exclude_companies=exclude_companies,
+            title=query,
+            location=location,
+            posted_after=posted_after,
+            include_removed=include_removed,
+        )
+
+        select_extra = ""
+        order_by = "j.published_at DESC NULLS LAST, j.company_slug, j.job_id"
+        if query:
+            ts_rank_expr = "ts_rank(j.fts_vector, websearch_to_tsquery('english', %s))"
+            headline_expr = (
+                "ts_headline('english', j.short_jd, "
+                "websearch_to_tsquery('english', %s), %s)"
+            )
+            select_extra = (
+                f", {ts_rank_expr} AS rank, "
+                f"CASE WHEN j.short_jd IS NULL THEN NULL "
+                f"     ELSE {headline_expr} END AS snippet"
+            )
+            # Bind order: [rank-query, headline-query, headline-opts] then existing filter params.
+            top_params = [query, query, self._HEADLINE_OPTS] + top_params
+            order_by = "rank DESC, " + order_by
+
+        top_where = f"WHERE {' AND '.join(top_conditions)}" if top_conditions else ""
+        top_params.append(top_per_company)
+        sql = f"""
+            SELECT j.*, c.name AS company_name{select_extra}
+              FROM jobs j
+              LEFT JOIN companies c ON j.company_slug = c.slug
+              {top_where}
+              ORDER BY {order_by}
+              LIMIT %s
+        """
+        rows = self.conn.execute(sql, top_params).fetchall()
+        top_rows = []
+        for row in rows:
+            r = dict(row)
+            top_row: dict = {
+                "job_id": r["job_id"],
+                "title": r["title"],
+                "location": r.get("location") or "",
+                "posted": r["published_at"].isoformat() if r.get("published_at") else None,
+                "url": r.get("url") or "",
+                "salary": r.get("salary"),
+                "company_slug": r["company_slug"],
+                "company_name": r.get("company_name") or r["company_slug"],
+            }
+            if query:
+                if r.get("snippet"):
+                    top_row["snippet"] = r["snippet"]
+            else:
+                # No query → derive a passive snippet from short_jd (first ~25 words).
+                short_jd = r.get("short_jd")
+                if short_jd:
+                    words = short_jd.split()
+                    if words:
+                        top_row["snippet"] = " ".join(words[:25])
+            top_rows.append(top_row)
+        entry["top"] = top_rows
+        return entry
 
     # Columns the enrich phase is allowed to ask about. Whitelisted to keep
     # the SQL composer safe — the column tuple comes from a fetcher class
