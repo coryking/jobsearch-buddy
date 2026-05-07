@@ -129,6 +129,7 @@ def clean_tables(conninfo: str) -> None:
     conn.execute("DELETE FROM jobs")
     conn.execute("DELETE FROM sync_status")
     conn.execute("DELETE FROM activity_log")
+    conn.execute("DELETE FROM accounts")
     conn.execute("DELETE FROM companies")
     conn.close()
 
@@ -175,8 +176,16 @@ def _admin_conn():
 
 @pytest.fixture(autouse=True)
 def clean_test_data(_admin_conn):
-    """Clean child tables between tests. Companies persist from session setup."""
-    _admin_conn.execute("TRUNCATE jobs, sync_status, activity_log RESTART IDENTITY")
+    """Clean child tables between tests. Companies persist from session setup.
+
+    `accounts` is in the truncate set because activity_log.account_id has
+    a FK to it; CASCADE wipes the FK chain in one statement and lets each
+    test start with a clean accounts table.
+    """
+    _admin_conn.execute(
+        "TRUNCATE jobs, sync_status, activity_log, accounts "
+        "RESTART IDENTITY CASCADE"
+    )
     _admin_conn.execute(
         "UPDATE companies SET short_bio = NULL, long_bio = NULL,"
         " bio_researched_at = NULL, bio_model = NULL,"
@@ -190,6 +199,26 @@ def store():
     s = JobStore(TEST_CONNINFO)
     yield s
     s.close()
+
+
+@pytest.fixture
+def test_account(store: JobStore):
+    """A freshly-created Account for tests that touch activity_log.
+
+    Tests that need a second, distinct account should call
+    `store.upsert_account_from_claims(...)` directly with different
+    `oid` / `sub` claims.
+    """
+    return store.upsert_account_from_claims(
+        "entra",
+        {
+            "oid": "00000000-0000-0000-0000-000000000001",
+            "sub": "test-subject-1",
+            "email": "test@example.com",
+            "name": "Test User",
+            "preferred_username": "test@example.com",
+        },
+    )
 
 
 @pytest.fixture

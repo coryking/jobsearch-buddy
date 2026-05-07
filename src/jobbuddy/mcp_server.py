@@ -22,7 +22,14 @@ from jobbuddy.core import (
     save_job_listing,
 )
 from jobbuddy.job_log import append_row, find_duplicates, read_log, unique_companies
-from jobbuddy.models import ActivityDetail, ActivitySummary, CompactJob, JobSearchResults
+from jobbuddy.mcp_auth import CurrentAccount
+from jobbuddy.models import (
+    Account,
+    ActivityDetail,
+    ActivitySummary,
+    CompactJob,
+    JobSearchResults,
+)
 from jobbuddy.registry import ensure_company, list_companies, lookup_by_name
 
 mcp = FastMCP(
@@ -213,6 +220,7 @@ def log_job_application(
     person: Annotated[str, Field(default="", description="Contact person's name, if applicable")] = "",
     notes: Annotated[str, Field(default="", description="Free-text notes about this activity")] = "",
     log_date: Annotated[str, Field(default="", description="Date in YYYY-MM-DD format (defaults to today)")] = "",
+    account: Account = CurrentAccount(),
 ) -> str:
     """Record a job application. Fetches job details, saves the listing,
     and appends to the job search tracking log.
@@ -249,9 +257,9 @@ def log_job_application(
     else:
         return "Error: Provide either a URL or company + job_id. For freeform logging, use log_job_activity."
 
-    # Check for duplicates
+    # Check for duplicates within this account's log only
     warnings = []
-    dupes = find_duplicates(url=url)
+    dupes = find_duplicates(account.id, url=url)
     if dupes:
         dupe_info = "; ".join(
             f"{d.get('date', '?')} {d.get('action', '?')}" for d in dupes
@@ -261,8 +269,8 @@ def log_job_application(
     # Save listing
     filepath = save_job_listing(result.company, result.job)
 
-    # Append to CSV
     row = append_row(
+        account.id,
         company=result.company.name,
         role=result.job.title,
         action=action,
@@ -304,6 +312,7 @@ def log_job_activity(
     location: Annotated[str, Field(default="", description="Job location (e.g. 'Seattle, WA' or 'Remote')")] = "",
     job_id: Annotated[str, Field(default="", description="ATS job ID, if known")] = "",
     log_date: Annotated[str, Field(default="", description="Date in YYYY-MM-DD format (defaults to today)")] = "",
+    account: Account = CurrentAccount(),
 ) -> str:
     """Log any job search activity — contacts, referrals, screens, interviews, reach-outs.
 
@@ -331,6 +340,7 @@ def log_job_activity(
         )
 
     row = append_row(
+        account.id,
         company=company,
         role=role,
         action=action,
@@ -376,6 +386,7 @@ def search_jobs(
     location_filter: Annotated[str, Field(default="", description="Where the user wants to work. Substring match on the posting's location field. Comma-separated for OR (e.g. 'seattle,remote').")] = "",
     posted_since: Annotated[str, Field(default="", description="How recent the user wants. Examples: '24h', '3d', '1w', '2w'. Use this instead of fetching everything and filtering client-side.")] = "",
     limit: Annotated[int, Field(default=20, ge=1, le=100, description="Max rows to return (default 20, hard cap 100). Each row is fact-dense — short_jd + salary + posted are inline, so the calling LLM can rank and filter without re-fetching.")] = 20,
+    account: Account = CurrentAccount(),
 ) -> str:
     """Search stored job postings. Results are fact-dense rows the calling
     LLM is expected to rank and filter — `short_jd` (a distilled capsule of
@@ -423,7 +434,7 @@ def search_jobs(
         scope = ", ".join(companies) if companies else "any company"
         return f"No jobs found for {scope}{filter_desc}. Try running `jsb sync` to refresh."
 
-    log_entries = read_log()
+    log_entries = read_log(account.id)
     single_slug = None
     if companies and len(companies) == 1:
         resolved = lookup_by_name(companies[0])
@@ -446,6 +457,7 @@ def find_companies(
         " a slug + name + short_bio + active_jobs count, ~140 tokens of"
         " bio per row."
     ))] = 20,
+    account: Account = CurrentAccount(),
 ) -> str:
     """Find registered companies by vibe or theme, returning slugs you can
     pass into `search_jobs(companies=[...])` to scope job search. Use
@@ -474,13 +486,25 @@ def find_companies(
     lookup, no embedding round-trip.
 
     Returns short_bio (~140 tokens), not long_bio. The LLM is filtering,
-    not reading deeply; use the slug to fetch jobs via search_jobs."""
+    not reading deeply; use the slug to fetch jobs via search_jobs.
+
+    Each result also carries `applications`: the number of times this
+    account has logged `Application` rows against that company in the
+    activity log. Useful for prioritization — already-applied companies
+    rank differently than fresh ones.
+    """
     from jobbuddy.core import find_companies as core_find_companies
+    from jobbuddy.store import JobStore
 
     try:
         result = core_find_companies(query, limit=limit)
     except ValueError as e:
         return f"Error: {e}"
+
+    with JobStore() as store:
+        counts = store.application_counts_by_company(account.id)
+    for row in result.get("results", []):
+        row["applications"] = counts.get((row.get("name") or "").lower(), 0)
 
     return json.dumps(result, indent=2)
 
@@ -488,6 +512,7 @@ def find_companies(
 @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": False})
 def review_activity_log(
     company: Annotated[str, Field(default="", description="Company name or slug to filter by. Omit for summary of all companies.")] = "",
+    account: Account = CurrentAccount(),
 ) -> str:
     """Review job search history — applications, screens, interviews, contacts — for one or all companies.
 
@@ -497,7 +522,7 @@ def review_activity_log(
 
     Without a company: returns a summary of all companies sorted by most recent activity.
     With a company: returns full chronological activity detail for that company."""
-    rows = read_log()
+    rows = read_log(account.id)
 
     if company:
         # Detail mode: one company
@@ -518,7 +543,7 @@ def review_activity_log(
         return ActivityDetail.from_company(display_name, company_rows).to_mcp_result()
 
     # Summary mode: all companies
-    for name in unique_companies():
+    for name in unique_companies(account.id):
         ensure_company(name)
 
     by_company: dict[str, list[dict]] = {}
@@ -536,11 +561,11 @@ def review_activity_log(
 
 
 @mcp.resource("ats://log")
-def get_log() -> str:
-    """Raw job search activity log as JSON. Prefer review_activity_log tool instead —
-    it provides per-company summaries, filtering, and pivot stats. This resource returns
-    unprocessed CSV rows."""
-    return json.dumps(read_log(), indent=2)
+def get_log(account: Account = CurrentAccount()) -> str:
+    """Raw job search activity log for the current account, as JSON. Prefer
+    review_activity_log tool instead — it provides per-company summaries,
+    filtering, and pivot stats. This resource returns unprocessed rows."""
+    return json.dumps(read_log(account.id), indent=2)
 
 
 @mcp.resource("ats://companies")

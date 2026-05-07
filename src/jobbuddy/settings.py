@@ -52,6 +52,11 @@ class Settings(BaseSettings):
 
     embedding_model: str = "text-embedding-3-small"
 
+    # MCP authentication. Required when running `jsb-mcp`; ignored by the
+    # CLI. Picks which OAuth provider FastMCP mounts and which claim names
+    # to read when resolving an Account row.
+    auth_provider: Optional[Literal["entra", "github"]] = None
+
     @property
     def has_openai(self) -> bool:
         """Whether OpenAI credentials are configured (enables the distill phase)."""
