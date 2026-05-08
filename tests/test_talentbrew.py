@@ -1,10 +1,11 @@
-"""Tests for the TalentBrew fetcher's detail-page parser.
+"""Tests for the TalentBrew fetcher's detail-page parser and list_jobs filtering.
 
-Focuses on JSON-LD extraction of description and datePosted, including the
-non-zero-padded date format real Walgreens pages return (e.g. "2026-4-25").
+Covers JSON-LD extraction, per-company ACM filter config, static pagination,
+and keyword-pass deduplication.
 """
 
 from datetime import date
+from unittest.mock import MagicMock, patch
 
 from jobbuddy.fetchers.talentbrew import TalentBrewFetcher
 
@@ -138,3 +139,169 @@ class TestEnrichmentFills:
         description."""
         assert "published_at" in TalentBrewFetcher.enrichment_fills
         assert "description" in TalentBrewFetcher.enrichment_fills
+
+
+# ---------------------------------------------------------------------------
+# Helpers for list_jobs filtering tests
+# ---------------------------------------------------------------------------
+
+def _dynamic_html_fragment(job_id: str, title: str, total: int) -> str:
+    """Minimal HTML fragment for dynamic (XHR JSON) mode."""
+    return (
+        f'<div data-total-results="{total}">'
+        f'<ul><li><a href="/en/job/test-{job_id}" data-job-id="{job_id}" '
+        f'data-title="{title}"></a></li></ul></div>'
+    )
+
+
+def _static_html_page(job_id: str, title: str, total: int) -> str:
+    """Minimal full HTML for static pagination mode."""
+    return (
+        f'<html><body data-total-results="{total}">'
+        f'<ul><li><a href="/en/job/test-{job_id}" data-job-id="{job_id}" '
+        f'data-title="{title}"></a></li></ul></body></html>'
+    )
+
+
+def _mock_dynamic_response(html_fragment: str) -> MagicMock:
+    """Mock httpx response for dynamic (XHR JSON) mode: .json()['results'] = html."""
+    resp = MagicMock()
+    resp.raise_for_status = MagicMock()
+    resp.json.return_value = {"results": html_fragment}
+    resp.text = html_fragment
+    return resp
+
+
+def _mock_static_response(html: str) -> MagicMock:
+    """Mock httpx response for static pagination mode: .text = full html."""
+    resp = MagicMock()
+    resp.raise_for_status = MagicMock()
+    resp.json.side_effect = ValueError("static mode does not return JSON")
+    resp.text = html
+    return resp
+
+
+class TestListJobsFiltering:
+    def test_default_no_filter_uses_results_endpoint(self):
+        """When tb_search_path is empty, URL hits /search-jobs/results without acm param."""
+        fetcher = TalentBrewFetcher(
+            board="walgreens",
+            tb_host="jobs.walgreens.com",
+            tb_tenant_id=1242,
+            tb_search_path="",
+        )
+        html = _dynamic_html_fragment("100", "Engineer", 1)
+        mock_resp = _mock_dynamic_response(html)
+
+        captured_urls = []
+
+        def fake_get(url, **kwargs):
+            captured_urls.append(url)
+            return mock_resp
+
+        with patch.object(fetcher.client, "get", side_effect=fake_get):
+            jobs = fetcher.list_jobs()
+
+        assert len(jobs) == 1
+        assert jobs[0].id == "100"
+        assert all("/search-jobs/results" in u for u in captured_urls)
+        assert not any("acm" in u for u in captured_urls)
+
+    def test_dynamic_acm_filter_in_url(self):
+        """When tb_search_path has acm param, URL includes acm=12899."""
+        fetcher = TalentBrewFetcher(
+            board="walgreens",
+            tb_host="jobs.walgreens.com",
+            tb_tenant_id=1242,
+            tb_search_path="/en/search-jobs?acm=12899",
+        )
+        html = _dynamic_html_fragment("200", "Pharmacist", 1)
+        mock_resp = _mock_dynamic_response(html)
+
+        captured_urls = []
+
+        def fake_get(url, **kwargs):
+            captured_urls.append(url)
+            return mock_resp
+
+        with patch.object(fetcher.client, "get", side_effect=fake_get):
+            jobs = fetcher.list_jobs()
+
+        assert len(jobs) == 1
+        assert any("acm=12899" in u for u in captured_urls)
+        assert all("/search-jobs/results" in u for u in captured_urls)
+
+    def test_static_pagination_builds_correct_url(self):
+        """When tb_static_pagination=True, page 1 URL is /search-jobs/185/1?acm=11125."""
+        fetcher = TalentBrewFetcher(
+            board="boeing",
+            tb_host="jobs.boeing.com",
+            tb_tenant_id=185,
+            tb_search_path="/search-jobs/185/1?acm=11125",
+            tb_static_pagination=True,
+        )
+        html = _static_html_page("300", "Engineer", 1)
+        mock_resp = _mock_static_response(html)
+
+        captured_urls = []
+
+        def fake_get(url, **kwargs):
+            captured_urls.append(url)
+            return mock_resp
+
+        with patch.object(fetcher.client, "get", side_effect=fake_get):
+            jobs = fetcher.list_jobs()
+
+        assert len(jobs) == 1
+        assert any("/search-jobs/185/1" in u for u in captured_urls)
+        assert any("acm=11125" in u for u in captured_urls)
+        # Must NOT use the dynamic /search-jobs/results endpoint
+        assert not any("/search-jobs/results" in u for u in captured_urls)
+
+    def test_keyword_passes_merged_and_deduped(self):
+        """Keyword passes merge into main list, deduplicated by job.id."""
+        fetcher = TalentBrewFetcher(
+            board="boeing",
+            tb_host="jobs.boeing.com",
+            tb_tenant_id=185,
+            tb_search_path="/search-jobs/185/1?acm=11125",
+            tb_static_pagination=True,
+            tb_keyword_passes=["paint"],
+        )
+        # Main pass: jobs 301, 302 (total=2, fits one page)
+        main_html = (
+            '<div data-total-results="2">'
+            '<ul>'
+            '<li><a href="/en/job/test-301" data-job-id="301" data-title="Job A"></a></li>'
+            '<li><a href="/en/job/test-302" data-job-id="302" data-title="Job B"></a></li>'
+            '</ul></div>'
+        )
+        # Keyword pass: jobs 302 (overlap), 303 (new)
+        kw_html = (
+            '<div data-total-results="2">'
+            '<ul>'
+            '<li><a href="/en/job/test-302" data-job-id="302" data-title="Job B"></a></li>'
+            '<li><a href="/en/job/test-303" data-job-id="303" data-title="Job C"></a></li>'
+            '</ul></div>'
+        )
+
+        call_count = [0]
+
+        def fake_get(url, **kwargs):
+            resp = MagicMock()
+            resp.raise_for_status = MagicMock()
+            resp.json.side_effect = ValueError("static mode")
+            call_count[0] += 1
+            # First call = main pass page 1; second call = keyword pass page 1
+            if call_count[0] == 1:
+                resp.text = main_html
+            else:
+                resp.text = kw_html
+            return resp
+
+        with patch.object(fetcher.client, "get", side_effect=fake_get):
+            jobs = fetcher.list_jobs()
+
+        job_ids = {j.id for j in jobs}
+        assert job_ids == {"301", "302", "303"}
+        assert len(jobs) == 3
