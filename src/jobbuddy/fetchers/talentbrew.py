@@ -3,11 +3,18 @@
 TalentBrew career sites expose a search API at /search-jobs/results that returns
 JSON with HTML fragments. Job detail pages include JSON-LD structured data.
 
-Company registry fields:
+Company registry fields (stored in companies.config JSONB):
   - ats: "talentbrew"
   - board: not used (set to empty string)
   - tb_host: e.g. "jobs.intuit.com"
   - tb_tenant_id: numeric tenant ID from the URL path (e.g. 27595)
+  - tb_search_path: optional filter URL path+query (e.g. "/en/search-jobs?acm=12899").
+    When set, filter params are forwarded to the pagination endpoint. Defaults to
+    unfiltered behavior when omitted.
+  - tb_static_pagination: set true for tenants that require full-page GET with the
+    tenant ID in the path (e.g. "/search-jobs/185/{page}?acm=..."). Defaults false.
+  - tb_keyword_passes: list of keyword strings for additional fetches merged by job_id
+    (e.g. ["paint"]). Each keyword is fetched as an independent search pass.
 """
 
 import json
@@ -17,7 +24,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import parse_qs, urlencode, urlparse
 
 from jobbuddy.fetchers.base import ATSFetcher, JobList, ProgressCallback, RetryCallback
 from jobbuddy.models import Job, strip_html
@@ -85,10 +92,16 @@ class TalentBrewFetcher(ATSFetcher):
         *,
         tb_host: str = "",
         tb_tenant_id: int = 0,
+        tb_search_path: str = "",
+        tb_static_pagination: bool = False,
+        tb_keyword_passes: list[str] | None = None,
     ):
         super().__init__(board, name)
         self.tb_host = tb_host
         self.tb_tenant_id = tb_tenant_id
+        self.tb_search_path = tb_search_path
+        self.tb_static_pagination = tb_static_pagination
+        self.tb_keyword_passes = tb_keyword_passes or []
 
     def _require_config(self) -> None:
         if not self.tb_host or not self.tb_tenant_id:
@@ -100,13 +113,122 @@ class TalentBrewFetcher(ATSFetcher):
     def _base_url(self) -> str:
         return f"https://{self.tb_host}"
 
-    def _search_url(self, page: int) -> str:
+    def _acm_params(self) -> dict:
+        """Parse ACM (and other filter) params from tb_search_path query string.
+
+        Returns a flat {key: value} dict of the query params. Returns {} when
+        tb_search_path is empty, preserving unfiltered behavior.
+        """
+        if not self.tb_search_path:
+            return {}
+        parsed = urlparse(self.tb_search_path)
+        qs = parse_qs(parsed.query, keep_blank_values=False)
+        # parse_qs returns lists; flatten single-value params
+        return {k: v[0] if len(v) == 1 else ",".join(v) for k, v in qs.items()}
+
+    def _dynamic_url(self, page: int, extra_params: dict) -> str:
+        """Build the XHR JSON search endpoint URL for the given page."""
         params = {
             **_SEARCH_DEFAULTS,
+            **extra_params,
             "CurrentPage": str(page),
             "RecordsPerPage": str(_RECORDS_PER_PAGE),
         }
         return f"{self._base_url()}/search-jobs/results?{urlencode(params)}"
+
+    def _static_url(self, page: int, extra_params: dict) -> str:
+        """Build the static pagination URL for the given page.
+
+        Extracts the /search-jobs/{tenant_id}/ path prefix from tb_search_path,
+        then appends page number and query params.
+        """
+        parsed = urlparse(self.tb_search_path)
+        # Path is like /search-jobs/185/1 — strip the trailing page number
+        path_parts = parsed.path.rstrip("/").rsplit("/", 1)
+        base_path = path_parts[0]  # e.g. /search-jobs/185
+        query = urlencode(extra_params) if extra_params else ""
+        url = f"{self._base_url()}{base_path}/{page}"
+        if query:
+            url = f"{url}?{query}"
+        return url
+
+    def _fetch_all_pages(
+        self,
+        extra_params: dict,
+        *,
+        on_progress: ProgressCallback | None,
+        on_retry: RetryCallback | None,
+    ) -> list[Job]:
+        """Fetch all pages using either dynamic or static mode.
+
+        Returns a list of all jobs across all pages. Fires on_progress after
+        each page fetch. Uses ThreadPoolExecutor for pages 2+.
+        """
+        if self.tb_static_pagination:
+            url1 = self._static_url(1, extra_params)
+            resp = self._retry_request(
+                lambda: self.client.get(url1),
+                on_retry=on_retry,
+            )
+            resp.raise_for_status()
+            jobs, total = self._parse_results_html(resp.text)
+        else:
+            url1 = self._dynamic_url(1, extra_params)
+            resp = self._retry_request(
+                lambda: self.client.get(
+                    url1,
+                    headers={"X-Requested-With": "XMLHttpRequest"},
+                ),
+                on_retry=on_retry,
+            )
+            resp.raise_for_status()
+            jobs, total = self._parse_results_html(resp.json().get("results", ""))
+
+        if on_progress:
+            on_progress(len(jobs), total)
+
+        if total <= _RECORDS_PER_PAGE:
+            return jobs
+
+        total_pages = (total + _RECORDS_PER_PAGE - 1) // _RECORDS_PER_PAGE
+        remaining_pages = list(range(2, total_pages + 1))
+        lock = threading.Lock()
+
+        def _fetch_page(page: int) -> list[Job]:
+            if self.tb_static_pagination:
+                url = self._static_url(page, extra_params)
+                page_resp = self._retry_request(
+                    lambda u=url: self.client.get(u),
+                    on_retry=on_retry,
+                )
+                page_resp.raise_for_status()
+                page_jobs, _ = self._parse_results_html(page_resp.text)
+            else:
+                url = self._dynamic_url(page, extra_params)
+                page_resp = self._retry_request(
+                    lambda u=url: self.client.get(
+                        u,
+                        headers={"X-Requested-With": "XMLHttpRequest"},
+                    ),
+                    on_retry=on_retry,
+                )
+                page_resp.raise_for_status()
+                page_jobs, _ = self._parse_results_html(
+                    page_resp.json().get("results", "")
+                )
+            return page_jobs
+
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            futures = {executor.submit(_fetch_page, p): p for p in remaining_pages}
+            for future in as_completed(futures):
+                page_jobs = future.result()
+                with lock:
+                    jobs.extend(page_jobs)
+                    current = len(jobs)
+                if on_progress:
+                    on_progress(current, total)
+
+        return jobs
 
     def _parse_results_html(self, html: str) -> tuple[list[Job], int]:
         """Parse the results HTML fragment. Returns (jobs, total_results).
@@ -190,51 +312,25 @@ class TalentBrewFetcher(ATSFetcher):
     ) -> JobList:
         self._require_config()
 
-        # Fetch page 1 to learn total
-        resp = self._retry_request(
-            lambda: self.client.get(
-                self._search_url(1),
-                headers={"X-Requested-With": "XMLHttpRequest"},
-            ),
-            on_retry=on_retry,
-        )
-        resp.raise_for_status()
-        data = resp.json()
+        # Main pass: fetch with ACM filter params (or no filter if tb_search_path is empty)
+        acm = self._acm_params()
+        jobs = self._fetch_all_pages(acm, on_progress=on_progress, on_retry=on_retry)
 
-        jobs, total = self._parse_results_html(data.get("results", ""))
-        if on_progress:
-            on_progress(len(jobs), total)
-
-        if total <= _RECORDS_PER_PAGE:
-            return jobs
-
-        total_pages = (total + _RECORDS_PER_PAGE - 1) // _RECORDS_PER_PAGE
-        remaining_pages = list(range(2, total_pages + 1))
-
-        lock = threading.Lock()
-
-        def _fetch_page(page: int) -> list[Job]:
-            page_resp = self._retry_request(
-                lambda p=page: self.client.get(
-                    self._search_url(p),
-                    headers={"X-Requested-With": "XMLHttpRequest"},
-                ),
-                on_retry=on_retry,
-            )
-            page_resp.raise_for_status()
-            page_data = page_resp.json()
-            page_jobs, _ = self._parse_results_html(page_data.get("results", ""))
-            return page_jobs
-
-        with ThreadPoolExecutor(max_workers=5) as executor:
-            futures = {executor.submit(_fetch_page, p): p for p in remaining_pages}
-            for future in as_completed(futures):
-                page_jobs = future.result()
-                with lock:
-                    jobs.extend(page_jobs)
-                    current = len(jobs)
-                if on_progress:
-                    on_progress(current, total)
+        # Keyword passes: additional fetches merged/deduped by job id
+        if self.tb_keyword_passes:
+            seen_ids = {j.id for j in jobs}
+            for keyword in self.tb_keyword_passes:
+                if self.tb_static_pagination:
+                    kw_params = {"k": keyword}
+                else:
+                    kw_params = {"Keywords": keyword}
+                kw_jobs = self._fetch_all_pages(
+                    kw_params, on_progress=None, on_retry=on_retry
+                )
+                for job in kw_jobs:
+                    if job.id not in seen_ids:
+                        jobs.append(job)
+                        seen_ids.add(job.id)
 
         return jobs
 
