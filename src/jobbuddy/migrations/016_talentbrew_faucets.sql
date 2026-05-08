@@ -35,6 +35,3 @@ UPDATE companies
 UPDATE companies
     SET config = '{"tb_host": "jobs.disneycareers.com", "tb_tenant_id": 391, "tb_search_path": "/search-jobs/391/1?acm=26715,21579,8221776,8221696", "tb_static_pagination": true}'::jsonb
     WHERE slug = 'disney';
-
--- Remove company with no relevant open roles
-DELETE FROM companies WHERE slug = 'wegmans';
