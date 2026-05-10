@@ -366,11 +366,17 @@ class JobStore:
                         --   listing_status      -- back to 'active' on repost
                         --   last_listing_update -- ATS-side freshness; keep
                         --                          the most recent value
-                        --                          observed (GREATEST ignores
-                        --                          NULLs, so a fetcher that
-                        --                          doesn't surface this field
-                        --                          never clobbers an existing
-                        --                          value).
+                        --                          observed. PostgreSQL's
+                        --                          GREATEST is non-standard
+                        --                          and ignores NULLs (ANSI
+                        --                          SQL would poison the
+                        --                          result), so a fetcher
+                        --                          that doesn't surface this
+                        --                          field never clobbers an
+                        --                          existing value. Do NOT
+                        --                          "fix" this with an outer
+                        --                          COALESCE — it would break
+                        --                          the NULL-preserve case.
                         -- The manage_removed_at trigger clears removed_at on
                         -- the listing_status flip back to 'active'. Filling
                         -- NULLs the fetcher couldn't produce (descriptions on
