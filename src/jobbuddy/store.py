@@ -337,6 +337,7 @@ class JobStore:
                     j.location or None,
                     j.url or None,
                     _validate_date(j.published_at),
+                    _validate_date(j.last_listing_update),
                     j.department or None,
                     j.team or None,
                     j.salary or None,
@@ -350,26 +351,43 @@ class JobStore:
                 cur.executemany(
                     """INSERT INTO jobs
                        (company_slug, job_id, title, location, url, published_at,
+                        last_listing_update,
                         department, team, salary, description, ats_metadata, last_seen,
                         listing_status)
                        VALUES (%s, %s, %s, %s, %s,
                                COALESCE(%s, CURRENT_DATE),
+                               %s,
                                %s, %s, %s, %s, %s, %s, 'active')
                        ON CONFLICT(company_slug, job_id) DO UPDATE SET
                         -- Pure-insert model: a row's content (title, location,
-                        -- description, salary, dates, etc.) is fixed at first
-                        -- insert. Only operational state mutates here:
-                        --   last_seen      -- bumped every sync
-                        --   listing_status -- back to 'active' if we'd marked it removed
+                        -- description, salary, published_at, etc.) is fixed at
+                        -- first insert. Only operational state mutates here:
+                        --   last_seen           -- bumped every sync
+                        --   listing_status      -- back to 'active' on repost
+                        --   last_listing_update -- ATS-side freshness; keep
+                        --                          the most recent value
+                        --                          observed (GREATEST ignores
+                        --                          NULLs, so a fetcher that
+                        --                          doesn't surface this field
+                        --                          never clobbers an existing
+                        --                          value).
                         -- The manage_removed_at trigger clears removed_at on
                         -- the listing_status flip back to 'active'. Filling
                         -- NULLs the fetcher couldn't produce (descriptions on
                         -- stub fetchers, posted dates on TalentBrew/Avature)
                         -- is the enrich phase's job, via update_enrichment.
                         last_seen = excluded.last_seen,
-                        listing_status = 'active'
+                        listing_status = 'active',
+                        last_listing_update = GREATEST(
+                            jobs.last_listing_update,
+                            excluded.last_listing_update
+                        )
                        WHERE jobs.last_seen IS DISTINCT FROM excluded.last_seen
-                          OR jobs.listing_status <> 'active'""",
+                          OR jobs.listing_status <> 'active'
+                          OR jobs.last_listing_update IS DISTINCT FROM GREATEST(
+                                jobs.last_listing_update,
+                                excluded.last_listing_update
+                             )""",
                     upsert_params,
                     returning=False,
                 )

@@ -40,7 +40,9 @@ worker threads in the sync pipeline each create their own instance.
 
 ```sql
 jobs             -- SERIAL PK (surrogate), UNIQUE(company_slug, job_id)
-                 --   title, location, url, published_at, salary, team,
+                 --   title, location, url, published_at,
+                 --   last_listing_update (per-fetcher freshness signal — see
+                 --                        "Date columns" below), salary, team,
                  --   department, description (raw, never returned by MCP),
                  --   short_jd, description_normalized (distill outputs),
                  --   ats_metadata (JSONB), last_seen,
@@ -73,6 +75,34 @@ sees the raw `description` change on an existing job, it nulls
 `short_jd` / `description_normalized` so the distill phase picks the
 row up again on the next pass — replaces the content_hash invalidation
 path that the embedding pipeline used.
+
+### Date columns
+
+Two date columns capture different ATS-side semantics:
+
+- `published_at` — what the ATS reports as the listing's publish date.
+  Source field varies: Greenhouse `first_published`, Lever `createdAt`,
+  Ashby `publishedAt`, Apple `postDateInGMT`, Eightfold `postedTs`,
+  Avature sitemap `<lastmod>`, etc. Pure-insert: fixed at first sync.
+- `last_listing_update` — what the ATS reports about freshness, where a
+  distinct field exists. Updates on every sync via `GREATEST()`, so a
+  newer ATS-side timestamp overrides the stored value while a NULL never
+  clobbers an existing one.
+
+Per-fetcher mapping for `last_listing_update`:
+
+| Fetcher       | Source field                                              |
+|---------------|-----------------------------------------------------------|
+| greenhouse    | `updated_at` (board API)                                  |
+| amazon        | `updatedDate` (search hit fields)                         |
+| eightfold_v2  | `t_update` (epoch seconds on each position)               |
+| jibe          | `update_date`, falling back to `meta_data.icims.date_updated` |
+| avature       | sitemap `<lastmod>` (also feeds `published_at` — Avature has no separate first-publish field) |
+| (others)      | NULL — public API exposes only one date                   |
+
+Live probes against every wired ATS confirm the table above is exhaustive
+for ATSes that publicly expose a separate "last updated" timestamp. See
+issue #53 for the per-platform investigation.
 
 ### Soft-Delete
 

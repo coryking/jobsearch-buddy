@@ -89,6 +89,16 @@ class JibeFetcher(ATSFetcher):
         categories = data.get("categories", [])
         department = categories[0]["name"] if categories else None
 
+        # Jibe payloads carry both `posted_date` (first-listed) and
+        # `update_date` (last touch in iCIMS). Fall back to the iCIMS
+        # nested `meta_data.icims.date_updated` when `update_date` is
+        # absent on older payloads.
+        update_date = data.get("update_date")
+        if not update_date:
+            meta = data.get("meta_data") or {}
+            icims = meta.get("icims") or {}
+            update_date = icims.get("date_updated")
+
         return Job(
             id=slug,
             title=data.get("title", ""),
@@ -96,6 +106,7 @@ class JibeFetcher(ATSFetcher):
             url=self._job_url(slug),
             apply_url=data.get("apply_url", self._job_url(slug)),
             published_at=_parse_date(data.get("posted_date")),
+            last_listing_update=_parse_date(update_date),
             department=department,
             salary=salary,
             description=description,

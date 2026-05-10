@@ -144,6 +144,7 @@ class AmazonFetcher(ATSFetcher):
             url=f"https://www.amazon.jobs/en/jobs/{job_id}/{slug}",
             apply_url=url_next_step or f"https://account.amazon.jobs/jobs/{job_id}/apply",
             published_at=_parse_epoch(_first(fields.get("createdDate"))),
+            last_listing_update=_parse_epoch(_first(fields.get("updatedDate"))),
             department=category,
             team=job_family,
             description=description,

@@ -140,6 +140,9 @@ class TestJibeListJobs:
         assert jobs[0].location == "Wichita, Kansas, United States"
         assert jobs[0].department == "Engineering"
         assert jobs[0].published_at == date(2026, 4, 22)
+        # Sample data has no update_date or meta_data.icims.date_updated for
+        # this row, so last_listing_update is NULL.
+        assert jobs[0].last_listing_update is None
         assert "full" in jobs[0].description
         assert "<p>" not in jobs[0].description
         assert jobs[0].apply_url == "https://careers-spiritaero.icims.com/jobs/16625/login"
@@ -281,6 +284,37 @@ class TestJibeFetchJob:
 # ---------------------------------------------------------------------------
 # Configuration validation
 # ---------------------------------------------------------------------------
+
+
+class TestJibeLastListingUpdate:
+    def test_extracts_update_date(self):
+        f = make_jibe_fetcher()
+        job = f._parse_job({
+            "slug": "1", "title": "Eng",
+            "posted_date": "2026-01-01T00:00:00+0000",
+            "update_date": "2026-05-01T00:00:00+0000",
+        })
+        assert job.published_at == date(2026, 1, 1)
+        assert job.last_listing_update == date(2026, 5, 1)
+
+    def test_falls_back_to_icims_date_updated(self):
+        """Older payloads omit update_date but expose
+        meta_data.icims.date_updated."""
+        f = make_jibe_fetcher()
+        job = f._parse_job({
+            "slug": "1", "title": "Eng",
+            "posted_date": "2026-01-01T00:00:00+0000",
+            "meta_data": {"icims": {"date_updated": "2026-04-15T12:00:00+0000"}},
+        })
+        assert job.last_listing_update == date(2026, 4, 15)
+
+    def test_no_update_field_leaves_null(self):
+        f = make_jibe_fetcher()
+        job = f._parse_job({
+            "slug": "1", "title": "Eng",
+            "posted_date": "2026-01-01T00:00:00+0000",
+        })
+        assert job.last_listing_update is None
 
 
 class TestJibeConfig:

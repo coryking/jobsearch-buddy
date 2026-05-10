@@ -82,6 +82,53 @@ class TestUpsertAndQuery:
         assert rows[0]["title"] == "PM"
         assert rows[0]["location"] == "Seattle"
 
+    def test_last_listing_update_writes_on_insert(self, store):
+        """Fetcher-supplied last_listing_update lands on first insert."""
+        store.upsert_jobs("acme", [
+            make_job("1", last_listing_update="2026-05-01"),
+        ])
+        row = store.conn.execute(
+            "SELECT last_listing_update FROM jobs WHERE company_slug='acme' AND job_id='1'"
+        ).fetchone()
+        assert row["last_listing_update"].isoformat() == "2026-05-01"
+
+    def test_last_listing_update_advances_on_resync(self, store):
+        """Newer ATS-side update overrides the stored value (GREATEST)."""
+        store.upsert_jobs("acme", [
+            make_job("1", last_listing_update="2026-05-01"),
+        ])
+        store.upsert_jobs("acme", [
+            make_job("1", last_listing_update="2026-05-09"),
+        ])
+        row = store.conn.execute(
+            "SELECT last_listing_update FROM jobs WHERE company_slug='acme' AND job_id='1'"
+        ).fetchone()
+        assert row["last_listing_update"].isoformat() == "2026-05-09"
+
+    def test_last_listing_update_keeps_newer_when_older_arrives(self, store):
+        """Out-of-order syncs never regress the column (GREATEST keeps max)."""
+        store.upsert_jobs("acme", [
+            make_job("1", last_listing_update="2026-05-09"),
+        ])
+        store.upsert_jobs("acme", [
+            make_job("1", last_listing_update="2026-04-01"),
+        ])
+        row = store.conn.execute(
+            "SELECT last_listing_update FROM jobs WHERE company_slug='acme' AND job_id='1'"
+        ).fetchone()
+        assert row["last_listing_update"].isoformat() == "2026-05-09"
+
+    def test_last_listing_update_null_does_not_clobber(self, store):
+        """A fetcher that doesn't surface this field (NULL) preserves the value."""
+        store.upsert_jobs("acme", [
+            make_job("1", last_listing_update="2026-05-01"),
+        ])
+        store.upsert_jobs("acme", [make_job("1")])  # no last_listing_update
+        row = store.conn.execute(
+            "SELECT last_listing_update FROM jobs WHERE company_slug='acme' AND job_id='1'"
+        ).fetchone()
+        assert row["last_listing_update"].isoformat() == "2026-05-01"
+
     def test_upsert_marks_removed_jobs(self, store):
         store.upsert_jobs("acme", [make_job("1"), make_job("2")])
         assert len(store.query_jobs()) == 2

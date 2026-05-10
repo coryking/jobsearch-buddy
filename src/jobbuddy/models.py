@@ -70,6 +70,7 @@ class Job(BaseModel):
     url: str
     apply_url: str
     published_at: PublishedAt = None
+    last_listing_update: PublishedAt = None
     department: str | None = None
     team: str | None = None
     salary: str | None = None
