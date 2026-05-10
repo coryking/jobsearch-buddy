@@ -239,10 +239,18 @@ class AvatureFetcher(ATSFetcher):
         # per-JobDetail <lastmod> values. Best-effort: a sitemap fetch
         # failure leaves published_at NULL and the upsert's scrape-date
         # fallback handles it.
+        #
+        # `lastmod` is a regenerated-on-edit signal, so it's also the most
+        # honest value for `last_listing_update` — Avature has no separate
+        # "first published" field exposed publicly, so the same date plays
+        # both roles for this ATS.
         sitemap_dates = self._fetch_sitemap_dates(on_retry=on_retry)
         if sitemap_dates:
             jobs = [
-                j.model_copy(update={"published_at": sitemap_dates[j.id]})
+                j.model_copy(update={
+                    "published_at": sitemap_dates[j.id],
+                    "last_listing_update": sitemap_dates[j.id],
+                })
                 if j.id in sitemap_dates else j
                 for j in jobs
             ]

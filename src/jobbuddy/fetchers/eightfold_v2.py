@@ -70,14 +70,21 @@ class EightfoldV2Fetcher(ATSFetcher):
                 meta[key] = val[0] if isinstance(val, list) and len(val) == 1 else val
         return meta or None
 
+    @staticmethod
+    def _epoch_to_date(value):
+        if not value:
+            return None
+        try:
+            return datetime.fromtimestamp(value, tz=timezone.utc).date()
+        except (ValueError, OSError, OverflowError):
+            return None
+
     def _position_to_job(self, pos: dict) -> Job:
         """Map a position object from v2 search results to a Job."""
         pos_id = str(pos["id"])
         locations = pos.get("standardizedLocations") or pos.get("locations") or []
-        posted_ts = pos.get("t_create")
-        published_at = None
-        if posted_ts:
-            published_at = datetime.fromtimestamp(posted_ts, tz=timezone.utc).date()
+        published_at = self._epoch_to_date(pos.get("t_create"))
+        updated_at = self._epoch_to_date(pos.get("t_update"))
 
         url = f"{self.base_url}/careers/job/{pos_id}"
         return Job(
@@ -87,6 +94,7 @@ class EightfoldV2Fetcher(ATSFetcher):
             url=url,
             apply_url=url,
             published_at=published_at,
+            last_listing_update=updated_at,
             department=pos.get("department"),
             ats_metadata=self._extract_metadata(pos),
         )
@@ -151,10 +159,8 @@ class EightfoldV2Fetcher(ATSFetcher):
             raise ValueError(f"Position {job_id} not found.")
 
         locations = data.get("standardizedLocations") or data.get("locations") or []
-        posted_ts = data.get("t_create")
-        published_at = None
-        if posted_ts:
-            published_at = datetime.fromtimestamp(posted_ts, tz=timezone.utc).date()
+        published_at = self._epoch_to_date(data.get("t_create"))
+        updated_at = self._epoch_to_date(data.get("t_update"))
 
         url = f"{self.base_url}/careers/job/{job_id}"
         description = data.get("job_description", "")
@@ -168,6 +174,7 @@ class EightfoldV2Fetcher(ATSFetcher):
             url=url,
             apply_url=url,
             published_at=published_at,
+            last_listing_update=updated_at,
             department=data.get("department"),
             description=description or None,
             ats_metadata=self._extract_metadata(data),

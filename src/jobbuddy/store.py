@@ -337,6 +337,7 @@ class JobStore:
                     j.location or None,
                     j.url or None,
                     _validate_date(j.published_at),
+                    _validate_date(j.last_listing_update),
                     j.department or None,
                     j.team or None,
                     j.salary or None,
@@ -350,26 +351,49 @@ class JobStore:
                 cur.executemany(
                     """INSERT INTO jobs
                        (company_slug, job_id, title, location, url, published_at,
+                        last_listing_update,
                         department, team, salary, description, ats_metadata, last_seen,
                         listing_status)
                        VALUES (%s, %s, %s, %s, %s,
                                COALESCE(%s, CURRENT_DATE),
+                               %s,
                                %s, %s, %s, %s, %s, %s, 'active')
                        ON CONFLICT(company_slug, job_id) DO UPDATE SET
                         -- Pure-insert model: a row's content (title, location,
-                        -- description, salary, dates, etc.) is fixed at first
-                        -- insert. Only operational state mutates here:
-                        --   last_seen      -- bumped every sync
-                        --   listing_status -- back to 'active' if we'd marked it removed
+                        -- description, salary, published_at, etc.) is fixed at
+                        -- first insert. Only operational state mutates here:
+                        --   last_seen           -- bumped every sync
+                        --   listing_status      -- back to 'active' on repost
+                        --   last_listing_update -- ATS-side freshness; keep
+                        --                          the most recent value
+                        --                          observed. PostgreSQL's
+                        --                          GREATEST is non-standard
+                        --                          and ignores NULLs (ANSI
+                        --                          SQL would poison the
+                        --                          result), so a fetcher
+                        --                          that doesn't surface this
+                        --                          field never clobbers an
+                        --                          existing value. Do NOT
+                        --                          "fix" this with an outer
+                        --                          COALESCE — it would break
+                        --                          the NULL-preserve case.
                         -- The manage_removed_at trigger clears removed_at on
                         -- the listing_status flip back to 'active'. Filling
                         -- NULLs the fetcher couldn't produce (descriptions on
                         -- stub fetchers, posted dates on TalentBrew/Avature)
                         -- is the enrich phase's job, via update_enrichment.
                         last_seen = excluded.last_seen,
-                        listing_status = 'active'
+                        listing_status = 'active',
+                        last_listing_update = GREATEST(
+                            jobs.last_listing_update,
+                            excluded.last_listing_update
+                        )
                        WHERE jobs.last_seen IS DISTINCT FROM excluded.last_seen
-                          OR jobs.listing_status <> 'active'""",
+                          OR jobs.listing_status <> 'active'
+                          OR jobs.last_listing_update IS DISTINCT FROM GREATEST(
+                                jobs.last_listing_update,
+                                excluded.last_listing_update
+                             )""",
                     upsert_params,
                     returning=False,
                 )
@@ -419,7 +443,7 @@ class JobStore:
                 LEFT JOIN sync_status s ON j.company_slug = s.company_slug
                 LEFT JOIN companies c ON j.company_slug = c.slug
                 {where}
-                ORDER BY j.published_at DESC NULLS LAST
+                ORDER BY j.effective_date DESC
                 LIMIT %s
             """
         else:
@@ -432,19 +456,19 @@ class JobStore:
                     LEFT JOIN sync_status s ON j.company_slug = s.company_slug
                     LEFT JOIN companies c ON j.company_slug = c.slug
                     {where}
-                    ORDER BY j.published_at DESC NULLS LAST
+                    ORDER BY j.effective_date DESC
                     LIMIT %s
                 ),
                 ranked AS (
                     SELECT *,
                            ROW_NUMBER() OVER (
                                PARTITION BY company_slug
-                               ORDER BY published_at DESC NULLS LAST
+                               ORDER BY effective_date DESC
                            ) AS rn
                     FROM base
                 )
                 SELECT * FROM ranked
-                ORDER BY rn, published_at DESC NULLS LAST
+                ORDER BY rn, effective_date DESC
                 LIMIT %s
             """
             params.append(limit)
@@ -466,9 +490,13 @@ class JobStore:
         """Phase 1 search: FTS over fts_vector with deterministic ranking.
 
         - When `query` is set: rank by ts_rank DESC, tie-break on
-          (published_at DESC NULLS LAST, company_slug, job_id).
-        - When `query` is empty: pure published_at DESC NULLS LAST,
+          (effective_date DESC, company_slug, job_id).
+        - When `query` is empty: pure effective_date DESC,
           tie-break on (company_slug, job_id).
+        - effective_date is COALESCE(last_listing_update, published_at) —
+          ATSes that surface a freshness signal (greenhouse, amazon,
+          eightfold_v2, jibe, avature) sort by their most recent
+          ATS-side touch; others fall back to publish date.
         - Returns rows including short_jd, salary, published_at — the
           fact-dense shape the calling LLM filters on.
 
@@ -483,7 +511,7 @@ class JobStore:
 
         ts_rank_expr = "ts_rank(j.fts_vector, websearch_to_tsquery('english', %s))"
         select_extra = ""
-        order_inner = "j.published_at DESC NULLS LAST, j.company_slug, j.job_id"
+        order_inner = "j.effective_date DESC, j.company_slug, j.job_id"
         if query:
             select_extra = f", {ts_rank_expr} AS rank"
             params.insert(0, query)  # bound to the SELECT-list ts_rank
@@ -614,7 +642,7 @@ class JobStore:
         )
 
         select_extra = ""
-        order_by = "j.published_at DESC NULLS LAST, j.company_slug, j.job_id"
+        order_by = "j.effective_date DESC, j.company_slug, j.job_id"
         if query:
             ts_rank_expr = "ts_rank(j.fts_vector, websearch_to_tsquery('english', %s))"
             headline_expr = (
@@ -644,11 +672,13 @@ class JobStore:
         top_rows = []
         for row in rows:
             r = dict(row)
+            llu = r.get("last_listing_update")
             top_row: dict = {
                 "job_id": r["job_id"],
                 "title": r["title"],
                 "location": r.get("location") or "",
                 "posted": r["published_at"].isoformat() if r.get("published_at") else None,
+                "updated": llu.isoformat() if llu else None,
                 "url": r.get("url") or "",
                 "salary": r.get("salary"),
                 "company_slug": r["company_slug"],
@@ -928,7 +958,11 @@ class JobStore:
             params.append(exclude_companies)
 
         if posted_after:
-            conditions.append("j.published_at >= %s")
+            # Match against effective_date (COALESCE(last_listing_update,
+            # published_at)) so "posted in the last 30 days" surfaces
+            # listings the ATS still considers fresh — not just listings
+            # whose publish date happens to be recent. See migration 019.
+            conditions.append("j.effective_date >= %s")
             params.append(posted_after)
 
         if title:

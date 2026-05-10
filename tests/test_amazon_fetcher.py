@@ -116,6 +116,30 @@ def test_parse_hit():
     assert job.published_at is not None
 
 
+def test_parse_hit_extracts_last_listing_update():
+    """`updatedDate` epoch field becomes last_listing_update."""
+    hit = {"fields": {
+        "icimsJobId": ["10406569"],
+        "title": ["SDE"],
+        "createdDate": ["1700000000"],   # 2023-11-14
+        "updatedDate": ["1776450511"],   # 2026-04-17
+    }}
+    job = AmazonFetcher("")._parse_hit(hit)
+    assert job.published_at is not None
+    assert job.last_listing_update is not None
+    assert job.last_listing_update > job.published_at
+
+
+def test_parse_hit_no_updated_date_leaves_null():
+    hit = {"fields": {
+        "icimsJobId": ["1"],
+        "title": ["SDE"],
+        "createdDate": ["1776450511"],
+    }}
+    job = AmazonFetcher("")._parse_hit(hit)
+    assert job.last_listing_update is None
+
+
 def test_parse_hit_missing_fields():
     f = AmazonFetcher("")
     hit = {"fields": {"icimsJobId": ["99999"], "title": ["Test Role"]}}

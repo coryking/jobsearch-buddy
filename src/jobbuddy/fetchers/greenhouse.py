@@ -29,6 +29,10 @@ class GreenhouseFetcher(ATSFetcher):
             if published:
                 published = published[:10]
 
+            updated = j.get("updated_at")
+            if updated:
+                updated = updated[:10]
+
             department = None
             for m in j.get("departments", []):
                 department = m.get("name")
@@ -45,6 +49,7 @@ class GreenhouseFetcher(ATSFetcher):
                     url=j.get("absolute_url", ""),
                     apply_url=j.get("absolute_url", ""),
                     published_at=published,
+                    last_listing_update=updated,
                     department=department,
                     team=department,
                     description=description,

@@ -70,6 +70,7 @@ class Job(BaseModel):
     url: str
     apply_url: str
     published_at: PublishedAt = None
+    last_listing_update: PublishedAt = None
     department: str | None = None
     team: str | None = None
     salary: str | None = None
@@ -199,6 +200,13 @@ class CompactJob(BaseModel):
     apply_url: str | None = None
     id: str
     published_at: PublishedAt = None
+    # ATS-side freshness signal where the platform exposes one (greenhouse,
+    # amazon, eightfold_v2, jibe, avature). NULL for ATSes whose public API
+    # only surfaces a single date — the LLM should treat absence as
+    # "freshness unknown," not "stale." Critical for disambiguating
+    # year+-old `published_at` values that have actually been touched in
+    # the ATS within the last week (see issue #53).
+    last_listing_update: PublishedAt = None
     department: str | None = None
     team: str | None = None
     salary: str | None = None
@@ -239,6 +247,7 @@ class CompactJob(BaseModel):
             apply_url=row.get("apply_url"),
             id=row["job_id"],
             published_at=row.get("published_at"),
+            last_listing_update=row.get("last_listing_update"),
             department=row.get("department"),
             team=row.get("team"),
             salary=row.get("salary"),
