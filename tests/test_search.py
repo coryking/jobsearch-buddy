@@ -92,6 +92,22 @@ class TestSearchJobsFts:
         rows = store.search_jobs_fts(posted_after=cutoff, limit=20)
         assert [r["job_id"] for r in rows] == ["new"]
 
+    def test_posted_after_uses_freshness_when_present(self, store):
+        """A job whose `published_at` is years stale but whose
+        `last_listing_update` is recent IS in-window for posted_after."""
+        today = date.today()
+        old_pub = (today - timedelta(days=400)).isoformat()
+        recent = (today - timedelta(days=2)).isoformat()
+        _seed_distilled(store, "acme", "stale", title="Stale", short_jd="x",
+                        published_at=old_pub)
+        store.upsert_jobs("acme", [
+            make_job(id="refreshed", title="Refreshed",
+                     published_at=old_pub, last_listing_update=recent),
+        ])
+        cutoff = (today - timedelta(days=7)).isoformat()
+        rows = store.search_jobs_fts(posted_after=cutoff, limit=20)
+        assert [r["job_id"] for r in rows] == ["refreshed"]
+
     def test_excludes_removed_listings(self, store):
         _seed_distilled(store, "acme", "1", title="A", short_jd="x")
         _seed_distilled(store, "acme", "2", title="B", short_jd="x")

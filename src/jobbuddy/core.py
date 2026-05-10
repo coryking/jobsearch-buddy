@@ -31,6 +31,11 @@ class JobRow(BaseModel):
     title: str
     location: str | None = None
     posted: str | None = None
+    # ATS-side freshness signal (greenhouse/amazon/eightfold_v2/jibe/avature
+    # populate this; others leave it None). When the LLM sees `updated` and
+    # `posted` diverge sharply, that's the cue that an old `posted` date
+    # belongs to an actively-republished listing rather than a stale req.
+    updated: str | None = None
     snippet: str | None = None
     url: str | None = None
     salary: str | None = None
@@ -68,6 +73,11 @@ def _to_jobrow(row: dict) -> JobRow:
         pa = row.get("published_at")
         posted = pa.isoformat() if hasattr(pa, "isoformat") else (pa or None)
 
+    updated = row.get("updated")
+    if updated is None:
+        llu = row.get("last_listing_update")
+        updated = llu.isoformat() if hasattr(llu, "isoformat") else (llu or None)
+
     snippet = row.get("snippet")
     if snippet is None:
         short_jd = row.get("short_jd")
@@ -81,6 +91,7 @@ def _to_jobrow(row: dict) -> JobRow:
         title=row["title"],
         location=row.get("location") or None,
         posted=posted,
+        updated=updated,
         snippet=snippet,
         url=row.get("url") or None,
         salary=row.get("salary"),

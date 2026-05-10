@@ -363,6 +363,55 @@ class TestQueryFilters:
         assert len(rows) == 2
 
 
+class TestEffectiveDate:
+    """Generated `effective_date = COALESCE(last_listing_update, published_at)`
+    drives `posted_after` filtering and ordering. ATSes that surface a
+    freshness signal sort by their most recent ATS-side touch; others fall
+    back to publish date — same behavior as before for those rows."""
+
+    def test_effective_date_falls_back_to_published_at(self, store):
+        store.upsert_jobs("acme", [
+            make_job("1", published_at="2026-01-01"),  # no last_listing_update
+        ])
+        row = store.conn.execute(
+            "SELECT effective_date FROM jobs WHERE company_slug='acme'"
+        ).fetchone()
+        assert row["effective_date"].isoformat() == "2026-01-01"
+
+    def test_effective_date_uses_last_listing_update_when_present(self, store):
+        store.upsert_jobs("acme", [
+            make_job("1", published_at="2019-01-01",
+                     last_listing_update="2026-05-01"),
+        ])
+        row = store.conn.execute(
+            "SELECT effective_date FROM jobs WHERE company_slug='acme'"
+        ).fetchone()
+        assert row["effective_date"].isoformat() == "2026-05-01"
+
+    def test_posted_after_uses_effective_date(self, store):
+        """A 2019 publish date with a 2026 freshness touch is in-window for
+        a 2026 `posted_after` filter — the whole reason effective_date exists."""
+        store.upsert_jobs("acme", [
+            make_job("stale", published_at="2019-01-01"),
+            make_job("refreshed", published_at="2019-01-01",
+                     last_listing_update="2026-05-01"),
+        ])
+        rows = store.query_jobs(posted_after="2026-01-01")
+        ids = {r["job_id"] for r in rows}
+        assert ids == {"refreshed"}
+
+    def test_query_orders_by_effective_date(self, store):
+        store.upsert_jobs("acme", [
+            make_job("a", published_at="2026-04-01"),
+            make_job("b", published_at="2019-01-01",
+                     last_listing_update="2026-05-01"),
+            make_job("c", published_at="2026-03-01"),
+        ])
+        rows = store.query_jobs(companies=["acme"])
+        # b's effective_date is 2026-05-01 (newest), so it comes first
+        assert [r["job_id"] for r in rows] == ["b", "a", "c"]
+
+
 class TestFullTextSearch:
     """Tests for PostgreSQL FTS replacing ILIKE title filter."""
 

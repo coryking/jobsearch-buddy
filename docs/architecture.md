@@ -88,6 +88,14 @@ Two date columns capture different ATS-side semantics:
   distinct field exists. Updates on every sync via `GREATEST()`, so a
   newer ATS-side timestamp overrides the stored value while a NULL never
   clobbers an existing one.
+- `effective_date` — generated `COALESCE(last_listing_update,
+  published_at)`. Drives `posted_after` filtering and recency ordering in
+  `query_jobs` / `search_jobs_fts` / `survey_jobs_by_company` so "posted
+  in the last 30 days" surfaces ATS-fresh listings rather than only those
+  whose first-publish date happens to be recent. `published_at` is still
+  what surfaces in `CompactJob.published_at` and what users see on the
+  detail page; `last_listing_update` is exposed alongside it as
+  `updated` so the LLM can see the divergence.
 
 Per-fetcher mapping for `last_listing_update`:
 
