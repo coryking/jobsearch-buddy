@@ -1245,6 +1245,239 @@ class JobStore:
         return self._hydrate_account(row) if row else None
 
     # -------------------------------------------------------------------
+    # Watchlists
+    # -------------------------------------------------------------------
+
+    def _watchlist_row(self, row: dict, companies: list[str]) -> dict:
+        """Shape a watchlists row + member slugs into the consumer dict."""
+        return {
+            "id": row["id"],
+            "slug": row["slug"],
+            "name": row["name"],
+            "notes": row["notes"],
+            "filter": row["filter"] or {},
+            "companies": companies,
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+
+    def create_watchlist(
+        self,
+        account_id: UUID,
+        *,
+        slug: str,
+        name: str,
+        filter: dict | None = None,
+        notes: str | None = None,
+        company_slugs: list[str] | None = None,
+    ) -> dict:
+        """Create a watchlist for one account. Returns the new row.
+
+        Raises ValueError on (account_id, slug) conflict so the MCP/CLI
+        layer can map it to a user-facing error.
+        """
+        try:
+            row = self.conn.execute(
+                """INSERT INTO watchlists (account_id, slug, name, notes, filter)
+                   VALUES (%s, %s, %s, %s, %s)
+                   RETURNING *""",
+                (account_id, slug, name, notes, Json(filter or {})),
+            ).fetchone()
+        except psycopg.errors.UniqueViolation as e:
+            raise ValueError(
+                f"Watchlist slug '{slug}' already exists for this account"
+            ) from e
+        assert row is not None
+        members = self._add_members(row["id"], company_slugs or [])
+        return self._watchlist_row(row, members)
+
+    def _add_members(self, watchlist_id: UUID, company_slugs: list[str]) -> list[str]:
+        """Insert members (ignoring conflicts and unknown slugs). Returns the
+        current full member list for the watchlist."""
+        if company_slugs:
+            with self.conn.cursor() as cur:
+                cur.executemany(
+                    """INSERT INTO watchlist_members (watchlist_id, company_slug)
+                       SELECT %s, %s
+                       WHERE EXISTS (SELECT 1 FROM companies WHERE slug = %s)
+                       ON CONFLICT DO NOTHING""",
+                    [(watchlist_id, s, s) for s in company_slugs],
+                    returning=False,
+                )
+        return self._list_members(watchlist_id)
+
+    def _list_members(self, watchlist_id: UUID) -> list[str]:
+        rows = self.conn.execute(
+            """SELECT company_slug FROM watchlist_members
+               WHERE watchlist_id = %s ORDER BY company_slug""",
+            (watchlist_id,),
+        ).fetchall()
+        return [r["company_slug"] for r in rows]
+
+    def get_watchlist(self, account_id: UUID, slug: str) -> dict | None:
+        """Fetch one watchlist scoped to an account. Returns None if absent."""
+        row = self.conn.execute(
+            """SELECT * FROM watchlists
+               WHERE account_id = %s AND slug = %s""",
+            (account_id, slug),
+        ).fetchone()
+        if not row:
+            return None
+        return self._watchlist_row(row, self._list_members(row["id"]))
+
+    def update_watchlist(
+        self,
+        account_id: UUID,
+        slug: str,
+        *,
+        name: str | None = None,
+        notes: str | None = None,
+        filter: dict | None = None,
+        add: list[str] | None = None,
+        remove: list[str] | None = None,
+    ) -> dict | None:
+        """Update a watchlist (mutates only fields passed; None means leave alone).
+
+        `add` / `remove` mutate the member roster. Returns the refreshed
+        row, or None if no such watchlist exists for this account.
+        """
+        existing = self.conn.execute(
+            "SELECT id FROM watchlists WHERE account_id = %s AND slug = %s",
+            (account_id, slug),
+        ).fetchone()
+        if not existing:
+            return None
+        wid = existing["id"]
+
+        sets: list[LiteralString] = []
+        params: list = []
+        if name is not None:
+            sets.append("name = %s")
+            params.append(name)
+        if notes is not None:
+            sets.append("notes = %s")
+            params.append(notes)
+        if filter is not None:
+            sets.append("filter = %s")
+            params.append(Json(filter))
+        if sets:
+            sets.append("updated_at = now()")
+            params.extend([account_id, slug])
+            self.conn.execute(
+                f"UPDATE watchlists SET {', '.join(sets)} "
+                f"WHERE account_id = %s AND slug = %s",
+                params,
+            )
+
+        if remove:
+            self.conn.execute(
+                """DELETE FROM watchlist_members
+                   WHERE watchlist_id = %s AND company_slug = ANY(%s)""",
+                (wid, remove),
+            )
+        if add:
+            self._add_members(wid, add)
+
+        return self.get_watchlist(account_id, slug)
+
+    def delete_watchlist(self, account_id: UUID, slug: str) -> bool:
+        """Delete a watchlist. Returns True if a row was removed."""
+        result = self.conn.execute(
+            "DELETE FROM watchlists WHERE account_id = %s AND slug = %s",
+            (account_id, slug),
+        )
+        return result.rowcount > 0
+
+    def list_watchlists(self, account_id: UUID) -> list[dict]:
+        """Return all watchlists for one account, with precomputed summary counts.
+
+        Counts are computed in one pass over `jobs`:
+          - posted_1d / posted_7d / posted_30d: active jobs in the watchlist's
+            companies whose `effective_date` (COALESCE of last_listing_update
+            and published_at) falls within the window.
+          - total_active: all active jobs in the watchlist's companies.
+        Plus an `applied` count from this account's activity_log against
+        any company in the watchlist (case-insensitive on company display
+        name). Other activity types are not summarized here — the simple
+        "have I touched this?" signal is what the LLM needs to decide
+        which watchlist to drill into.
+        """
+        rows = self.conn.execute(
+            """
+            WITH lists AS (
+                SELECT id, slug, name, notes, filter, created_at, updated_at
+                  FROM watchlists
+                 WHERE account_id = %(account_id)s
+            ),
+            members AS (
+                SELECT wm.watchlist_id, wm.company_slug, c.name AS company_name
+                  FROM watchlist_members wm
+                  JOIN companies c ON c.slug = wm.company_slug
+                 WHERE wm.watchlist_id IN (SELECT id FROM lists)
+            ),
+            job_counts AS (
+                SELECT m.watchlist_id,
+                       COUNT(*) FILTER (
+                           WHERE j.listing_status = 'active'
+                       ) AS total_active,
+                       COUNT(*) FILTER (
+                           WHERE j.listing_status = 'active'
+                             AND j.effective_date >= (CURRENT_DATE - INTERVAL '1 day')
+                       ) AS posted_1d,
+                       COUNT(*) FILTER (
+                           WHERE j.listing_status = 'active'
+                             AND j.effective_date >= (CURRENT_DATE - INTERVAL '7 days')
+                       ) AS posted_7d,
+                       COUNT(*) FILTER (
+                           WHERE j.listing_status = 'active'
+                             AND j.effective_date >= (CURRENT_DATE - INTERVAL '30 days')
+                       ) AS posted_30d
+                  FROM members m
+                  JOIN jobs j ON j.company_slug = m.company_slug
+                 GROUP BY m.watchlist_id
+            ),
+            applied_counts AS (
+                SELECT m.watchlist_id, COUNT(*) AS applied
+                  FROM members m
+                  JOIN activity_log a
+                    ON lower(a.company) = lower(m.company_name)
+                   AND a.account_id = %(account_id)s
+                   AND a.action = 'Application'
+                 GROUP BY m.watchlist_id
+            )
+            SELECT l.*,
+                   COALESCE(jc.total_active, 0) AS total_active,
+                   COALESCE(jc.posted_1d, 0)    AS posted_1d,
+                   COALESCE(jc.posted_7d, 0)    AS posted_7d,
+                   COALESCE(jc.posted_30d, 0)   AS posted_30d,
+                   COALESCE(ac.applied, 0)      AS applied,
+                   ARRAY(
+                       SELECT company_slug FROM members
+                        WHERE watchlist_id = l.id
+                        ORDER BY company_slug
+                   ) AS companies
+              FROM lists l
+              LEFT JOIN job_counts jc ON jc.watchlist_id = l.id
+              LEFT JOIN applied_counts ac ON ac.watchlist_id = l.id
+             ORDER BY l.updated_at DESC
+            """,
+            {"account_id": account_id},
+        ).fetchall()
+
+        result = []
+        for r in rows:
+            base = self._watchlist_row(r, list(r["companies"]))
+            base["counts"] = {
+                "total_active": int(r["total_active"]),
+                "posted_1d": int(r["posted_1d"]),
+                "posted_7d": int(r["posted_7d"]),
+                "posted_30d": int(r["posted_30d"]),
+                "applied": int(r["applied"]),
+            }
+            result.append(base)
+        return result
+
+    # -------------------------------------------------------------------
     # CSV Migration
     # -------------------------------------------------------------------
 
