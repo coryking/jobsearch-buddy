@@ -255,9 +255,45 @@ def find_companies(
     }
 
 
+_WATCHLIST_FILTER_KEYS = {"query", "location_filter", "posted_since", "exclude_companies"}
+
+
+def merge_watchlist_defaults(
+    watchlist: dict,
+    *,
+    query: str,
+    exclude_companies: list[str] | None,
+    location: str,
+    posted_since: str,
+    companies: list[str] | None = None,
+) -> tuple[str, list[str] | None, str, str, list[str] | None]:
+    """Layer a watchlist's saved defaults under caller-passed arguments.
+
+    Explicit caller args win; the watchlist fills in what the caller left
+    empty/None. Returns the resolved (query, exclude_companies, location,
+    posted_since, companies) tuple. The `filter` JSONB shape is the same
+    keyword set as `search_jobs` minus `limit`.
+    """
+    f = watchlist.get("filter") or {}
+    unknown = set(f) - _WATCHLIST_FILTER_KEYS
+    if unknown:
+        raise ValueError(
+            f"watchlist filter has unknown keys: {sorted(unknown)}; "
+            f"allowed: {sorted(_WATCHLIST_FILTER_KEYS)}"
+        )
+
+    resolved_query = query or (f.get("query") or "")
+    resolved_location = location or (f.get("location_filter") or "")
+    resolved_posted_since = posted_since or (f.get("posted_since") or "")
+    resolved_exclude = exclude_companies if exclude_companies else (f.get("exclude_companies") or None)
+    resolved_companies = companies if companies else (watchlist.get("companies") or None)
+    return resolved_query, resolved_exclude, resolved_location, resolved_posted_since, resolved_companies
+
+
 def search_jobs(
     *,
     query: str = "",
+    companies: list[str] | None = None,
     exclude_companies: list[str] | None = None,
     location: str = "",
     posted_since: str = "",
@@ -266,13 +302,15 @@ def search_jobs(
     """Flat ranked job search across the whole stored corpus.
 
     Returns rows ranked by Postgres FTS when `query` is set, or by
-    `published_at DESC` when it is not. Use `survey_jobs_by_companies` for
-    a per-company envelope keyed by slug.
+    `effective_date DESC` when it is not. Optionally scope to a specific
+    `companies` list — useful when called via a watchlist. Use
+    `survey_jobs_by_companies` for a per-company envelope keyed by slug.
 
-    Raises ValueError on an unknown excluded company or a bad duration.
+    Raises ValueError on an unknown company or a bad duration.
     """
     from jobbuddy.store import JobStore
 
+    company_slugs = resolve_company_slugs(companies) if companies else None
     exclude_slugs = resolve_company_slugs(exclude_companies) if exclude_companies else None
     posted_after = parse_duration_to_date(posted_since) if posted_since else None
 
@@ -280,7 +318,7 @@ def search_jobs(
     try:
         rows = store.search_jobs_fts(
             query=query or None,
-            companies=None,
+            companies=company_slugs,
             exclude_companies=exclude_slugs,
             location=location or None,
             posted_after=posted_after,
