@@ -21,6 +21,45 @@ company bios, fused with reciprocal rank fusion.
 This is a practical tool, not enterprise software. Bias toward shipping.
 80% today beats 99% tomorrow.
 
+## Orient
+
+Read [`docs/NORTH_STAR.md`](docs/NORTH_STAR.md) once per fresh context — it
+holds the load-bearing design stance (the calling LLM is the ranker; jsb
+provides evidence; NPOV; workplace-defining facts beat company-press-release
+facts). Tool-description, distill-prompt, and bio-prompt work especially
+should not start without it.
+
+`.claude/rules/` carries the rules the harness picks up automatically:
+[`session-start.md`](.claude/rules/session-start.md),
+[`public-repo.md`](.claude/rules/public-repo.md),
+[`handoff-docs.md`](.claude/rules/handoff-docs.md),
+[`tdd-workflow.md`](.claude/rules/tdd-workflow.md),
+[`migrations.md`](.claude/rules/migrations.md),
+[`sync-pipeline.md`](.claude/rules/sync-pipeline.md),
+[`infrastructure.md`](.claude/rules/infrastructure.md).
+
+## Don't leak DB-derived company intel into public artifacts
+
+The database holds posting-level data scraped from real companies, and the
+operator typically uses it to study hiring patterns at companies they're
+interested in (perennial reqs, GTM-vs-research mix, posting-age outliers,
+named multi-year-old roles, etc.). That analysis is the operator's private
+work product about real third parties.
+
+GitHub issues, PRs, commit messages, branch names, and anything in `docs/` /
+`README.md` / this file are public surfaces. Don't paste named-company
+findings into them — even when the finding is the substantive answer to the
+ticket. Public artifacts should describe the **class** of behavior:
+"Greenhouse listings get touched within ~30d of today regardless of
+`first_published`" — not "$Company has a 1,088-day-old req we can't
+explain."
+
+If you're working a ticket and the genuinely useful evidence is named-
+company data, write the named version to a path *outside* this repo (e.g.
+`~/notes/...`) and link it from chat to the operator. Keep the public
+artifact at the class-of-behavior level. This applies to any
+LLM/agent/contributor working in this repo, not just the original operator.
+
 ## Package Layout
 
 Code lives under `src/jobbuddy/`. Things that aren't obvious from `ls`:
