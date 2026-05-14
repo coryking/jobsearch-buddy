@@ -6,6 +6,14 @@ that is embedded in the `jobsearch.ftl` page source — this fetcher discovers
 it automatically on the first `list_jobs()` call. Set `taleo_portal` in the
 company registry to skip auto-discovery.
 
+The listing endpoint returns rows whose visible cells live under `column[]`:
+`column[0]` is the title, `column[1]` is a JSON-encoded list of locations,
+`column[2]` is the posted-date string (free-form per tenant — `MM/DD/YYYY`
+on some, `Month DD, YYYY` on others; `dateutil.parser` handles both). The
+external job identifier is `contestNo` (the human-facing requisition number)
+with `jobId` as fallback when `contestNo` is absent. The job-field /
+department facet is not in the listing payload and is left None.
+
 Job descriptions are not included in the listing response; the enrich phase
 fetches them individually from the detail page.
 
@@ -14,9 +22,13 @@ Company registry fields:
   - board: subdomain prefix (e.g. "textron" for textron.taleo.net)
   - taleo_section: career section path component (e.g. "textron", "2")
   - taleo_portal: portal ID (optional; auto-discovered from jobsearch.ftl if absent)
+  - taleo_filters: optional dict mapping facet id (e.g. "JOB_FIELD",
+    "LOCATION", "ORGANIZATION") to a list of server-side facet value ids.
+    Empty / absent → unfiltered listing.
 """
 
 import copy
+import json
 import logging
 import re
 import threading
@@ -122,10 +134,12 @@ class TaleoFetcher(ATSFetcher):
         *,
         taleo_section: str = "",
         taleo_portal: str = "",
+        taleo_filters: dict[str, list[str]] | None = None,
     ):
         super().__init__(board, name)
         self.taleo_section = taleo_section or board
         self.taleo_portal = taleo_portal
+        self.taleo_filters = taleo_filters or {}
         self._portal_id: str | None = taleo_portal or None
         self._portal_lock = threading.Lock()
 
@@ -150,12 +164,18 @@ class TaleoFetcher(ATSFetcher):
         resp.raise_for_status()
         html = resp.text
 
-        # Pattern 1: embedded in a REST API URL reference (most reliable)
+        # Pattern 1: locallogoutservlet.jss reference (present on live tenants).
+        # Appears multiple times per page as `locallogoutservlet.jss?portal=NNN&portalCode=...`.
+        m = re.search(r"locallogoutservlet\.jss\?portal=(\d+)", html)
+        if m:
+            return m.group(1)
+
+        # Pattern 2: embedded in a REST API URL reference
         m = re.search(r"rest/jobboard/searchjobs[^\"']*portal=([A-Za-z0-9_-]+)", html)
         if m:
             return m.group(1)
 
-        # Pattern 2: JSON/JS variable with key "portal" or "portalId"
+        # Pattern 3: JSON/JS variable with key "portal" or "portalId"
         m = re.search(r"""['"](portal|portalId)['"]\s*[=:]\s*['"](\d+)['"]""", html)
         if m:
             return m.group(2)
@@ -183,20 +203,45 @@ class TaleoFetcher(ATSFetcher):
     def _list_body(self, page: int) -> dict:
         body = copy.deepcopy(_LIST_BODY_TEMPLATE)
         body["pageNo"] = page
+        if self.taleo_filters:
+            for bucket in body["filterSelectionParam"]["searchFilterSelections"]:
+                values = self.taleo_filters.get(bucket["id"])
+                if values:
+                    bucket["selectedValues"] = list(values)
         return body
 
+    def _parse_location(self, raw: str) -> str:
+        """Decode `column[1]` — a JSON-encoded list string like `["US-Texas-Fort Worth"]`."""
+        if not raw:
+            return ""
+        stripped = raw.strip()
+        if stripped.startswith("["):
+            try:
+                values = json.loads(stripped)
+            except (ValueError, TypeError):
+                return stripped
+            if isinstance(values, list):
+                parts = [str(v).strip() for v in values if v]
+                return "; ".join(parts)
+            return str(values)
+        return stripped
+
     def _parse_requisition(self, item: dict) -> Job | None:
-        """Parse one requisition dict from the REST response."""
+        """Parse one requisition dict from the REST response.
+
+        Live shape (verified against Textron + AAR Corp tenants):
+            {"jobId": "...", "contestNo": "...",
+             "column": [title, locations_json, posted_date, ...], ...}
+        """
         job_id = str(item.get("contestNo") or item.get("jobId") or "")
         if not job_id:
             return None
-        title = item.get("requisitionTitle") or item.get("jobTitle") or ""
-        location = item.get("primaryLocation") or item.get("location") or ""
-        department = item.get("jobField") or item.get("department") or None
 
-        dates = item.get("dates", {}) if isinstance(item.get("dates"), dict) else {}
-        raw_date = dates.get("openingDate") or item.get("postingDate")
-        published_at = _parse_date(raw_date)
+        columns = item.get("column") or []
+        title = str(columns[0]) if len(columns) > 0 and columns[0] else ""
+        location = self._parse_location(str(columns[1])) if len(columns) > 1 and columns[1] else ""
+        raw_date = str(columns[2]) if len(columns) > 2 and columns[2] else ""
+        published_at = _parse_date(raw_date) if raw_date else None
 
         url = self._detail_url(job_id)
         return Job(
@@ -206,7 +251,7 @@ class TaleoFetcher(ATSFetcher):
             url=url,
             apply_url=url,
             published_at=published_at,
-            department=department or None,
+            department=None,
         )
 
     def _fetch_page(
@@ -218,15 +263,19 @@ class TaleoFetcher(ATSFetcher):
     ) -> tuple[list[Job], int]:
         url = self._search_url(portal_id)
         body = self._list_body(page)
+        # The tz header is required: tenants return HTTP 500 without it. Any
+        # non-empty value is accepted; the browser sends an offset like "-480".
+        headers = {"tz": "0"}
 
         def _do():
-            resp = self.client.post(url, json=body)
+            resp = self.client.post(url, json=body, headers=headers)
             resp.raise_for_status()
             return resp.json()
 
         data = self._retry_request(_do, on_retry=on_retry)
         reqs = data.get("requisitionList", [])
-        total = data.get("requisitionCount", len(reqs))
+        paging = data.get("pagingData") or {}
+        total = paging.get("totalCount", len(reqs))
 
         jobs = [j for j in (self._parse_requisition(r) for r in reqs) if j is not None]
         return jobs, total
