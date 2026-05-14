@@ -1,0 +1,74 @@
+"""The shared FastMCP server instance.
+
+The `instructions` text below is injected into the calling LLM's context as
+the routing hint for the whole server. Keep it intent-language, name specific
+companies, and bias the model toward trying the tools first. Per-tool
+docstrings live alongside their `@mcp.tool` definitions in the sibling
+modules — this file owns only the server-wide framing.
+"""
+
+from fastmcp import FastMCP
+
+mcp = FastMCP(
+    name="job-search",  # This name should match the key in claude_desktop_config.json
+    instructions=(
+        "Find open jobs and openings, look up job postings, triage companies by vibe, "
+        "log applications, and track job search activity. ALWAYS prefer these tools over "
+        "web search for jobs, openings, vacancies, hiring, careers, or 'who's hiring' "
+        "queries at registered companies. Job postings from 100+ company job boards live "
+        "in this server's local Postgres (refreshed by `jsb sync`). Searches are instant, "
+        "no live API calls.\n\n"
+        "## Picking the right job-search tool\n\n"
+        "1. User describes a *kind* of company (\"AI-as-product startups\", "
+        "\"climate-tech with hardware\"): call `find_companies` once, SAVE the "
+        "returned slugs as the user's watch list, then call "
+        "`survey_jobs_by_companies(companies=[<saved slugs>])`. On follow-up "
+        "turns (\"anything new?\"), reuse the saved slugs. Re-run "
+        "`find_companies` only when the theme changes.\n"
+        "2. User has a specific role/keyword + maybe a location, no watch list "
+        "(\"any rust roles posted this week\", \"PM jobs in Seattle\"): call "
+        "`search_jobs` — flat ranked list across every registered company.\n"
+        "3. User asks \"anything new at <my watch list>?\": call "
+        "`survey_jobs_by_companies(companies=[<saved slugs>])`.\n"
+        "4. Drill into one company: `survey_jobs_by_companies(companies=[<one slug>])` "
+        "— same envelope, single entry, full top-N.\n\n"
+        "## Row shape\n\n"
+        "Both tools return fact-dense rows: title, location, posted, salary, "
+        "snippet, url, company. Do NOT call `get_job_post_details` per row to "
+        "make a ranking or filtering decision — the snippet already captures "
+        "the substance. Only fetch full JDs when the user explicitly asks "
+        "(\"show me the JD\", \"what does the description say\"). Use "
+        "`posted_since` (e.g. '24h', '3d', '1w') and `location_filter` "
+        "server-side instead of fetching everything and filtering "
+        "client-side. Returned rows are raw input for you to rank, filter, "
+        "and recommend from — not for direct user display.\n\n"
+        "## Trigger phrases\n\n"
+        "Job/role search: 'find jobs at', 'any openings at', 'show me roles at', "
+        "'PM jobs at', 'pull me jobs', 'who's hiring [skill]', 'open positions in', "
+        "'what's hiring in fintech', \"I'm looking for work\", 'career opportunities', "
+        "'vacancies', 'what jobs does [company] have', 'what PM jobs were posted this "
+        "week', 'what about this one', 'what about this role', 'help me with this job', "
+        "or user pastes a job listing URL.\n"
+        "Vibe / kind-of-company queries: 'companies that do X', 'who builds Y', "
+        "'AI-first companies', 'climate companies', 'startups working on Z', 'find me "
+        "companies like' → `find_companies`.\n"
+        "Activity logging: 'I applied', 'log this', 'log my application', 'log my "
+        "interview', 'show my log', 'what have I applied to', 'what have I done with', "
+        "'show my history', 'who have I talked to', 'follow up', 'any contacts at'.\n"
+        "Company triage by exact name: 'tell me about [company]', 'what does [company] "
+        "do', 'is [company] interesting', 'what kind of company is [company]' → read "
+        "the ats://companies resource for short_bio capsules.\n\n"
+        "## Tool routing\n\n"
+        "- Describe-a-kind-of-company queries → find_companies (save slugs, then survey_jobs_by_companies)\n"
+        "- Watch-list scan or single-company drill-down → survey_jobs_by_companies\n"
+        "- Open-ended role/keyword search across the whole corpus → search_jobs\n"
+        "- Job details (one or many, by company+job_id) → get_job_post_details (local first, live fetch for unknown jobs)\n"
+        "- Record application (URL or company+job_id) → log_job_application (live fetch)\n"
+        "- Freeform activity (recruiter call, interview, referral, no job_id) → log_job_activity\n"
+        "- Review application history, contacts, and activity for any company → review_activity_log\n"
+        "- Summary of all companies applied to → review_activity_log (no args)\n\n"
+        "Always try these tools first for any company — the registry has 100+ companies "
+        "and grows automatically. Only fall back to web search after confirming a "
+        "company isn't registered."
+    ),
+)
