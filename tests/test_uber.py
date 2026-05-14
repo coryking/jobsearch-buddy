@@ -158,6 +158,57 @@ class TestUberFetcherInit:
         f = UberFetcher("uber", "Uber Technologies")
         assert f.name == "Uber Technologies"
 
+    def test_default_filters_are_empty(self):
+        f = UberFetcher("uber")
+        assert f._departments == []
+        assert f._teams == []
+        assert f._locations == []
+
+    def test_selected_fields_populates_filters(self):
+        f = UberFetcher(
+            "uber",
+            selected_fields={
+                "department": ["Engineering", "Data Science"],
+                "team": ["Maps"],
+                "location": ["San Francisco"],
+            },
+        )
+        assert f._departments == ["Engineering", "Data Science"]
+        assert f._teams == ["Maps"]
+        assert f._locations == ["San Francisco"]
+
+
+# ---------------------------------------------------------------------------
+# Faucet wiring — request body must reflect configured filters
+# ---------------------------------------------------------------------------
+
+
+class TestFaucetWiring:
+    def test_default_sends_empty_arrays(self):
+        """Backwards-compat: no config -> three empty arrays, byte-identical to prior behavior."""
+        fetcher = _make_fetcher()
+        _mock_post(fetcher, SINGLE_PAGE_RESPONSE)
+        fetcher.list_jobs()
+
+        call = fetcher.client.post.call_args_list[0]
+        payload = call.kwargs.get("json") or call.args[1]
+        assert payload == {"params": {"location": [], "department": [], "team": []}}
+
+    def test_selected_fields_sent_in_body(self):
+        fetcher = UberFetcher(
+            "uber",
+            selected_fields={"department": ["Engineering", "Data Science", "Product"]},
+        )
+        fetcher.client = MagicMock()
+        _mock_post(fetcher, SINGLE_PAGE_RESPONSE)
+        fetcher.list_jobs()
+
+        call = fetcher.client.post.call_args_list[0]
+        payload = call.kwargs.get("json") or call.args[1]
+        assert payload["params"]["department"] == ["Engineering", "Data Science", "Product"]
+        assert payload["params"]["team"] == []
+        assert payload["params"]["location"] == []
+
 
 # ---------------------------------------------------------------------------
 # list_jobs

@@ -57,8 +57,21 @@ class UberFetcher(ATSFetcher):
     descriptions_in_listing = True
     enrich_delay = 0.0
 
-    def __init__(self, board: str, name: str | None = None):
+    def __init__(
+        self,
+        board: str,
+        name: str | None = None,
+        *,
+        selected_fields: dict | None = None,
+    ):
         super().__init__(board, name or "Uber")
+        # Faucet config. Uber's POST API accepts top-level filter arrays under
+        # `params`: OR-within-key, AND-across-keys. Empty arrays = unfiltered.
+        # Plumbed from the company registry via `**kw` in fetchers.__init__.
+        fields = selected_fields or {}
+        self._departments = list(fields.get("department") or [])
+        self._teams = list(fields.get("team") or [])
+        self._locations = list(fields.get("location") or [])
         self.client.headers.update({
             "content-type": "application/json",
             "x-csrf-token": "x",
@@ -71,7 +84,13 @@ class UberFetcher(ATSFetcher):
         *,
         on_retry: RetryCallback | None = None,
     ) -> dict:
-        payload: dict = {"params": {"location": [], "department": [], "team": []}}
+        payload: dict = {
+            "params": {
+                "location": self._locations,
+                "department": self._departments,
+                "team": self._teams,
+            }
+        }
         if offset:
             payload["offset"] = offset
 
