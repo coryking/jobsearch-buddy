@@ -551,6 +551,43 @@ def _parse_google(url: str) -> ParsedURL | None:
 
 
 # ---------------------------------------------------------------------------
+# Taleo
+# ---------------------------------------------------------------------------
+# https://{tenant}.taleo.net/careersection/{section}/jobdetail.ftl?job={id}&lang=en
+
+def _parse_taleo(url: str) -> ParsedURL | None:
+    m = re.search(
+        r"([a-z0-9-]+)\.taleo\.net/careersection/([^/]+)/jobdetail\.ftl",
+        url,
+        re.IGNORECASE,
+    )
+    if not m:
+        return None
+    parsed = urlparse(url)
+    params = parsed.query
+    job_m = re.search(r"(?:^|&)job=([^&]+)", params)
+    if not job_m:
+        return None
+    return ParsedURL(ats="taleo", board=m.group(1), job_id=job_m.group(1))
+
+
+# ---------------------------------------------------------------------------
+# Uber
+# ---------------------------------------------------------------------------
+# https://www.uber.com/careers/apply/form/{id}
+
+def _parse_uber(url: str) -> ParsedURL | None:
+    m = re.search(
+        r"uber\.com/careers/apply/form/(\d+)",
+        url,
+        re.IGNORECASE,
+    )
+    if m:
+        return ParsedURL(ats="uber", board="uber", job_id=m.group(1))
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Dispatcher
 # ---------------------------------------------------------------------------
 
@@ -575,6 +612,8 @@ _PARSERS = [
     _parse_amazon,
     _parse_apple,
     _parse_google,
+    _parse_uber,
+    _parse_taleo,
 ]
 
 
