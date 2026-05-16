@@ -1,75 +1,97 @@
-# State of jsb — 2026-05-15
+# State of jsb — 2026-05-16
 
-First state-of-jsb briefing. Cadence: rewritten by each dream run, not appended.
+Rewritten by each dream run, not appended. Run 2.
 
 ## TL;DR
 
-- **Sync health: degraded but not broken.** 27/647 companies in error state (4.2%). Most are 404s on Ashby/Greenhouse boards that likely renamed or never had a correct slug — corpus quality issue, not scraper-code issue.
-- **One scraper is genuinely broken.** One Workday-adjacent ATS that gates its public endpoint behind a 403 has been failing for 9 days while still holding ~5.9k active job rows in the corpus. Those rows have `description=NULL` and will never re-fetch — they're pure noise in `search_jobs` results.
-- **Corpus body otherwise looks clean.** 99,776 active jobs, 94% have `short_jd`, 0 in the distill backlog, 0 bios older than 90 days, every company embedded.
-- **Two open dream PRs (#65, #67) sitting without operator engagement.** Both ship faucet wiring + correctness fixes for ATSes added in #64. Not urgent, but worth a look before more dream PRs stack up.
+- **Sync health: stable at the same baseline as yesterday.** 28/647 companies in error state (4.3%, vs. 27 yesterday). Net change is within the noise of one daily run — today's deltas are a couple of likely-transient blips and one new persistent-looking 403 against a large-employer careers API.
+- **Headline finding (new shape): orphan-job rows from `ats IS NULL` companies.** Two `companies` rows have their `ats` field cleared but still own `listing_status='active'` jobs. One of them holds the ~5.9k undead rows surfaced in yesterday's briefing — those rows now have a sharper cause: the company was un-wired from the sync pipeline (presumably as a manual workaround for a long-running scraper block), and clearing `ats` does not cascade to `jobs`. The rows remain in `search_jobs` results forever, will never re-fetch, will never distill.
+- **Corpus body looks healthy.** 93,677 / 99,596 active jobs (94%) have `short_jd`. Distill backlog is 0. Bio coverage is 100%: zero companies are missing `long_bio` or `bio_embedding`, and zero bios are older than 90 days.
+- **The two open dream PRs (#65, #67) are still open with no comments since 2026-05-14.** Yesterday's briefing flagged them; today is the second run with no engagement. This briefing is intentionally not stacking a third dream PR on top.
 
-What to look at first: the stale-rows-from-broken-scraper pattern (see below). It's the only finding here that's actively degrading the operator's search results.
+What to look at first: the dream PR pair. If they're not the right shape, that's a signal worth giving back to the routine. If they are, merging them shrinks today's review surface before it grows.
 
 ---
 
 ## Sync health (class-of-behavior)
 
-`sync_status` shows the most-recent attempt per company. 25 of 27 errors are from the daily run; 2 companies have not synced for 9-30 days. The shapes:
+`sync_status` shape is unchanged: most-recent-attempt-wins, no history table. Today's 28 errors break down:
 
-| Shape | Count | Diagnosis |
+| Shape | Count vs. yesterday | Diagnosis |
 |---|---|---|
-| Ashby 404 with `0` active jobs | 11 | Board slug doesn't match the live `/posting-api/job-board/{slug}` endpoint. Either the company removed their public board, or the slug stored at company-registration time was never right. |
-| Greenhouse 404 with `0` active jobs | 6 | Same shape — `boards-api.greenhouse.io/v1/boards/{board}` doesn't resolve. |
-| Greenhouse 404 with active jobs already in corpus | 3 | The board *used* to work, accumulated jobs, then 404'd. Either renamed or removed. |
-| Workday/Eightfold/Tesla 403 | 3 | Endpoint refusing the request. Could be a fingerprint check, a rate-limit, or a permanent block. |
-| Lever 404 | 1 | Same shape as the Greenhouse "moved" case. |
-| Transient disconnect | 1 | One-off; will likely recover on next run. |
-| JSON parse error | 1 | An Eightfold endpoint returned a non-JSON body (probably an HTML error page). |
+| Ashby 404 with 0 jobs in corpus | ~11 (same) | Board slug never resolved or company removed their public board. Config error. |
+| Greenhouse 404 with 0 jobs | ~6 (same) | Same config-error shape. |
+| Greenhouse 404 with jobs already in corpus | ~3 (same) | Board moved/renamed; orphans accumulating slowly. |
+| Workday-style careers-API 403 with jobs in corpus | ~3 (was ~3; one new) | Endpoint refusing requests — fingerprint, rate limit, or permanent block. **One new entry today** against a large-employer careers API holding ~1.9k jobs. Could be transient; worth re-checking next run before treating as a regression. |
+| Lever 404 | 1 (same) | Board moved/renamed. |
+| Transient timeout / 502 | 2 (was 0) | One read timeout, one 502 against a high-volume careers app. Both look like transients tied to a single sync attempt; expect recovery on the next run. |
+| Ashby/Greenhouse with very stale `last_sync` (>30 days) | 2 | These are unregistered (`ats IS NULL`) — see headline below. The `sync_status` row is frozen because the daily sync no longer attempts them. |
 
-**Class-of-behavior takeaway:** when a board slug 404s and the company has 0 jobs, it's almost always a configuration error (wrong slug at registration), not a scraper regression. When it 404s and the company has jobs already, the board moved. The two cases need different fixes — slug-correction vs. row-archival.
+The big stable take: there's no scraper regression visible at the sync-health layer between yesterday and today. The "new" entries today are all consistent with normal daily noise plus one watch-this 403.
 
-This is the use case `#42 (Add explicit company-disable flag)` was filed to address. A flag would let known-broken companies stop burning HTTP calls every day without losing their job history.
+## Headline: `ats IS NULL` orphan jobs
 
-## The stale-corpus pattern (concrete, fix-worthy)
+Two `companies` rows currently have `ats=NULL`. One owns 5,911 active job rows whose descriptions are all NULL. The other owns zero.
 
-When a sync errors **before** it has a job list, the existing `jobs` rows for that company are not touched. They stay `listing_status='active'` indefinitely, with whatever description / short_jd they last had. If the error persists, the corpus accumulates undead listings.
+Sequence of events that produces this state:
+1. A company was registered with a working scraper.
+2. The scraper got blocked at the listing-endpoint layer (a 403 that persisted past the daily-sync threshold).
+3. To stop the sync from burning HTTP calls on a known-broken fetcher, `companies.ats` was set to NULL.
+4. The `jobs` rows for that company kept their `listing_status='active'` value. Nothing in the codebase archives jobs when their parent company's `ats` is cleared.
 
-Today this is one company holding **5,911 such rows**. All have `description IS NULL` — they pre-date the description-enrich phase and will never get one because the fetcher can't get past the 403. They show up in `search_jobs` results with no body to match against.
+The result: undead rows surface in `search_jobs` results, score against FTS like normal postings, and have no `description` to match against — so they degrade snippet quality and inflate the active-jobs headline.
 
-A complete fix has two parts:
-- **Detection** — after a fetch errors, if the company's last successful fetch is >N days old, mark the existing active rows as stale or removed.
-- **Resilience** — for ATSes that 403 a known endpoint, document the regression and either retire the fetcher or add a workaround.
+**Class-of-behavior fix shapes** (no operator action implied yet — the right one is the operator's call):
 
-A partial fix (just the detection half) is small enough to be a PR and grounded enough not to need operator-only judgment. Candidate for next run.
+- **Migration-only cleanup.** A single SQL update that marks all `jobs` where `company_slug IN (SELECT slug FROM companies WHERE ats IS NULL)` as `listing_status='removed'`. One-shot; doesn't prevent recurrence.
+- **Cascade-on-unregister.** Wrap `ats`-clearing in a function that also marks the company's jobs `removed`. Prevents recurrence but assumes there's a single code path that clears `ats` (today there isn't — it's an ad-hoc operator UPDATE).
+- **Search-layer filter.** `search_jobs` excludes rows whose company has `ats IS NULL`. Cheaper than data cleanup, but adds a join to a hot path.
+- **The proper version of #42 (`Add explicit company-disable flag`).** A `disabled` boolean on `companies` whose semantics include "archive my jobs." Replaces the ad-hoc `ats=NULL` pattern entirely.
 
-## Cost (best-effort, no telemetry storage)
+The fourth is the load-bearing fix; the first three are bridges to it.
 
-The DB schema has no per-call distill cost tracking — `jobs.short_jd` lands as a string with no metadata about which model / how many tokens / how much it cost. The dream protocol document references "distill telemetry" but no such table exists.
+## Corpus health
 
-What we *can* see:
-- 0 jobs in the distill backlog. The distill phase is keeping up.
-- 5,916 active jobs have `description=NULL` — 5,911 are from the one stalled scraper above. Those 5,916 will never enter the distill backlog because the predicate requires `description IS NOT NULL`. Cost-neutral, but inflates the "active jobs" headline.
+| Metric | Today | Yesterday |
+|---|---|---|
+| Active jobs | 99,596 | 99,776 |
+| Active jobs with `short_jd` | 93,677 (94%) | ~94% |
+| Distill backlog (active + description + no `short_jd`) | 0 | 0 |
+| Active jobs with `description IS NULL` | 5,919 | 5,916 |
+| → of which from `ats IS NULL` companies | 5,911 | 5,911 |
+| Companies | 694 | 647 |
+| Companies missing `long_bio` | 0 | 0 |
+| Companies missing `bio_embedding` | 0 | 0 |
+| Bios older than 90 days | 0 | 0 |
 
-Cost regression detection is not possible from the current schema. Filed as a candidate.
+The company count jumped 647→694 day-over-day. Worth a sanity-check on next run that the bio + embedding pipeline kept pace with the new arrivals (today's snapshot says yes — 0 missing — but a 47-company bulk add deserves a follow-up sample).
+
+## Cost
+
+Schema still has no per-distill telemetry. The first-order signals visible from row state alone:
+
+- Distill kept up: backlog is 0, same as yesterday.
+- Distill never burns work on the orphan rows: predicate requires `description IS NOT NULL`, which the 5,911 orphans fail.
+- New companies got bios and embeddings without leaving a gap.
+
+Cost regression detection still depends on a telemetry table that does not exist (run 1 candidate #3, still open).
 
 ## What changed lately
 
-`git log --oneline -20 main` headline:
-- Last 7 days: Uber + Oracle Taleo Enterprise ATS support (#64), `core.py`/`mcp_server.py` package split (#61), NORTH_STAR doc + session-continuity rules, account-scoped watchlists (#60).
-- All CI runs on `main` have been green.
+`git log --oneline -20 main` headline: nothing new since yesterday's run-1 commit. CI on `main` is green; no failed deploys.
 
-## Open PR queue
+## Open dream PRs
 
-- **#65** (Uber faucet) — open since 2026-05-14, no comments. Migration `021_uber_company.sql` is the only DB-touching part; everything else is fetcher + tests.
-- **#67** (Taleo correctness fixes) — open since 2026-05-14, no comments. Pure fetcher + tests; no migration. Blocks #66 (Taleo detail-page is JS-rendered) being closed.
+- **#65** (Uber faucet): open since 2026-05-14, no comments through 2 dream runs.
+- **#67** (Taleo correctness fixes): open since 2026-05-14, no comments through 2 dream runs.
 
-Both are from previous dream runs. Neither blocks the other or anything on `main`.
+Neither blocks `main` or each other. The decision this run is to *not* stack a third PR — the bottleneck is review, not code production.
 
 ## Open-question shapes pending operator judgment
 
 Captured in `dream-candidates.md`:
-- "404 with 0 jobs" → fix slug, or disable, or delete the row?
-- "403 with jobs already in corpus" → retry policy, or retire fetcher, or mark stale?
-- Should `sync_status` retain history (append-only) instead of last-attempt-wins?
-- Is `claude-workspace/observations/` the right home for state-of-jsb, or should it land somewhere the operator naturally re-reads?
+- "404 with 0 jobs" — fix slug, disable, or delete the row?
+- "403 with jobs already in corpus" — retry policy, retire fetcher, or mark stale?
+- Should `sync_status` retain history instead of last-attempt-wins?
+- Is `claude-workspace/observations/` the right home for state-of-jsb?
+- (New today) Which of the four `ats IS NULL` orphan-fix shapes does the operator want?
