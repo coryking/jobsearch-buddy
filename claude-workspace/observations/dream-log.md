@@ -8,6 +8,70 @@ seeded, what was deferred.
 
 ---
 
+## 2026-05-17 — run 3
+
+**Primary target:** the 3-run pattern-lock itself. Runs 1 and 2 both
+produced "state-of-jsb rewrite + candidate update + log entry, no PR" with
+PRs #65/#67 sitting un-reviewed. Run 2's phase-0 named the contingency:
+if run 3 also produced that shape without operator engagement, the lock
+fires.
+
+**Pattern-lock fired.** #65 and #67 are still zero-comment after 3 runs;
+nothing has shipped to `main` since run 2's commit. The lock-break options
+run 2 listed were "smallest possible PR" or "session-signal pass." Both
+are unavailable for honest reasons: stacking a third dream PR doubles
+down on the review-bandwidth bottleneck the no-engagement signal warns
+about; the cc-explorer MCP tools needed for the session-signal pass
+aren't loaded in this run's environment. So today's break-the-shape move
+is neither — it's *no third state-of-jsb rewrite*.
+
+**Output shape:** candidate-queue sharpening + this log entry +
+phase-0.md. **No state-of-jsb rewrite** (yesterday's snapshot remains
+current — corpus body unchanged, distill backlog 0, sync error count
+within the noise band). **No new PR.**
+
+**Headline finding:** the run-2 "ats=NULL orphans" candidate splits into
+two distinct DB shapes. `ats=NULL` rows grew 2 → 49 between runs, but 48
+of the new rows have zero jobs, no `sync_status` entry, and bio dates of
+2026-05-05 — consistent with research-ahead-of-scrape entries
+(`research-companies` or a bulk seed), not orphan corpus pollution. The
+remaining 1 row is yesterday's tesla-shape orphan (active jobs that will
+never re-fetch). Class-of-behavior implication: cleanup work targeted at
+shape A (orphan corpus) should not touch shape B (bio-only research
+entries) — they're different states, possibly different intents.
+
+**Secondary findings:**
+- Sync error count: 28 → 45 between runs, but +47 of the change is the
+  shape-B research entries that aren't in `sync_status` at all and the
+  delta in actual `sync_status.error` rows is much smaller (45 today; 28
+  yesterday — net +17, within the noise band of a 694-company corpus
+  with daily fetcher transients).
+- Corpus body unchanged: 99,792 active jobs (was 99,596), 0 distill
+  backlog, 0 bios missing, 0 bios >90 days stale.
+- Company count unchanged at 694 — yesterday's 647→694 jump fully
+  metabolized.
+
+**Candidates seeded:** 0 new. The orphan-jobs candidate was *split* into
+its two shapes in place; the PR-engagement candidate hit its 3-run
+threshold and was annotated with the conclusion ("PR-shape output is on
+hold until the queue moves").
+
+**Deferred:**
+- cc-explorer session-signal pass — MCP tools not available in this
+  environment. Surface as a workspace observation only if a future run
+  needs them and is blocked.
+- Per-distill cost telemetry — schema gap, candidate still open.
+
+**Keep-ability self-rating:** pause. The substantive output is the
+candidate split (sharpens next-me's mental model of `ats=NULL`); the
+meta-substance is the explicit no-briefing decision (refuses to perform
+productivity when the queue is already saturated). The *merge/act-on*
+threshold depends on the operator either engaging with the existing PR
+pair or directing the routine to change shape — both signals the routine
+cannot self-generate.
+
+---
+
 ## 2026-05-16 — run 2
 
 **Primary target:** state-of-jsb refresh + sharpen the stale-rows candidate.

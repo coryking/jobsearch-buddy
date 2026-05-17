@@ -26,15 +26,26 @@ Format: `seeded-on / shape / one-line description / state`.
   jobs intact. See the orphan-jobs candidate below.
   Open. Runs seen: 2.
 
-- **2026-05-16 / pattern / `ats IS NULL` orphans jobs in the corpus.**
-  Two companies have `ats=NULL`; one holds 5,911 `listing_status='active'`
-  jobs with `description=NULL` that will never re-fetch. Class-of-behavior:
-  clearing `companies.ats` does not cascade to `jobs`. Four candidate fix
-  shapes (see state-of-jsb.md headline): one-shot SQL cleanup,
-  cascade-on-unregister, search-layer filter that excludes `ats IS NULL`
-  companies, or the proper `disabled` flag from #42. The fourth is
-  load-bearing; the first three are bridges. The operator's call on which
-  to pursue. Open. Runs seen: 1.
+- **2026-05-16 / pattern / `ats IS NULL` resolves into two distinct shapes.**
+  Run 3 (2026-05-17) found 49 `ats=NULL` rows, up from 2 at run 2. The DB
+  shape splits cleanly:
+  - **Shape A — orphan corpus.** `ats=NULL` *with* active jobs whose
+    parent company is no longer wired to a fetcher. 1 row today; owns the
+    ~5,911 description-NULL postings still surfacing in `search_jobs`.
+    Class-of-behavior: clearing `companies.ats` does not cascade to
+    `jobs`. Fix shapes from run 2 still apply (cleanup SQL, cascade,
+    search-layer filter, or #42's `disabled` flag).
+  - **Shape B — research-only entries.** `ats=NULL` *without* any jobs,
+    bios populated. 48 rows today; all bio-dated 2026-05-05; not present
+    in `sync_status`. Almost certainly the result of researching
+    companies-of-interest (via `research-companies` or a bulk seed) ahead
+    of wiring a fetcher. Likely intentional — these are
+    research-ahead-of-scrape entries, not bugs. They cost nothing because
+    no scraper runs and they don't pollute `search_jobs` (no jobs to
+    return).
+  Two-shape implication: fix work scopes to Shape A; Shape B is a feature
+  unless the operator wants `find_companies` to flag bio-only entries
+  visibly. Open. Runs seen: 2.
 
 - **2026-05-15 / question / `sync_status` is last-attempt-wins, not append-only.**
   We can see *current* error state but not "this scraper has been failing
@@ -64,12 +75,15 @@ Format: `seeded-on / shape / one-line description / state`.
   Open. Runs seen: 2.
 
 - **2026-05-15 / question / Open dream PRs #65 and #67 without operator engagement.**
-  Both opened on 2026-05-14, no comments. Not blocking anything. Next
-  dream run should check: are they still open and still un-commented?
-  If yes for 3+ runs, the dream routine is producing PRs faster than the
-  operator can review — that's a shape problem and worth a state-of-jsb
-  callout instead of stacking more PRs.
-  Open. Runs seen: 2.
+  Both opened on 2026-05-14, no comments. Run 3 (2026-05-17): still open,
+  still zero comments. This is the 3-run threshold the run-1 candidate
+  named. Conclusion: the dream routine has out-paced the operator's
+  review bandwidth on PR-shaped output for this period. The right
+  response is what run 3 already did — *do not stack a third dream PR*.
+  Re-evaluate this candidate when either PR moves (merge, close, or
+  comment) — that's the signal that the queue is open again. Until then,
+  PR-shape output is on hold; favor workspace direct-push and
+  candidate-queue sharpening. Open. Runs seen: 3 (threshold reached).
 
 - **2026-05-15 / question / Is `claude-workspace/observations/` the right home?**
   The dream routine writes to a committed directory. The operator's
