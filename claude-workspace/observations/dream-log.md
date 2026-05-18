@@ -8,6 +8,47 @@ seeded, what was deferred.
 
 ---
 
+## 2026-05-18 — run 4
+
+**Primary target:** keep the meta-process honest. Run 3 already broke the
+"state-of-jsb rewrite" reflex; run 4's risk is forming a *new* lock around
+"candidate-update + log entry only." Phase 0 names the run-5 escalation
+clause so the threshold is fixed in writing instead of drifting.
+
+**Output shape:** phase-0.md + this log entry + candidate-queue bump on
+the open-dream-PR-engagement entry (runs seen 3 → 4 with run-5 clause).
+**No state-of-jsb rewrite. No PR. No new candidates.**
+
+**Headline finding:** there isn't one. The corpus body is materially
+unchanged across the four-day window: active_jobs 99,792 → 99,674 (within
+daily fetcher noise), distill backlog 0, `ats=NULL` rows stable at 49
+(1 Shape A + 48 Shape B per run 3), bios 100% covered. Sync errors 45 →
+48 (+3, within the noise band of a 694-company corpus). PRs #65 and #67
+remain open with zero comments — run 4 of zero engagement.
+
+**Negative-space audit:** cc-explorer session-signal pass was deferred
+runs 1–3. The `project-mining:cc-explorer` skill is available in this
+environment, but the value of a session-signal scan is highest when
+there's a working session for the operator to re-enter. With zero
+PR engagement in four runs, scanning for finer-grained patterns would
+produce evidence nobody is currently in a position to act on. Honest
+skip beats performative scan.
+
+**Candidates seeded:** 0 new. The open-PR-engagement candidate gained a
+run-5 escalation clause (pause routine / change cadence / PR `dream.md`
+itself) so the next run has a fixed threshold instead of soft-drift.
+
+**Deferred (unchanged):** cc-explorer session-signal pass; per-distill
+cost telemetry (schema gap, needs operator call on shape).
+
+**Keep-ability self-rating:** pause — borderline trash. The substantive
+value is the run-5 escalation clause; everything else is bookkeeping. If
+the operator finds the bookkeeping useful, *pause*. If they're not
+reading these at all, *trash* — and that's itself the signal the run-5
+clause is designed to catch.
+
+---
+
 ## 2026-05-17 — run 3
 
 **Primary target:** the 3-run pattern-lock itself. Runs 1 and 2 both

@@ -75,15 +75,15 @@ Format: `seeded-on / shape / one-line description / state`.
   Open. Runs seen: 2.
 
 - **2026-05-15 / question / Open dream PRs #65 and #67 without operator engagement.**
-  Both opened on 2026-05-14, no comments. Run 3 (2026-05-17): still open,
-  still zero comments. This is the 3-run threshold the run-1 candidate
-  named. Conclusion: the dream routine has out-paced the operator's
-  review bandwidth on PR-shaped output for this period. The right
-  response is what run 3 already did — *do not stack a third dream PR*.
-  Re-evaluate this candidate when either PR moves (merge, close, or
-  comment) — that's the signal that the queue is open again. Until then,
-  PR-shape output is on hold; favor workspace direct-push and
-  candidate-queue sharpening. Open. Runs seen: 3 (threshold reached).
+  Both opened on 2026-05-14, no comments. Run 4 (2026-05-18): still open,
+  still zero comments. PR-shape output remains on hold; favor workspace
+  direct-push and candidate-queue sharpening until either PR moves
+  (merge, close, or comment). **Run-5 escalation clause:** if run 5 also
+  produces only candidate-update + log-entry with no briefing and no PR,
+  and #65/#67 are still zero-comment, the meta-process is the primary
+  target. Candidate fix shapes at that point: pause the routine, change
+  trigger cadence, or PR `dream.md` itself to shrink protocol to match
+  observed reality. Open. Runs seen: 4.
 
 - **2026-05-15 / question / Is `claude-workspace/observations/` the right home?**
   The dream routine writes to a committed directory. The operator's
