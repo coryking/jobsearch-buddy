@@ -400,16 +400,33 @@ class TestEffectiveDate:
         ids = {r["job_id"] for r in rows}
         assert ids == {"refreshed"}
 
-    def test_query_orders_by_effective_date(self, store):
+    def test_query_orders_by_freshness_bucket_then_effective_date(self, store):
+        """Within a freshness bucket (on published_at), rows order by
+        effective_date DESC — so a recently-touched listing still beats a
+        non-touched listing of the same publish-age. But across buckets
+        the bucket dominates: a stale-published listing (bucket 3) sits
+        below any non-stale listing regardless of its ATS-touch date.
+        See the freshness-bucket ranking discussion in core/search.py.
+        """
+        from datetime import date, timedelta
+
+        today = date.today()
         store.upsert_jobs("acme", [
-            make_job("a", published_at="2026-04-01"),
-            make_job("b", published_at="2019-01-01",
-                     last_listing_update="2026-05-01"),
-            make_job("c", published_at="2026-03-01"),
+            # Bucket 0 (<=7d), no touch.
+            make_job("fresh", published_at=(today - timedelta(days=3)).isoformat()),
+            # Bucket 0 (<=7d), recently touched — same bucket as `fresh`,
+            # but effective_date is newer, so it sorts above.
+            make_job("fresh-touched",
+                     published_at=(today - timedelta(days=5)).isoformat(),
+                     last_listing_update=today.isoformat()),
+            # Bucket 3 (older than 90d), recently touched — drops below
+            # the bucket-0 rows even though its effective_date is today.
+            make_job("stale-touched",
+                     published_at="2019-01-01",
+                     last_listing_update=today.isoformat()),
         ])
         rows = store.query_jobs(companies=["acme"])
-        # b's effective_date is 2026-05-01 (newest), so it comes first
-        assert [r["job_id"] for r in rows] == ["b", "a", "c"]
+        assert [r["job_id"] for r in rows] == ["fresh-touched", "fresh", "stale-touched"]
 
 
 class TestFullTextSearch:

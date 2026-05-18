@@ -182,27 +182,116 @@ class TestListWithCounts:
 
 
 class TestMergeDefaults:
-    def test_explicit_args_win(self):
+    """The watchlist saved filter is a *view*: caller args compose with it,
+    not override it. Queries AND, companies intersect, exclusions union,
+    date floors take the stricter cutoff.
+    """
+
+    def test_only_caller_args(self):
+        wl = {"filter": {}, "companies": []}
+        q, ex, loc, since, comp, pubsince = merge_watchlist_defaults(
+            wl, query="python", exclude_companies=None,
+            location="", posted_since="",
+        )
+        assert q == "python"
+        assert comp is None  # no watchlist companies
+
+    def test_only_watchlist_args(self):
         wl = {
             "filter": {"query": "rust", "posted_since": "7d"},
             "companies": ["acme"],
         }
-        q, ex, loc, since, comp = merge_watchlist_defaults(
-            wl, query="python", exclude_companies=None,
-            location="", posted_since="",
-        )
-        assert q == "python"  # caller overrode
-        assert since == "7d"  # watchlist filled it in
-        assert comp == ["acme"]
-
-    def test_caller_companies_override_watchlist(self):
-        wl = {"filter": {}, "companies": ["acme"]}
-        _, _, _, _, comp = merge_watchlist_defaults(
+        q, ex, loc, since, comp, pubsince = merge_watchlist_defaults(
             wl, query="", exclude_companies=None,
             location="", posted_since="",
-            companies=["beta"],
+        )
+        assert q == "rust"
+        assert since == "7d"
+        assert comp == ["acme"]
+
+    def test_query_composes_with_AND(self):
+        wl = {
+            "filter": {"query": "engineer or pm"},
+            "companies": ["acme"],
+        }
+        q, *_ = merge_watchlist_defaults(
+            wl, query="rust", exclude_companies=None,
+            location="", posted_since="",
+        )
+        # Both queries apply; FTS sees (watchlist) AND (caller).
+        assert q == "(engineer or pm) AND (rust)"
+
+    def test_caller_companies_intersect_watchlist(self):
+        wl = {"filter": {}, "companies": ["acme", "beta", "good"]}
+        _, _, _, _, comp, _ = merge_watchlist_defaults(
+            wl, query="", exclude_companies=None,
+            location="", posted_since="",
+            companies=["beta", "bad"],  # "bad" not in watchlist
         )
         assert comp == ["beta"]
+
+    def test_empty_company_intersect_raises(self):
+        from jobbuddy.core.search import EmptyCompanyIntersectError
+        wl = {"filter": {}, "companies": ["acme"]}
+        with pytest.raises(EmptyCompanyIntersectError):
+            merge_watchlist_defaults(
+                wl, query="", exclude_companies=None,
+                location="", posted_since="",
+                companies=["beta"],
+            )
+
+    def test_exclude_companies_union(self):
+        wl = {
+            "filter": {"exclude_companies": ["microsoft"]},
+            "companies": [],
+        }
+        _, ex, _, _, _, _ = merge_watchlist_defaults(
+            wl, query="", exclude_companies=["meta"],
+            location="", posted_since="",
+        )
+        assert set(ex) == {"microsoft", "meta"}
+
+    def test_posted_since_stricter_wins(self):
+        wl = {
+            "filter": {"posted_since": "30d"},
+            "companies": [],
+        }
+        _, _, _, since, _, _ = merge_watchlist_defaults(
+            wl, query="", exclude_companies=None,
+            location="", posted_since="1w",
+        )
+        # 1w (7d) is stricter than 30d → caller wins.
+        assert since == "1w"
+
+        _, _, _, since2, _, _ = merge_watchlist_defaults(
+            wl, query="", exclude_companies=None,
+            location="", posted_since="90d",
+        )
+        # 30d is stricter than 90d → watchlist wins.
+        assert since2 == "30d"
+
+    def test_published_since_composes(self):
+        wl = {
+            "filter": {"published_since": "30d"},
+            "companies": [],
+        }
+        *_, pubsince = merge_watchlist_defaults(
+            wl, query="", exclude_companies=None,
+            location="", posted_since="",
+            published_since="1w",
+        )
+        assert pubsince == "1w"  # stricter
+
+    def test_location_AND_stacks(self):
+        wl = {"filter": {"location_filter": "seattle,remote"}, "companies": []}
+        _, _, loc, _, _, _ = merge_watchlist_defaults(
+            wl, query="", exclude_companies=None,
+            location="us", posted_since="",
+        )
+        # AND-joined via the && sentinel; store splits and ANDs the groups.
+        assert "&&" in loc
+        assert "seattle,remote" in loc
+        assert "us" in loc
 
     def test_rejects_unknown_filter_keys(self):
         wl = {"filter": {"bogus": 1}, "companies": []}
@@ -211,6 +300,14 @@ class TestMergeDefaults:
                 wl, query="", exclude_companies=None,
                 location="", posted_since="",
             )
+
+    def test_published_since_is_allowed_filter_key(self):
+        wl = {"filter": {"published_since": "1w"}, "companies": []}
+        # Should not raise — published_since is in WATCHLIST_FILTER_KEYS.
+        merge_watchlist_defaults(
+            wl, query="", exclude_companies=None,
+            location="", posted_since="",
+        )
 
 
 class TestSearchJobsWatchlistIntegration:
@@ -232,11 +329,12 @@ class TestSearchJobsWatchlistIntegration:
         assert wl is not None
 
         from jobbuddy.core import merge_watchlist_defaults
-        q, ex, loc, since, comp = merge_watchlist_defaults(
+        q, ex, loc, since, comp, pubsince = merge_watchlist_defaults(
             wl, query="", exclude_companies=None, location="", posted_since="",
         )
         rows = search_jobs(query=q, companies=comp, exclude_companies=ex,
-                           location=loc, posted_since=since, limit=20)
+                           location=loc, posted_since=since,
+                           published_since=pubsince, limit=20)
         slugs = {r.company_slug for r in rows}
         assert slugs == {"acme", "beta"}  # `good` was not in the watchlist
 
@@ -256,38 +354,47 @@ class TestSearchJobsWatchlistIntegration:
             filter={"query": "engineer"},
         )
         wl = store.get_watchlist(test_account.id, "se")
-        q, ex, loc, since, comp = merge_watchlist_defaults(
+        q, ex, loc, since, comp, pubsince = merge_watchlist_defaults(
             wl, query="", exclude_companies=None, location="", posted_since="",
         )
         rows = search_jobs(query=q, companies=comp, exclude_companies=ex,
-                           location=loc, posted_since=since, limit=20)
+                           location=loc, posted_since=since,
+                           published_since=pubsince, limit=20)
         ids = {r.job_id for r in rows}
         assert "match" in ids
         assert "miss" not in ids
 
-    def test_explicit_query_overrides_saved(self, store: JobStore, test_account: Account):
+    def test_caller_query_composes_with_saved(self, store: JobStore, test_account: Account):
+        """Caller query AND-stacks with watchlist saved query — both must match.
+        Replaces the prior override-semantic test.
+        """
         from jobbuddy.core import merge_watchlist_defaults, search_jobs
 
         today = date.today()
         store.upsert_jobs("acme", [
-            make_job(id="rust", title="rust engineer",
-                     published_at=today, description="rust"),
-            make_job(id="python", title="python engineer",
-                     published_at=today, description="python"),
+            # Matches both "engineer" (saved) and "rust" (caller).
+            make_job(id="both", title="rust engineer",
+                     published_at=today, description="rust engineer"),
+            # Matches saved but not caller.
+            make_job(id="engineer-only", title="python engineer",
+                     published_at=today, description="python engineer"),
+            # Matches caller but not saved.
+            make_job(id="rust-only", title="rust developer",
+                     published_at=today, description="rust developer"),
         ])
         store.create_watchlist(
             test_account.id, slug="se", name="se",
             company_slugs=["acme"],
-            filter={"query": "rust"},
+            filter={"query": "engineer"},
         )
         wl = store.get_watchlist(test_account.id, "se")
-        q, ex, loc, since, comp = merge_watchlist_defaults(
-            wl, query="python",  # caller override
+        q, ex, loc, since, comp, pubsince = merge_watchlist_defaults(
+            wl, query="rust",
             exclude_companies=None, location="", posted_since="",
         )
-        assert q == "python"
+        assert q == "(engineer) AND (rust)"
         rows = search_jobs(query=q, companies=comp, exclude_companies=ex,
-                           location=loc, posted_since=since, limit=20)
+                           location=loc, posted_since=since,
+                           published_since=pubsince, limit=20)
         ids = {r.job_id for r in rows}
-        assert "python" in ids
-        assert "rust" not in ids
+        assert ids == {"both"}

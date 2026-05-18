@@ -409,6 +409,21 @@ class JobStore:
                 (slug, now, len(jobs)),
             )
 
+    # Freshness bucket on published_at: 0=<=7d, 1=<=30d, 2=<=90d, 3=older.
+    # Prepended to ORDER BY in the job-search path so old-but-touched
+    # evergreens stop bleeding into the tail of result sets. Computed at
+    # query time — no index needed because the bucket is the *primary*
+    # sort, then the existing effective_date / rank index does the
+    # within-bucket ordering.
+    _FRESHNESS_BUCKET_EXPR: LiteralString = (
+        "CASE "
+        "WHEN j.published_at IS NULL THEN 3 "
+        "WHEN CURRENT_DATE - j.published_at <= 7 THEN 0 "
+        "WHEN CURRENT_DATE - j.published_at <= 30 THEN 1 "
+        "WHEN CURRENT_DATE - j.published_at <= 90 THEN 2 "
+        "ELSE 3 END"
+    )
+
     def query_jobs(
         self,
         *,
@@ -417,6 +432,7 @@ class JobStore:
         title: str | None = None,
         location: str | None = None,
         posted_after: str | None = None,
+        published_after: str | None = None,
         include_removed: bool = False,
         limit: int = 100,
     ) -> list[dict]:
@@ -430,10 +446,12 @@ class JobStore:
         conditions, params = self._build_filter_conditions(
             companies=companies, exclude_companies=exclude_companies,
             title=title, location=location, posted_after=posted_after,
+            published_after=published_after,
             include_removed=include_removed,
         )
 
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        bucket = self._FRESHNESS_BUCKET_EXPR
 
         if companies and len(companies) == 1:
             params.append(limit)
@@ -443,7 +461,7 @@ class JobStore:
                 LEFT JOIN sync_status s ON j.company_slug = s.company_slug
                 LEFT JOIN companies c ON j.company_slug = c.slug
                 {where}
-                ORDER BY j.effective_date DESC
+                ORDER BY {bucket}, j.effective_date DESC
                 LIMIT %s
             """
         else:
@@ -451,30 +469,34 @@ class JobStore:
             params.append(pool_size)
             sql = f"""
                 WITH base AS (
-                    SELECT j.*, s.last_sync, c.name AS company_name
+                    SELECT j.*, s.last_sync, c.name AS company_name,
+                           {bucket} AS freshness_bucket
                     FROM jobs j
                     LEFT JOIN sync_status s ON j.company_slug = s.company_slug
                     LEFT JOIN companies c ON j.company_slug = c.slug
                     {where}
-                    ORDER BY j.effective_date DESC
+                    ORDER BY freshness_bucket, j.effective_date DESC
                     LIMIT %s
                 ),
                 ranked AS (
                     SELECT *,
                            ROW_NUMBER() OVER (
                                PARTITION BY company_slug
-                               ORDER BY effective_date DESC
+                               ORDER BY freshness_bucket, effective_date DESC
                            ) AS rn
                     FROM base
                 )
                 SELECT * FROM ranked
-                ORDER BY rn, effective_date DESC
+                ORDER BY rn, freshness_bucket, effective_date DESC
                 LIMIT %s
             """
             params.append(limit)
 
         rows = self.conn.execute(sql, params).fetchall()
-        return [{k: v for k, v in dict(row).items() if k != "rn"} for row in rows]
+        return [
+            {k: v for k, v in dict(row).items() if k not in ("rn", "freshness_bucket")}
+            for row in rows
+        ]
 
     def search_jobs_fts(
         self,
@@ -484,6 +506,7 @@ class JobStore:
         exclude_companies: list[str] | None = None,
         location: str | None = None,
         posted_after: str | None = None,
+        published_after: str | None = None,
         include_removed: bool = False,
         limit: int = 20,
     ) -> list[dict]:
@@ -506,16 +529,21 @@ class JobStore:
         conditions, params = self._build_filter_conditions(
             companies=companies, exclude_companies=exclude_companies,
             title=query, location=location, posted_after=posted_after,
+            published_after=published_after,
             include_removed=include_removed,
         )
 
         ts_rank_expr = "ts_rank(j.fts_vector, websearch_to_tsquery('english', %s))"
+        bucket = self._FRESHNESS_BUCKET_EXPR
         select_extra = ""
-        order_inner = "j.effective_date DESC, j.company_slug, j.job_id"
+        # Freshness bucket leads the ORDER BY so stale-but-touched listings
+        # stop bleeding into the tail of the result set; existing rank /
+        # effective_date tie-breakers operate within each bucket.
+        order_inner = f"{bucket}, j.effective_date DESC, j.company_slug, j.job_id"
         if query:
             select_extra = f", {ts_rank_expr} AS rank"
             params.insert(0, query)  # bound to the SELECT-list ts_rank
-            order_inner = "rank DESC, " + order_inner
+            order_inner = f"{bucket}, rank DESC, j.effective_date DESC, j.company_slug, j.job_id"
 
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
 
@@ -548,6 +576,7 @@ class JobStore:
         exclude_companies: list[str] | None = None,
         location: str | None = None,
         posted_after: str | None = None,
+        published_after: str | None = None,
         include_removed: bool = False,
         top_per_company: int = 3,
     ) -> dict[str, dict]:
@@ -576,6 +605,7 @@ class JobStore:
                 exclude_companies=exclude_companies,
                 location=location,
                 posted_after=posted_after,
+                published_after=published_after,
                 include_removed=include_removed,
                 top_per_company=top_per_company,
             )
@@ -589,6 +619,7 @@ class JobStore:
         exclude_companies: list[str] | None,
         location: str | None,
         posted_after: str | None,
+        published_after: str | None,
         include_removed: bool,
         top_per_company: int,
     ) -> dict:
@@ -599,6 +630,7 @@ class JobStore:
             title=query,
             location=location,
             posted_after=posted_after,
+            published_after=published_after,
             include_removed=include_removed,
         )
         count_where = f"WHERE {' AND '.join(count_conditions)}" if count_conditions else ""
@@ -609,14 +641,18 @@ class JobStore:
 
         entry: dict = {"matches": matches}
 
-        # --- count without the date filter (diagnostic for "should the user widen the window?")
-        if posted_after:
+        # --- count without the date filter (diagnostic for "should the user
+        # widen the window?"). Triggered when either posted_after OR
+        # published_after is set; the diagnostic strips both so the count
+        # reflects the universe before any recency narrowing.
+        if posted_after or published_after:
             no_date_conditions, no_date_params = self._build_filter_conditions(
                 companies=[slug],
                 exclude_companies=exclude_companies,
                 title=query,
                 location=location,
                 posted_after=None,
+                published_after=None,
                 include_removed=include_removed,
             )
             no_date_where = (
@@ -638,11 +674,15 @@ class JobStore:
             title=query,
             location=location,
             posted_after=posted_after,
+            published_after=published_after,
             include_removed=include_removed,
         )
 
         select_extra = ""
-        order_by = "j.effective_date DESC, j.company_slug, j.job_id"
+        bucket = self._FRESHNESS_BUCKET_EXPR
+        # Freshness bucket leads each per-company envelope's top so the
+        # within-company ordering matches the flat-search ordering.
+        order_by = f"{bucket}, j.effective_date DESC, j.company_slug, j.job_id"
         if query:
             ts_rank_expr = "ts_rank(j.fts_vector, websearch_to_tsquery('english', %s))"
             headline_expr = (
@@ -656,7 +696,7 @@ class JobStore:
             )
             # Bind order: [rank-query, headline-query, headline-opts] then existing filter params.
             top_params = [query, query, self._HEADLINE_OPTS] + top_params
-            order_by = "rank DESC, " + order_by
+            order_by = f"{bucket}, rank DESC, j.effective_date DESC, j.company_slug, j.job_id"
 
         top_where = f"WHERE {' AND '.join(top_conditions)}" if top_conditions else ""
         top_params.append(top_per_company)
@@ -940,6 +980,7 @@ class JobStore:
         title: str | None = None,
         location: str | None = None,
         posted_after: str | None = None,
+        published_after: str | None = None,
         include_removed: bool = False,
     ) -> tuple[list[LiteralString], list]:
         """Build WHERE conditions and params for job search filters."""
@@ -965,13 +1006,27 @@ class JobStore:
             conditions.append("j.effective_date >= %s")
             params.append(posted_after)
 
+        if published_after:
+            # Strict original-publish filter — bypasses ATS update-bumps.
+            # Use when "fresh" must mean "newly created," not "evergreen
+            # with a recent touch."
+            conditions.append("j.published_at >= %s")
+            params.append(published_after)
+
         if title:
             conditions.append("j.fts_vector @@ websearch_to_tsquery('english', %s)")
             params.append(title)
 
         if location:
-            terms = [t.strip() for t in location.split(",") if t.strip()]
-            if terms:
+            # AND-stack groups split on the "&&" sentinel (used when a
+            # watchlist's saved location is composed with a caller's
+            # location — both must match). Each group is comma-split for
+            # OR. Single-group input is the original behavior.
+            groups = [g.strip() for g in location.split("&&") if g.strip()]
+            for group in groups:
+                terms = [t.strip() for t in group.split(",") if t.strip()]
+                if not terms:
+                    continue
                 or_clauses: list[LiteralString] = ["j.location ILIKE %s"] * len(terms)
                 conditions.append("(" + " OR ".join(or_clauses) + ")")
                 params.extend(f"%{t}%" for t in terms)

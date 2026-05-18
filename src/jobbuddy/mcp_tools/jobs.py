@@ -130,14 +130,17 @@ def get_job_post_details(
 def search_jobs(
     query: Annotated[str, Field(default="", description=QUERY_FIELD_DESC)] = "",
     watchlist: Annotated[str, Field(default="", description=(
-        "Watchlist slug to scope this search against. Loads the watchlist's "
-        "saved companies and filter defaults (query, location_filter, "
-        "posted_since, exclude_companies) as a base; any explicitly-passed "
-        "param overrides. List available watchlists with `watchlist_list`."
+        "Watchlist slug to scope this search to. The watchlist is a *view* — "
+        "its saved companies and filter (query, location_filter, posted_since, "
+        "published_since, exclude_companies) are composed with any caller-"
+        "passed params: queries AND, locations AND, companies intersect, "
+        "exclusions union, date floors take whichever is stricter. List "
+        "available watchlists with `watchlist_list`."
     ))] = "",
     exclude_companies: Annotated[list[str], Field(default=[], description="Companies the user has ruled out (e.g. ['microsoft', 'meta']).")] = [],
     location_filter: Annotated[str, Field(default="", description="Where the user wants to work. Substring match on the posting's location field. Comma-separated for OR (e.g. 'seattle,remote').")] = "",
-    posted_since: Annotated[str, Field(default="", description="How recent the user wants. Examples: '24h', '3d', '1w', '2w'. Use this instead of fetching everything and filtering client-side.")] = "",
+    posted_since: Annotated[str, Field(default="", description="ATS-freshness window — matches publish OR most-recent ATS update. Examples: '24h', '3d', '1w', '2w'. Use this for 'show me what the ATS still considers fresh.' For 'originally posted in this window' (bypasses evergreen-touch bumps), use `published_since`.")] = "",
+    published_since: Annotated[str, Field(default="", description="Strict original-publish window — matches `published_at` only, ignoring ATS update-bumps. Use when 'fresh' must mean 'newly created,' not 'evergreen with a recent touch.' Examples: '24h', '3d', '1w', '2w'.")] = "",
     limit: Annotated[int, Field(default=20, ge=1, le=100, description="Max rows to return across the whole corpus. Default 20, hard cap 100.")] = 20,
     account: Account = CurrentAccount(),
 ) -> list[JobRow]:
@@ -149,9 +152,17 @@ def search_jobs(
     For a watch-list-scoped scan or per-company breakdown, use
     `survey_jobs_by_companies` instead.
 
-    Pass `watchlist=<slug>` to scope to a saved watchlist — its companies
-    and filter become defaults, any explicit param overrides. Call
-    `watchlist_list` first to see what's saved.
+    Pass `watchlist=<slug>` to scope to a saved watchlist. The watchlist is
+    treated as a **view, not a default**: its saved filter is composed with
+    any caller-passed params (queries AND, locations AND, companies
+    intersect, exclusions union, date floors take whichever is stricter).
+    Call `watchlist_list` first to see what's saved.
+
+    `posted_since` vs `published_since`: `posted_since` matches ATS-side
+    freshness (publish OR last update) — good for \"what the ATS still
+    considers fresh.\" `published_since` matches original publish only —
+    use when the user wants newly-created roles and evergreen-with-recent-
+    touch listings would be misleading.
 
     Rows are fact-dense (snippet + salary + posted + location inline), so
     do NOT call `get_job_post_details` per row to rank or filter — only
@@ -161,6 +172,7 @@ def search_jobs(
     the registry seems empty, suggest the human run `jsb sync` to refresh."""
     from jobbuddy.core import merge_watchlist_defaults
     from jobbuddy.core import search_jobs as core_search_jobs
+    from jobbuddy.core.search import EmptyCompanyIntersectError
     from jobbuddy.store import JobStore
 
     companies: list[str] | None = None
@@ -170,13 +182,23 @@ def search_jobs(
         if not wl:
             return []  # unknown slug for this account — empty result, not an error
         try:
-            query, exclude_companies_resolved, location_filter, posted_since, companies = merge_watchlist_defaults(
+            (
+                query,
+                exclude_companies_resolved,
+                location_filter,
+                posted_since,
+                companies,
+                published_since,
+            ) = merge_watchlist_defaults(
                 wl,
                 query=query,
                 exclude_companies=exclude_companies or None,
                 location=location_filter,
                 posted_since=posted_since,
+                published_since=published_since,
             )
+        except EmptyCompanyIntersectError:
+            return []  # caller's companies sit outside the watchlist universe
         except ValueError:
             return []  # corrupted filter shape; bail rather than crash the tool
         exclude_companies = exclude_companies_resolved or []
@@ -187,6 +209,7 @@ def search_jobs(
         exclude_companies=exclude_companies or None,
         location=location_filter,
         posted_since=posted_since,
+        published_since=published_since,
         limit=limit,
     )
     decorate_applied(rows, account.id)
@@ -203,7 +226,8 @@ def survey_jobs_by_companies(
     query: Annotated[str, Field(default="", description=QUERY_FIELD_DESC)] = "",
     exclude_companies: Annotated[list[str], Field(default=[], description="Companies the user has ruled out (e.g. ['microsoft', 'meta']).")] = [],
     location_filter: Annotated[str, Field(default="", description="Where the user wants to work. Substring match on the posting's location field. Comma-separated for OR (e.g. 'seattle,remote').")] = "",
-    posted_since: Annotated[str, Field(default="", description="How recent the user wants. Examples: '24h', '3d', '1w', '2w'. Use this instead of fetching everything and filtering client-side.")] = "",
+    posted_since: Annotated[str, Field(default="", description="ATS-freshness window — matches publish OR most-recent ATS update. Examples: '24h', '3d', '1w', '2w'. Use this for 'show me what the ATS still considers fresh.' For 'originally posted in this window' (bypasses evergreen-touch bumps), use `published_since`.")] = "",
+    published_since: Annotated[str, Field(default="", description="Strict original-publish window — matches `published_at` only, ignoring ATS update-bumps. Use when 'fresh' must mean 'newly created,' not 'evergreen with a recent touch.' Examples: '24h', '3d', '1w', '2w'.")] = "",
     top_per_company: Annotated[int, Field(default=20, ge=1, le=100, description="Max top rows returned per company in the envelope's `top`. Default 20, hard cap 100. Per-company `matches` is always the full count regardless of this cap.")] = 20,
     account: Account = CurrentAccount(),
 ) -> dict[str, CompanyEnvelope]:
@@ -237,6 +261,7 @@ def survey_jobs_by_companies(
         exclude_companies=exclude_companies or None,
         location=location_filter,
         posted_since=posted_since,
+        published_since=published_since,
         top_per_company=top_per_company,
     )
     for entry in envelope.values():

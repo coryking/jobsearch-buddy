@@ -276,6 +276,101 @@ class TestSurveyJobsByCompany:
         assert "snippet" not in top[0]
 
 
+class TestPublishedAfter:
+    """published_since (store-level: published_after) is the strict
+    original-publish floor — bypasses ATS update-bumps that posted_since
+    follows. Use when 'fresh' must mean 'newly created.'
+    """
+
+    def test_published_after_filters_old_published_even_if_recently_updated(self, store):
+        today = date.today()
+        old_pub = (today - timedelta(days=400))
+        recent = (today - timedelta(days=2))
+        # Stale-but-touched: published 400d ago, ATS touched it 2d ago.
+        store.upsert_jobs("acme", [
+            make_job(id="stale-touched", title="Stale-touched",
+                     published_at=old_pub, last_listing_update=recent),
+            make_job(id="genuinely-new", title="Genuinely new",
+                     published_at=today - timedelta(days=3)),
+        ])
+        cutoff = (today - timedelta(days=7)).isoformat()
+        # posted_after lets the touched-listing through (intended).
+        rows = store.search_jobs_fts(posted_after=cutoff, limit=20)
+        ids_posted = {r["job_id"] for r in rows}
+        assert ids_posted == {"stale-touched", "genuinely-new"}
+        # published_after rejects the touched-but-old listing.
+        rows = store.search_jobs_fts(published_after=cutoff, limit=20)
+        ids_pub = {r["job_id"] for r in rows}
+        assert ids_pub == {"genuinely-new"}
+
+    def test_posted_and_published_AND_together(self, store):
+        today = date.today()
+        store.upsert_jobs("acme", [
+            make_job(id="new", title="new",
+                     published_at=today - timedelta(days=2),
+                     last_listing_update=today - timedelta(days=1)),
+            make_job(id="old", title="old",
+                     published_at=today - timedelta(days=100),
+                     last_listing_update=today - timedelta(days=1)),
+        ])
+        cutoff = (today - timedelta(days=7)).isoformat()
+        rows = store.search_jobs_fts(
+            posted_after=cutoff, published_after=cutoff, limit=20,
+        )
+        assert {r["job_id"] for r in rows} == {"new"}
+
+
+class TestFreshnessBucketOrdering:
+    """Freshness bucket on `published_at` leads ORDER BY so stale-but-touched
+    listings stop bleeding into the tail of result sets. Buckets:
+    0=<=7d, 1=<=30d, 2=<=90d, 3=older or null.
+    """
+
+    def test_freshness_bucket_pushes_old_published_below_new(self, store):
+        today = date.today()
+        # Old publish, very recent effective_date (recently touched).
+        store.upsert_jobs("acme", [
+            make_job(id="stale-touched", title="rust role",
+                     published_at=today - timedelta(days=400),
+                     last_listing_update=today),
+        ])
+        # Genuinely new, posted 5 days ago.
+        _seed_distilled(store, "beta", "fresh", title="rust role", short_jd="x",
+                        published_at=today - timedelta(days=5))
+        rows = store.search_jobs_fts(query="rust", limit=10)
+        ids = [r["job_id"] for r in rows]
+        # Fresh row (bucket 0) wins over stale-but-touched (bucket 3),
+        # even though stale-touched has a more recent effective_date.
+        assert ids.index("fresh") < ids.index("stale-touched")
+
+    def test_freshness_bucket_in_empty_query_path(self, store):
+        today = date.today()
+        store.upsert_jobs("acme", [
+            make_job(id="stale-touched", title="A",
+                     published_at=today - timedelta(days=400),
+                     last_listing_update=today),
+        ])
+        _seed_distilled(store, "beta", "fresh", title="B", short_jd="x",
+                        published_at=today - timedelta(days=5))
+        rows = store.search_jobs_fts(limit=10)
+        ids = [r["job_id"] for r in rows]
+        assert ids.index("fresh") < ids.index("stale-touched")
+
+    def test_freshness_bucket_in_survey(self, store):
+        today = date.today()
+        # acme: one stale-touched, one fresh.
+        store.upsert_jobs("acme", [
+            make_job(id="stale-touched", title="A",
+                     published_at=today - timedelta(days=400),
+                     last_listing_update=today),
+            make_job(id="fresh", title="B",
+                     published_at=today - timedelta(days=3)),
+        ])
+        env = store.survey_jobs_by_company(companies=["acme"], top_per_company=10)
+        ids = [r["job_id"] for r in env["acme"]["top"]]
+        assert ids.index("fresh") < ids.index("stale-touched")
+
+
 class TestCoreSearchJobs:
     def test_invalid_posted_since_raises_value_error(self, store):
         from jobbuddy.core import search_jobs
@@ -296,6 +391,26 @@ class TestCoreSearchJobs:
         assert isinstance(result[0], JobRow)
         assert result[0].job_id == "a1"
         assert result[0].company_slug == "acme"
+
+    def test_core_search_jobs_published_since(self, store):
+        """published_since hits the strict-publish predicate end-to-end."""
+        from jobbuddy.core import search_jobs
+
+        today = date.today()
+        store.upsert_jobs("acme", [
+            make_job(id="stale-touched", title="r",
+                     published_at=today - timedelta(days=400),
+                     last_listing_update=today),
+            make_job(id="genuinely-new", title="r",
+                     published_at=today - timedelta(days=2)),
+        ])
+        rows = search_jobs(published_since="1w", limit=20)
+        assert {r.job_id for r in rows} == {"genuinely-new"}
+
+    def test_invalid_published_since_raises(self, store):
+        from jobbuddy.core import search_jobs
+        with pytest.raises(ValueError, match="Invalid duration"):
+            search_jobs(published_since="garbage")
 
 
 class TestCoreSurveyJobsByCompanies:

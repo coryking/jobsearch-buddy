@@ -24,7 +24,8 @@ console = Console()
 def jobs(
     query: str = typer.Argument(..., help="FTS query (websearch syntax: terms, \"phrases\", OR, -negation)"),
     location: str = typer.Option("", "--location", "-l", help="Location substring (comma-separated for OR)"),
-    posted_since: str = typer.Option("", "--posted-since", "-s", help="e.g. 7d, 2w, 30d"),
+    posted_since: str = typer.Option("", "--posted-since", "-s", help="ATS-freshness window (publish OR update). e.g. 7d, 2w, 30d"),
+    published_since: str = typer.Option("", "--published-since", help="Strict original-publish window (ignores ATS update-bumps). e.g. 7d, 2w, 30d"),
     limit: int = typer.Option(20, "--limit", "-n", help="Top-K to display (matches the MCP default)"),
     pool: int = typer.Option(200, "--pool", help="Candidate pool size for stats (independent of --limit)"),
 ):
@@ -33,6 +34,7 @@ def jobs(
     from jobbuddy.store import JobStore
 
     posted_after = parse_duration_to_date(posted_since) if posted_since else None
+    published_after = parse_duration_to_date(published_since) if published_since else None
 
     store = JobStore()
     try:
@@ -41,6 +43,7 @@ def jobs(
                 query=query or None,
                 location=location or None,
                 posted_after=posted_after,
+                published_after=published_after,
                 limit=limit,
             )
         except ValueError as e:

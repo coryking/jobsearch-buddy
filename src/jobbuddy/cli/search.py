@@ -166,7 +166,8 @@ def search(
     query: Optional[str] = typer.Option(None, "--query", "-q", help="Postgres FTS query over title, short_jd, description_normalized, location, department"),
     location: Optional[str] = typer.Option(None, "--location", "-l", help="Location substring filter (comma-separated for OR)"),
     exclude: Optional[str] = typer.Option(None, "--exclude", "-x", help="Comma-separated company names/slugs to exclude"),
-    posted_since: Optional[str] = typer.Option(None, "--posted-since", "-s", help="Only show jobs posted within this period (e.g. 24h, 3d, 1w, 2w)"),
+    posted_since: Optional[str] = typer.Option(None, "--posted-since", "-s", help="ATS-freshness window — matches publish OR last ATS update (e.g. 24h, 3d, 1w, 2w)"),
+    published_since: Optional[str] = typer.Option(None, "--published-since", help="Strict original-publish window — matches published_at only, ignores ATS update-bumps (e.g. 24h, 3d, 1w, 2w)"),
     limit: int = typer.Option(50, "--limit", "-n", help="Max rows to return"),
 ):
     """Flat ranked job search across all companies — CLI parity with `search_jobs` MCP tool."""
@@ -182,6 +183,7 @@ def search(
             exclude_companies=exclude_list,
             location=location or "",
             posted_since=posted_since or "",
+            published_since=published_since or "",
             limit=limit,
         )
     except ValueError as e:
