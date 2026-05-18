@@ -26,6 +26,10 @@ log = logging.getLogger(__name__)
 # Transient errors worth retrying
 _RETRYABLE_EXCEPTIONS = (httpx.ReadTimeout, httpx.ConnectError, httpx.ConnectTimeout)
 
+
+class ApplicationFormNotSupported(Exception):
+    """Raised when an ATS doesn't expose its application form anonymously."""
+
 _DEFAULT_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -83,6 +87,18 @@ class ATSFetcher(ABC):
     def resolve_name(self) -> str | None:
         """Try to resolve company display name from the ATS. Returns None by default."""
         return None
+
+    def fetch_application_form(self, board: str, job_id: str) -> dict[str, Any]:
+        """Return the raw, ATS-native application-form payload for a posting.
+
+        Override in fetchers whose ATS exposes the form anonymously. The base
+        implementation raises ApplicationFormNotSupported so unsupported ATSes
+        surface as a typed failure the MCP tool can convert into a useful
+        user-facing message.
+        """
+        raise ApplicationFormNotSupported(
+            f"{self.ats_type} does not support anonymous application-form fetch"
+        )
 
     def _retry_request(
         self,

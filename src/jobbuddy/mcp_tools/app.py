@@ -71,6 +71,7 @@ mcp = FastMCP(
         "- Watch-list scan or single-company drill-down → survey_jobs_by_companies\n"
         "- Open-ended role/keyword search across the whole corpus → search_jobs\n"
         "- Job details (one or many, by company+job_id) → get_job_post_details (local first, live fetch for unknown jobs)\n"
+        "- Application-form questions for one posting (warn about surprise essay prompts before Apply) → get_application_form (Greenhouse / Ashby / Rippling only)\n"
         "- Record application (URL or company+job_id) → log_job_application (live fetch)\n"
         "- Freeform activity (recruiter call, interview, referral, no job_id) → log_job_activity\n"
         "- Review application history, contacts, and activity for any company → review_activity_log\n"

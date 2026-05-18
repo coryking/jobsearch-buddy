@@ -4,9 +4,12 @@
 `search_jobs` returns the flat ranked list across the whole corpus.
 `survey_jobs_by_companies` returns the per-company envelope a watch list
 expects.
+`get_application_form` fetches the application-form questions for one
+posting (Greenhouse / Ashby / Rippling only).
 """
 
 import json
+import logging
 from typing import Annotated
 
 from pydantic import Field
@@ -20,6 +23,8 @@ from jobbuddy.mcp_auth import CurrentAccount
 from jobbuddy.mcp_tools.app import mcp
 from jobbuddy.mcp_tools.helpers import QUERY_FIELD_DESC, decorate_applied
 from jobbuddy.models import Account, CompactJob
+
+log = logging.getLogger(__name__)
 
 
 @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
@@ -214,6 +219,54 @@ def search_jobs(
     )
     decorate_applied(rows, account.id)
     return rows
+
+
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
+def get_application_form(
+    url: Annotated[str, Field(description=(
+        "Job posting URL — the same URL surfaced by search_jobs / "
+        "survey_jobs_by_companies rows."
+    ))],
+) -> str:
+    """Fetch the application form (questions an applicant must answer) for one
+    posting, when you want to warn the user about surprise questions before
+    they click Apply ("this one wants a 1000-word essay", "this one asks for
+    references up-front").
+
+    Returns the raw vendor payload as JSON — Greenhouse, Ashby, and Rippling
+    are supported. Other ATSes return a short "unsupported" message; the
+    user will need to open Apply on the posting to see the form. Read-only;
+    does not submit anything."""
+    from jobbuddy.fetchers import create_fetcher
+    from jobbuddy.fetchers.base import ApplicationFormNotSupported
+    from jobbuddy.url import parse_url
+
+    parsed = parse_url(url)
+    if parsed is None:
+        return (
+            f"Could not recognize this URL as a supported job-board posting: {url}. "
+            "Pass the canonical posting URL surfaced by search_jobs or "
+            "survey_jobs_by_companies."
+        )
+
+    try:
+        fetcher = create_fetcher(parsed.ats, board=parsed.board)
+    except ValueError as e:
+        return f"Error: {e}"
+
+    try:
+        payload = fetcher.fetch_application_form(parsed.board, parsed.job_id)
+    except ApplicationFormNotSupported:
+        return (
+            f"This ATS ({parsed.ats}) does not expose its application form "
+            f"anonymously. The user will need to click 'Apply' on {url} to "
+            "see the form."
+        )
+    except Exception as e:
+        log.exception("get_application_form failed for %s", url)
+        return f"Error fetching application form for {url}: {e}"
+
+    return json.dumps(payload, indent=2, default=str)
 
 
 @mcp.tool(annotations={

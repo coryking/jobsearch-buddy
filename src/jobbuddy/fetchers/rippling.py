@@ -8,12 +8,24 @@ stubs, and the enrich phase fetches each detail page individually for
 description + published_at + salary.
 """
 
+import json
 import logging
+import re
 from datetime import date
 from typing import Any
 
-from jobbuddy.fetchers.base import ATSFetcher, ProgressCallback, RetryCallback
+from jobbuddy.fetchers.base import (
+    ApplicationFormNotSupported,
+    ATSFetcher,
+    ProgressCallback,
+    RetryCallback,
+)
 from jobbuddy.models import Job, strip_html
+
+_NEXT_DATA_RE = re.compile(
+    r'<script[^>]*id="__NEXT_DATA__"[^>]*>(.*?)</script>',
+    re.DOTALL,
+)
 
 log = logging.getLogger(__name__)
 
@@ -111,6 +123,43 @@ class RipplingFetcher(ATSFetcher):
             raise ValueError(f"Job ID {job_id} not found on {self.board} board.")
         resp.raise_for_status()
         return self._parse_job(resp.json())
+
+    def fetch_application_form(self, board: str, job_id: str) -> dict[str, Any]:
+        """Return Rippling's `activeJobApplication` subtree from listing HTML.
+
+        Rippling embeds form data as a Next.js __NEXT_DATA__ JSON blob inside
+        the candidate-facing listing page at ats.rippling.com. The path is
+        `props.pageProps.apiData.jobPost.activeJobApplication`. Returning the
+        whole subtree (customQuestions, additionalQuestions,
+        eeocQuestionnaireEnabled, etc.) keeps every signal the LLM might want.
+        """
+        url = f"https://ats.rippling.com/{board}/jobs/{job_id}"
+        resp = self.client.get(url)
+        resp.raise_for_status()
+        m = _NEXT_DATA_RE.search(resp.text)
+        if not m:
+            raise ApplicationFormNotSupported(
+                f"Rippling listing {board}/{job_id} has no __NEXT_DATA__ blob"
+            )
+        try:
+            next_data = json.loads(m.group(1))
+        except json.JSONDecodeError as e:
+            raise ApplicationFormNotSupported(
+                f"Rippling __NEXT_DATA__ unparseable for {board}/{job_id}: {e}"
+            ) from e
+        try:
+            active = (
+                next_data["props"]["pageProps"]["apiData"]["jobPost"][
+                    "activeJobApplication"
+                ]
+            )
+        except (KeyError, TypeError):
+            active = None
+        if not active:
+            raise ApplicationFormNotSupported(
+                f"Rippling listing {board}/{job_id} has no activeJobApplication"
+            )
+        return active
 
     def fetch_enrichment(self, job_id: str, metadata: dict | None = None) -> dict[str, Any]:
         """Fetch description, published_at, and salary from a single detail

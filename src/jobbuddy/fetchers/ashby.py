@@ -1,11 +1,27 @@
 """Ashby ATS fetcher."""
 
 import re
+from typing import Any
 
 import httpx
 
-from jobbuddy.fetchers.base import ATSFetcher, ProgressCallback, RetryCallback
+from jobbuddy.fetchers.base import (
+    ApplicationFormNotSupported,
+    ATSFetcher,
+    ProgressCallback,
+    RetryCallback,
+)
 from jobbuddy.models import Job
+
+
+_APPLICATION_FORM_QUERY = (
+    "query ApiJobPosting($organizationHostedJobsPageName: String!, "
+    "$jobPostingId: String!) { "
+    "jobPosting(organizationHostedJobsPageName: $organizationHostedJobsPageName, "
+    "jobPostingId: $jobPostingId) { "
+    "id title applicationForm { sections { title fieldEntries { isRequired field } } } "
+    "} }"
+)
 
 
 class AshbyFetcher(ATSFetcher):
@@ -60,3 +76,35 @@ class AshbyFetcher(ATSFetcher):
             if j.id == job_id:
                 return j
         raise ValueError(f"Job ID {job_id} not found on {self.board} board.")
+
+    def fetch_application_form(self, board: str, job_id: str) -> dict[str, Any]:
+        """Return the raw `applicationForm` subtree from Ashby's GraphQL API.
+
+        The JD itself is already available via `list_jobs`/`fetch_job`, so
+        only the form structure is returned here — `sections[].fieldEntries[]`
+        with `field` metadata and `isRequired` flags. Raises
+        ApplicationFormNotSupported if the posting or its form is missing.
+        """
+        url = "https://jobs.ashbyhq.com/api/non-user-graphql?op=ApiJobPosting"
+        body = {
+            "operationName": "ApiJobPosting",
+            "variables": {
+                "organizationHostedJobsPageName": board,
+                "jobPostingId": job_id,
+            },
+            "query": _APPLICATION_FORM_QUERY,
+        }
+        resp = self.client.post(url, json=body)
+        resp.raise_for_status()
+        data = resp.json()
+        posting = (data.get("data") or {}).get("jobPosting")
+        if not posting:
+            raise ApplicationFormNotSupported(
+                f"Ashby returned no posting for {board}/{job_id}"
+            )
+        form = posting.get("applicationForm")
+        if not form:
+            raise ApplicationFormNotSupported(
+                f"Ashby posting {board}/{job_id} has no application form"
+            )
+        return form

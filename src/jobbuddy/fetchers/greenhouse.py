@@ -1,5 +1,7 @@
 """Greenhouse ATS fetcher."""
 
+from typing import Any
+
 import httpx
 
 from jobbuddy.fetchers.base import ATSFetcher, ProgressCallback, RetryCallback
@@ -63,3 +65,15 @@ class GreenhouseFetcher(ATSFetcher):
             if j.id == job_id:
                 return j
         raise ValueError(f"Job ID {job_id} not found on {self.board} board.")
+
+    def fetch_application_form(self, board: str, job_id: str) -> dict[str, Any]:
+        """Return the raw Greenhouse job-with-questions payload.
+
+        The `?questions=true` flag adds `questions`, `demographic_questions`,
+        `location_questions`, and `compliance` to the standard job response.
+        We pass the full dict through so the calling LLM has every signal.
+        """
+        url = f"https://boards-api.greenhouse.io/v1/boards/{board}/jobs/{job_id}?questions=true"
+        resp = self.client.get(url)
+        resp.raise_for_status()
+        return resp.json()
