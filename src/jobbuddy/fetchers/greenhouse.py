@@ -7,6 +7,18 @@ import httpx
 from jobbuddy.fetchers.base import ATSFetcher, ProgressCallback, RetryCallback
 from jobbuddy.models import Job, strip_html
 
+# Top-level keys we keep from the `?questions=true` payload. Everything else
+# (notably `content`, `metadata`, `departments`, `offices`) is noise for a
+# form-preview consumer.
+_APPLICATION_FORM_KEEP = frozenset({
+    "id",
+    "title",
+    "questions",
+    "demographic_questions",
+    "location_questions",
+    "compliance",
+})
+
 
 class GreenhouseFetcher(ATSFetcher):
     ats_type = "greenhouse"
@@ -67,13 +79,29 @@ class GreenhouseFetcher(ATSFetcher):
         raise ValueError(f"Job ID {job_id} not found on {self.board} board.")
 
     def fetch_application_form(self, board: str, job_id: str) -> dict[str, Any]:
-        """Return the raw Greenhouse job-with-questions payload.
+        """Return the Greenhouse job-with-questions payload, trimmed.
 
         The `?questions=true` flag adds `questions`, `demographic_questions`,
         `location_questions`, and `compliance` to the standard job response.
-        We pass the full dict through so the calling LLM has every signal.
+        We project to the form-relevant keys and drop the JD `content` and
+        EEOC regulatory `description` HTML, which add no signal to a
+        form-preview ("warn me about surprise questions"). Result is ~6KB
+        instead of ~29KB.
         """
         url = f"https://boards-api.greenhouse.io/v1/boards/{board}/jobs/{job_id}?questions=true"
         resp = self.client.get(url)
         resp.raise_for_status()
-        return resp.json()
+        payload = resp.json()
+
+        trimmed = {k: payload[k] for k in _APPLICATION_FORM_KEEP if k in payload}
+
+        # `compliance` entries carry regulatory poster HTML in `description`.
+        # The questions list inside each block is the part that matters.
+        compliance = trimmed.get("compliance")
+        if isinstance(compliance, list):
+            trimmed["compliance"] = [
+                {k: v for k, v in entry.items() if k != "description"}
+                for entry in compliance
+                if isinstance(entry, dict)
+            ]
+        return trimmed

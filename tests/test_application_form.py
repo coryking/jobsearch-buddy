@@ -64,6 +64,16 @@ class TestGreenhouseApplicationForm:
         assert "compliance" in result
         assert "location_questions" in result
 
+        # Trimmed: noise keys dropped (JD HTML, metadata, departments, etc.)
+        assert "content" not in result
+        assert "metadata" not in result
+        assert "departments" not in result
+
+        # Trimmed: regulatory poster HTML inside each compliance entry dropped.
+        # The question(s) inside each compliance block stay.
+        for entry in result["compliance"]:
+            assert "description" not in entry
+
     def test_propagates_404(self):
         f = GreenhouseFetcher("anthropic")
         f.client = MagicMock()
