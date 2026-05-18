@@ -146,6 +146,11 @@ def search_jobs(
     location_filter: Annotated[str, Field(default="", description="Where the user wants to work. Substring match on the posting's location field. Comma-separated for OR (e.g. 'seattle,remote').")] = "",
     posted_since: Annotated[str, Field(default="", description="ATS-freshness window — matches publish OR most-recent ATS update. Examples: '24h', '3d', '1w', '2w'. Use this for 'show me what the ATS still considers fresh.' For 'originally posted in this window' (bypasses evergreen-touch bumps), use `published_since`.")] = "",
     published_since: Annotated[str, Field(default="", description="Strict original-publish window — matches `published_at` only, ignoring ATS update-bumps. Use when 'fresh' must mean 'newly created,' not 'evergreen with a recent touch.' Examples: '24h', '3d', '1w', '2w'.")] = "",
+    ats: Annotated[list[str], Field(default=[], description=(
+        "Filter results to one or more ATSes (e.g. ['greenhouse', 'ashby']). "
+        "Liberal match — case-insensitive, punctuation/whitespace ignored. "
+        "Do not enumerate values; pass what the user said and we'll normalize."
+    ))] = [],
     limit: Annotated[int, Field(default=20, ge=1, le=100, description="Max rows to return across the whole corpus. Default 20, hard cap 100.")] = 20,
     account: Account = CurrentAccount(),
 ) -> list[JobRow]:
@@ -215,6 +220,7 @@ def search_jobs(
         location=location_filter,
         posted_since=posted_since,
         published_since=published_since,
+        ats=ats or None,
         limit=limit,
     )
     decorate_applied(rows, account.id)
@@ -281,6 +287,11 @@ def survey_jobs_by_companies(
     location_filter: Annotated[str, Field(default="", description="Where the user wants to work. Substring match on the posting's location field. Comma-separated for OR (e.g. 'seattle,remote').")] = "",
     posted_since: Annotated[str, Field(default="", description="ATS-freshness window — matches publish OR most-recent ATS update. Examples: '24h', '3d', '1w', '2w'. Use this for 'show me what the ATS still considers fresh.' For 'originally posted in this window' (bypasses evergreen-touch bumps), use `published_since`.")] = "",
     published_since: Annotated[str, Field(default="", description="Strict original-publish window — matches `published_at` only, ignoring ATS update-bumps. Use when 'fresh' must mean 'newly created,' not 'evergreen with a recent touch.' Examples: '24h', '3d', '1w', '2w'.")] = "",
+    ats: Annotated[list[str], Field(default=[], description=(
+        "Filter results to one or more ATSes (e.g. ['greenhouse', 'ashby']). "
+        "Liberal match — case-insensitive, punctuation/whitespace ignored. "
+        "Do not enumerate values; pass what the user said and we'll normalize."
+    ))] = [],
     top_per_company: Annotated[int, Field(default=20, ge=1, le=100, description="Max top rows returned per company in the envelope's `top`. Default 20, hard cap 100. Per-company `matches` is always the full count regardless of this cap.")] = 20,
     account: Account = CurrentAccount(),
 ) -> dict[str, CompanyEnvelope]:
@@ -315,6 +326,7 @@ def survey_jobs_by_companies(
         location=location_filter,
         posted_since=posted_since,
         published_since=published_since,
+        ats=ats or None,
         top_per_company=top_per_company,
     )
     for entry in envelope.values():

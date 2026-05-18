@@ -49,6 +49,7 @@ def find_companies(
     *,
     limit: int = 20,
     coverage_floor: float = 0.35,
+    ats: list[str] | None = None,
 ) -> dict:
     """Hybrid search over registered companies — vector + FTS, fused via RRF.
 
@@ -83,9 +84,17 @@ def find_companies(
 
     embedding, _tokens = embed_text(query)
 
+    from jobbuddy.core.search import resolve_ats_filter
+
     store = JobStore()
     try:
-        rows = store.find_companies(embedding, query, limit=limit)
+        ats_actual = resolve_ats_filter(store, ats)
+        # User passed an ats filter but no DB values matched → empty result.
+        if ats is not None and ats_actual == []:
+            return {"results": [], "coverage_hint": None}
+        rows = store.find_companies(
+            embedding, query, limit=limit, ats=ats_actual,
+        )
     except psycopg.Error as e:
         # websearch_to_tsquery is generous but malformed input still raises.
         # Re-raise as ValueError so MCP/CLI handlers can map it cleanly.

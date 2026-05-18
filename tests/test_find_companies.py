@@ -302,3 +302,75 @@ class TestResearchPhaseInlineEmbedding:
         # Bio landed, embedding didn't — the recovery contract.
         assert row["long_bio"] == bio.long_bio
         assert row["has_emb"] is False
+
+
+class TestFindCompaniesAtsFilter:
+    """`ats` narrows the result set to companies whose `companies.ats`
+    value matches (post-normalization). Liberal matching: case +
+    punctuation insensitive. Unknown values silently drop. Compound DB
+    values like `oracle_hcm` match `oracle-hcm` / `Oracle HCM` / `oracle_hcm`."""
+
+    @pytest.fixture
+    def patch_embed(self, monkeypatch):
+        def fake_embed(text: str) -> tuple[str, int]:
+            return _vec([1.0, 0.0]), 1
+
+        monkeypatch.setattr("jobbuddy.embeddings.embed_text", fake_embed)
+        monkeypatch.setattr("jobbuddy.core.embed_text", fake_embed, raising=False)
+        return None
+
+    def _seed_pair(self, store):
+        # acme is greenhouse (per the session fixture); workday-co is workday.
+        _seed_company_with_bio(store, "acme", long_bio="x", short_bio="we make widgets",
+                               name="Acme Corp")
+        _seed_company_with_bio(store, "workday-co", long_bio="y", short_bio="we make widgets",
+                               name="Workday Co")
+        store.update_company_embedding("acme", embedding=_vec([1.0, 0.0]))
+        store.update_company_embedding("workday-co", embedding=_vec([1.0, 0.0]))
+
+    def test_baseline_no_filter(self, store, patch_embed):
+        self._seed_pair(store)
+        result = core.find_companies("widgets", limit=10)
+        slugs = {r["slug"] for r in result["results"]}
+        assert {"acme", "workday-co"}.issubset(slugs)
+
+    def test_filter_to_greenhouse(self, store, patch_embed):
+        self._seed_pair(store)
+        result = core.find_companies("widgets", limit=10, ats=["greenhouse"])
+        slugs = {r["slug"] for r in result["results"]}
+        assert slugs == {"acme"}
+
+    def test_filter_to_two_atses(self, store, patch_embed):
+        self._seed_pair(store)
+        result = core.find_companies("widgets", limit=10, ats=["greenhouse", "workday"])
+        slugs = {r["slug"] for r in result["results"]}
+        assert slugs == {"acme", "workday-co"}
+
+    def test_liberal_normalization(self, store, patch_embed):
+        self._seed_pair(store)
+        result = core.find_companies(
+            "widgets", limit=10, ats=["Greenhouse, ", "WORKDAY"],
+        )
+        slugs = {r["slug"] for r in result["results"]}
+        assert slugs == {"acme", "workday-co"}
+
+    def test_unknown_ats_returns_empty(self, store, patch_embed):
+        self._seed_pair(store)
+        result = core.find_companies("widgets", limit=10, ats=["nonexistent"])
+        assert result["results"] == []
+
+    def test_compound_ats_underscore(self, store, patch_embed):
+        from jobbuddy.models import Company
+        store.save_company(Company(slug="oracle-co", name="Oracle Co",
+                                   ats="oracle_hcm", board="oracle-co"))
+        _seed_company_with_bio(store, "oracle-co", long_bio="x",
+                               short_bio="we make widgets", name="Oracle Co")
+        store.update_company_embedding("oracle-co", embedding=_vec([1.0, 0.0]))
+        _seed_company_with_bio(store, "acme", long_bio="x",
+                               short_bio="we make widgets", name="Acme Corp")
+        store.update_company_embedding("acme", embedding=_vec([1.0, 0.0]))
+
+        for variant in (["oracle_hcm"], ["oracle-hcm"], ["Oracle HCM"]):
+            result = core.find_companies("widgets", limit=10, ats=variant)
+            slugs = {r["slug"] for r in result["results"]}
+            assert slugs == {"oracle-co"}, f"variant {variant!r} got {slugs}"

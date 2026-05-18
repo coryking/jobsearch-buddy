@@ -4,9 +4,37 @@ Both `search_jobs` and `survey_jobs_by_companies` open and close their own
 `JobStore` connection — callers (CLI, MCP) treat them as one-shot.
 """
 
+import re
+
 from jobbuddy.core.companies import resolve_company_slugs
 from jobbuddy.core.durations import parse_duration_to_date
 from jobbuddy.core.types import CompanyEnvelope, JobRow, to_jobrow
+
+_ATS_PUNCT_RE = re.compile(r"[^a-z0-9]")
+
+
+def normalize_ats_filter(raw: list[str] | None) -> list[str]:
+    """Lowercase, strip whitespace, and remove non-alphanumeric characters.
+
+    `Greenhouse`, `green-house`, `GREEN HOUSE` all collapse to `greenhouse`.
+    The same normalization is applied to the DB-side `companies.ats` values
+    at compare time, so compound values like `oracle_hcm` collapse to
+    `oraclehcm` on both sides — letting `oracle_hcm`, `oracle-hcm`, and
+    `Oracle HCM` all match the same canonical key.
+
+    Empty / whitespace-only / punctuation-only entries are dropped. Empty
+    list or None returns an empty list.
+    """
+    if not raw:
+        return []
+    out: list[str] = []
+    for s in raw:
+        if not s:
+            continue
+        clean = _ATS_PUNCT_RE.sub("", s.lower())
+        if clean:
+            out.append(clean)
+    return out
 
 WATCHLIST_FILTER_KEYS = {
     "query",
@@ -150,6 +178,33 @@ def merge_watchlist_defaults(
     )
 
 
+def resolve_ats_filter(store, raw: list[str] | None) -> list[str] | None:
+    """Translate a user `ats` filter to the matching DB-side `companies.ats`
+    values. None / empty input returns None (no filter).
+
+    Strategy: normalize both the user's input and the distinct
+    `companies.ats` values, then return the subset of DB values whose
+    normalized form appears in the user's normalized set. Unknown
+    user inputs silently drop — if every value is unknown the result is
+    an empty list (which the caller treats as "no companies match,
+    return empty"), distinguishing it from the None "filter is off."
+    """
+    normalized_input = normalize_ats_filter(raw)
+    if not normalized_input:
+        return None
+
+    rows = store.conn.execute(
+        "SELECT DISTINCT ats FROM companies WHERE ats IS NOT NULL"
+    ).fetchall()
+    wanted = set(normalized_input)
+    matched: list[str] = []
+    for row in rows:
+        actual = row["ats"]
+        if _ATS_PUNCT_RE.sub("", actual.lower()) in wanted:
+            matched.append(actual)
+    return matched
+
+
 def search_jobs(
     *,
     query: str = "",
@@ -158,6 +213,7 @@ def search_jobs(
     location: str = "",
     posted_since: str = "",
     published_since: str = "",
+    ats: list[str] | None = None,
     limit: int = 20,
 ) -> list[JobRow]:
     """Flat ranked job search across the whole stored corpus.
@@ -183,6 +239,10 @@ def search_jobs(
 
     store = JobStore()
     try:
+        ats_actual = resolve_ats_filter(store, ats)
+        # User passed an ats filter but no DB values matched → empty result.
+        if ats is not None and ats_actual == []:
+            return []
         rows = store.search_jobs_fts(
             query=query or None,
             companies=company_slugs,
@@ -190,6 +250,7 @@ def search_jobs(
             location=location or None,
             posted_after=posted_after,
             published_after=published_after,
+            ats=ats_actual,
             limit=limit,
         )
     finally:
@@ -206,6 +267,7 @@ def survey_jobs_by_companies(
     location: str = "",
     posted_since: str = "",
     published_since: str = "",
+    ats: list[str] | None = None,
     top_per_company: int = 20,
 ) -> dict[str, CompanyEnvelope]:
     """Per-company envelope of matches for a watch list.
@@ -231,6 +293,22 @@ def survey_jobs_by_companies(
 
     store = JobStore()
     try:
+        ats_actual = resolve_ats_filter(store, ats)
+        if ats is not None:
+            if ats_actual == []:
+                return {}
+            # Intersect caller's companies with those matching the ATS
+            # filter — companies in the caller list whose ATS is filtered
+            # out drop from the envelope entirely.
+            keep = set(
+                row["slug"] for row in store.conn.execute(
+                    "SELECT slug FROM companies WHERE ats = ANY(%s)",
+                    (ats_actual,),
+                ).fetchall()
+            )
+            company_slugs = [s for s in company_slugs if s in keep]
+            if not company_slugs:
+                return {}
         raw = store.survey_jobs_by_company(
             companies=company_slugs,
             query=query or None,

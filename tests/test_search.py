@@ -443,3 +443,168 @@ class TestCoreSurveyJobsByCompanies:
         from jobbuddy.core import survey_jobs_by_companies
         with pytest.raises(ValueError, match="Unknown company"):
             survey_jobs_by_companies(companies=["nonexistent-co"])
+
+
+# ---------------------------------------------------------------------------
+# ATS filter — case/punctuation-insensitive narrowing by ATS platform
+# ---------------------------------------------------------------------------
+
+
+def _seed_ats_company(store, slug: str, *, name: str, ats: str) -> None:
+    """Add or update a test company with a specific `ats` value.
+
+    The session-level test_companies fixture seeds greenhouse + workday.
+    Tests that need a third ATS (e.g. compound `oracle_hcm`) use this
+    helper to add it for the duration of the test (companies persist by
+    design — the per-test cleanup only nulls bio fields)."""
+    from jobbuddy.models import Company
+    store.save_company(Company(slug=slug, name=name, ats=ats, board=slug))
+
+
+class TestNormalizeAtsFilter:
+    """The shared normalizer lowercases, strips whitespace, and drops
+    non-alphanumeric characters. `greenhouse` / `Greenhouse` / `green-house`
+    / `GREEN HOUSE` all collapse to `greenhouse`. Compound DB values like
+    `oracle_hcm` collapse to `oraclehcm` so user inputs like `oracle-hcm`,
+    `Oracle HCM`, `oracle_hcm` all match the same canonical key."""
+
+    def test_basic_lowercase_strip(self):
+        from jobbuddy.core.search import normalize_ats_filter
+        assert normalize_ats_filter(["Greenhouse"]) == ["greenhouse"]
+        assert normalize_ats_filter([" greenhouse "]) == ["greenhouse"]
+
+    def test_punctuation_stripped(self):
+        from jobbuddy.core.search import normalize_ats_filter
+        assert normalize_ats_filter(["green-house", "GREEN HOUSE"]) == [
+            "greenhouse", "greenhouse",
+        ]
+
+    def test_underscore_compound_collapses(self):
+        from jobbuddy.core.search import normalize_ats_filter
+        # All three user inputs collapse to the same key, which is also
+        # how `oracle_hcm` collapses DB-side.
+        assert normalize_ats_filter(["oracle_hcm"]) == ["oraclehcm"]
+        assert normalize_ats_filter(["oracle-hcm"]) == ["oraclehcm"]
+        assert normalize_ats_filter(["Oracle HCM"]) == ["oraclehcm"]
+
+    def test_empty_and_none(self):
+        from jobbuddy.core.search import normalize_ats_filter
+        assert normalize_ats_filter(None) == []
+        assert normalize_ats_filter([]) == []
+        assert normalize_ats_filter(["", "  ", "!!"]) == []
+
+
+class TestSearchJobsAtsFilter:
+    """Core search_jobs accepts an `ats` list and filters by
+    companies.ats. Test fixtures seed greenhouse (acme, beta, good, bad)
+    and workday (workday-co)."""
+
+    def test_baseline_no_filter_returns_multiple_atses(self, store):
+        from jobbuddy.core import search_jobs
+
+        _seed_distilled(store, "acme", "a1", title="A", short_jd="x")
+        _seed_distilled(store, "workday-co", "w1", title="W", short_jd="x")
+        rows = search_jobs(limit=20)
+        slugs = {r.company_slug for r in rows}
+        assert "acme" in slugs
+        assert "workday-co" in slugs
+
+    def test_filter_to_greenhouse(self, store):
+        from jobbuddy.core import search_jobs
+
+        _seed_distilled(store, "acme", "a1", title="A", short_jd="x")
+        _seed_distilled(store, "workday-co", "w1", title="W", short_jd="x")
+        rows = search_jobs(ats=["greenhouse"], limit=20)
+        slugs = {r.company_slug for r in rows}
+        assert slugs == {"acme"}
+
+    def test_filter_to_two_atses(self, store):
+        from jobbuddy.core import search_jobs
+
+        _seed_distilled(store, "acme", "a1", title="A", short_jd="x")
+        _seed_distilled(store, "workday-co", "w1", title="W", short_jd="x")
+        rows = search_jobs(ats=["greenhouse", "workday"], limit=20)
+        slugs = {r.company_slug for r in rows}
+        assert slugs == {"acme", "workday-co"}
+
+    def test_liberal_normalization(self, store):
+        from jobbuddy.core import search_jobs
+
+        _seed_distilled(store, "acme", "a1", title="A", short_jd="x")
+        _seed_distilled(store, "workday-co", "w1", title="W", short_jd="x")
+        rows = search_jobs(ats=["Greenhouse, ", "WORKDAY"], limit=20)
+        slugs = {r.company_slug for r in rows}
+        assert slugs == {"acme", "workday-co"}
+
+    def test_unknown_ats_silently_drops(self, store):
+        from jobbuddy.core import search_jobs
+
+        _seed_distilled(store, "acme", "a1", title="A", short_jd="x")
+        rows = search_jobs(ats=["nonexistent"], limit=20)
+        assert rows == []
+
+    def test_compound_ats_underscore(self, store):
+        from jobbuddy.core import search_jobs
+
+        _seed_ats_company(store, "oracle-co", name="Oracle Co", ats="oracle_hcm")
+        _seed_distilled(store, "oracle-co", "o1", title="O", short_jd="x")
+        _seed_distilled(store, "acme", "a1", title="A", short_jd="x")
+
+        # All three input forms route to the `oracle_hcm` DB value.
+        for variant in (["oracle_hcm"], ["oracle-hcm"], ["Oracle HCM"]):
+            rows = search_jobs(ats=variant, limit=20)
+            slugs = {r.company_slug for r in rows}
+            assert slugs == {"oracle-co"}, f"variant {variant!r} got {slugs}"
+
+
+class TestSurveyJobsByCompaniesAtsFilter:
+    """survey_jobs_by_companies filters its company set by ATS too —
+    a company in the caller's `companies` list whose ATS is filtered out
+    is omitted from the envelope."""
+
+    def test_filter_narrows_envelope(self, store):
+        from jobbuddy.core import survey_jobs_by_companies
+
+        _seed_distilled(store, "acme", "a1", title="A", short_jd="x")
+        _seed_distilled(store, "workday-co", "w1", title="W", short_jd="x")
+        env = survey_jobs_by_companies(
+            companies=["acme", "workday-co"], ats=["greenhouse"],
+        )
+        assert set(env.keys()) == {"acme"}
+        assert env["acme"].matches == 1
+
+    def test_baseline_no_filter(self, store):
+        from jobbuddy.core import survey_jobs_by_companies
+
+        _seed_distilled(store, "acme", "a1", title="A", short_jd="x")
+        _seed_distilled(store, "workday-co", "w1", title="W", short_jd="x")
+        env = survey_jobs_by_companies(companies=["acme", "workday-co"])
+        assert set(env.keys()) == {"acme", "workday-co"}
+
+    def test_two_atses(self, store):
+        from jobbuddy.core import survey_jobs_by_companies
+
+        _seed_distilled(store, "acme", "a1", title="A", short_jd="x")
+        _seed_distilled(store, "workday-co", "w1", title="W", short_jd="x")
+        env = survey_jobs_by_companies(
+            companies=["acme", "workday-co"], ats=["greenhouse", "ashby"],
+        )
+        # ashby has no test companies but greenhouse matches acme.
+        assert set(env.keys()) == {"acme"}
+
+    def test_liberal_normalization(self, store):
+        from jobbuddy.core import survey_jobs_by_companies
+
+        _seed_distilled(store, "acme", "a1", title="A", short_jd="x")
+        _seed_distilled(store, "workday-co", "w1", title="W", short_jd="x")
+        env = survey_jobs_by_companies(
+            companies=["acme", "workday-co"], ats=["Greenhouse, ", "WORKDAY"],
+        )
+        assert set(env.keys()) == {"acme", "workday-co"}
+
+    def test_unknown_ats_returns_empty(self, store):
+        from jobbuddy.core import survey_jobs_by_companies
+
+        _seed_distilled(store, "acme", "a1", title="A", short_jd="x")
+        env = survey_jobs_by_companies(companies=["acme"], ats=["nonexistent"])
+        assert env == {}

@@ -196,6 +196,7 @@ class JobStore:
 
     def find_companies(
         self, embedding: str, query: str, *, limit: int = 20,
+        ats: list[str] | None = None,
     ) -> list[dict]:
         """Hybrid company search: vector ∪ FTS, fused via Reciprocal Rank Fusion.
 
@@ -222,8 +223,11 @@ class JobStore:
         grows past where seq scan stays fast.
         """
         candidate_pool = max(limit * 3, 30)
+        # `ats` filter narrows both candidate arms by `companies.ats`. NULL
+        # means "no filter"; a non-NULL array filters both arms.
+        ats_clause = "AND ats = ANY(%(ats)s)" if ats is not None else ""
         rows = self.conn.execute(
-            """
+            f"""
             WITH vec AS (
                 SELECT slug,
                        1 - (bio_embedding <=> %(embedding)s::vector) AS vec_score,
@@ -232,6 +236,7 @@ class JobStore:
                        ) AS vec_rank
                   FROM companies
                  WHERE bio_embedding IS NOT NULL
+                 {ats_clause}
                  ORDER BY bio_embedding <=> %(embedding)s::vector
                  LIMIT %(pool)s
             ),
@@ -250,6 +255,7 @@ class JobStore:
                   FROM companies
                  WHERE to_tsvector('english', coalesce(name, '') || ' ' || coalesce(short_bio, ''))
                        @@ websearch_to_tsquery('english', %(query)s)
+                 {ats_clause}
                  LIMIT %(pool)s
             ),
             fused AS (
@@ -280,6 +286,7 @@ class JobStore:
                 "pool": candidate_pool,
                 "k": self._RRF_K,
                 "limit": limit,
+                "ats": ats,
             },
         ).fetchall()
         return [dict(r) for r in rows]
@@ -507,6 +514,7 @@ class JobStore:
         location: str | None = None,
         posted_after: str | None = None,
         published_after: str | None = None,
+        ats: list[str] | None = None,
         include_removed: bool = False,
         limit: int = 20,
     ) -> list[dict]:
@@ -530,6 +538,7 @@ class JobStore:
             companies=companies, exclude_companies=exclude_companies,
             title=query, location=location, posted_after=posted_after,
             published_after=published_after,
+            ats=ats,
             include_removed=include_removed,
         )
 
@@ -981,6 +990,7 @@ class JobStore:
         location: str | None = None,
         posted_after: str | None = None,
         published_after: str | None = None,
+        ats: list[str] | None = None,
         include_removed: bool = False,
     ) -> tuple[list[LiteralString], list]:
         """Build WHERE conditions and params for job search filters."""
@@ -997,6 +1007,17 @@ class JobStore:
         if exclude_companies:
             conditions.append("NOT (j.company_slug = ANY(%s))")
             params.append(exclude_companies)
+
+        if ats is not None:
+            # Resolved to concrete `companies.ats` values by core layer.
+            # An explicit empty list still narrows to "no companies" so
+            # callers that pass through an unknown-ats filter get an empty
+            # result instead of a silently-unfiltered one.
+            conditions.append(
+                "j.company_slug IN ("
+                "SELECT slug FROM companies WHERE ats = ANY(%s))"
+            )
+            params.append(ats)
 
         if posted_after:
             # Match against effective_date (COALESCE(last_listing_update,

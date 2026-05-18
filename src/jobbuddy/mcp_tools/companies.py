@@ -25,6 +25,11 @@ def find_companies(
         " a slug + name + short_bio + active_jobs count, ~140 tokens of"
         " bio per row."
     ))] = 20,
+    ats: Annotated[list[str], Field(default=[], description=(
+        "Filter results to one or more ATSes (e.g. ['greenhouse', 'ashby']). "
+        "Liberal match — case-insensitive, punctuation/whitespace ignored. "
+        "Do not enumerate values; pass what the user said and we'll normalize."
+    ))] = [],
     account: Account = CurrentAccount(),
 ) -> str:
     """Find registered companies by vibe or theme, returning slugs you can
@@ -65,7 +70,7 @@ def find_companies(
     from jobbuddy.store import JobStore
 
     try:
-        result = core_find_companies(query, limit=limit)
+        result = core_find_companies(query, limit=limit, ats=ats or None)
     except ValueError as e:
         return f"Error: {e}"
 
