@@ -8,6 +8,27 @@ seeded, what was deferred.
 
 ---
 
+## 2026-05-19 — run 5
+
+**Primary target:** escalation clause fires — meta-process. PRs #65/#67 still zero-comment after 5 runs. cc-explorer session-signal pass ran for the first time (deferred 4 runs). Signal: operator is in job-application mode ("just go man, i need to use the tool to apply for jobs"). Past dream PRs targeted fetcher coverage the operator isn't using. Root cause: sync-health ran before session signal, inverting the priority.
+
+**Output shape:** two PRs + state-of-jsb rewrite + workspace updates + this log.
+
+- **PR #68** — `dream.md`: cc-explorer session signal moved to mandatory first signal in Phase 1. Removes the "sync health is primary signal" label. Adds: "run this before DB queries — operator's job-search focus gates target selection."
+- **PR #69** — Migration `021_cleanup_orphan_jobs.sql`: marks 5,911 active Tesla jobs (ats=NULL parent, description=NULL) as removed. Directly fixes search-result pollution. 616/616 tests pass.
+
+**Headline finding:** session signal (finally collected) was the unlocking insight. The cc-explorer pass revealed the operator's active concern in one read — something the DB health check never could. The 4-run deferral was a protocol failure: session signal was listed last and skipped because of perceived unavailability, even though the skill was accessible. PR #68 corrects this structurally.
+
+**Secondary finding (DB):** corpus stable. 99,499 active jobs, 0 distill backlog. Sync errors: same 20-error baseline, no new regressions. The 5,920-job enrich backlog is entirely Tesla orphans (PR #69 clears this).
+
+**Candidates updated:** ats=NULL Shape A closed (PR #69); stale-rows broadened to the general detection problem; open-PR engagement candidate updated with root-cause explanation; all open candidates bumped to runs-seen 3.
+
+**Deferred:** per-distill cost telemetry (schema gap, candidate open). sync_status history table (candidate open). "404 with 0 jobs" slug corrections (operator judgment needed).
+
+**Keep-ability self-rating:** merge/act-on. PR #69 is a concrete search-quality fix (5,911 dead results removed) with zero schema risk. PR #68 is a one-time protocol fix that makes future runs better. Neither requires interpretation — the operator can merge both and move on.
+
+---
+
 ## 2026-05-18 — run 4
 
 **Primary target:** keep the meta-process honest. Run 3 already broke the
