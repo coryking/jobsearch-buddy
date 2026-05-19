@@ -48,10 +48,10 @@ Files don't get read unless something puts them on the prompted path. Three hand
 2. **Dialogue check** — open dream-filed PRs/issues. `gh pr list --search "dream in:head" --state open`, `gh pr view <n> --comments`. New operator comments since last run are highest-leverage signal.
 3. **External signals**, in parallel where calls don't depend on each other:
 
-- **Sync health (primary signal).** Connect to the jsb DB (`JOBBUDDY_PG_SERVICE` env or `.env`; defaults documented in `CLAUDE.md`). Query: most recent 20 sync_runs grouped by status and store. New failure clusters = headline finding. If a store is failing 3+ runs in a row, that's a scraper regression.
+- **Session signal** via cc-explorer over this project. Starter patterns: `"^no\b"`, `"don't"`, `"NORTH_STAR"`, `"tool.*description"`, `"search.*not working"`, `"couldn't find"`, `"^perfect"`, `"^bombs away"`, `"frustrating"`. Extend per run. This is mandatory when the `project-mining:cc-explorer` skill is listed as available. Do not defer it. Run it before reading sync health or cost — the operator's current job-search focus should gate what you look for in the DB.
+- **Sync health.** Connect to the jsb DB (`JOBBUDDY_PG_SERVICE` env or `.env`; defaults documented in `CLAUDE.md`). Query: most recent 20 sync_runs grouped by status and store. New failure clusters = headline finding. If a store is failing 3+ runs in a row, that's a scraper regression.
 - **Cost signal.** Token usage per distill call (input/output/cached) over the last 24h, and the running per-job cost. A regression — e.g. a prompt change that doubled output tokens, or cache-hit rate collapsing — is a headline finding. Pricing lookups live in `eval/models.py`.
 - **Project state.** `git log --oneline -20 main`, `gh issue list --state open`, `gh run list --branch main --limit 10`. What shipped? What's stuck?
-- **Session signal** via cc-explorer over this project. Starter patterns: `"^no\b"`, `"don't"`, `"NORTH_STAR"`, `"tool.*description"`, `"search.*not working"`, `"couldn't find"`, `"^perfect"`, `"^bombs away"`, `"frustrating"`. Extend per run.
 - **Workspace state.** What's in `claude-workspace/observations/`, what's stale, what no longer matches code.
 
 Tool failures: keep going. Surface as a comment on an existing relevant issue or a workspace observation. Don't retry; don't block the rest of the run.
