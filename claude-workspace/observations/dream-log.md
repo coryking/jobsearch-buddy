@@ -8,6 +8,28 @@ seeded, what was deferred.
 
 ---
 
+## 2026-05-20 — run 6
+
+**Primary target:** Sync health audit + active-jobs-with-404 investigation (porting the prior run's baseline). cc-explorer ran but couldn't load MCP tools — terminal environment gap.
+
+**Output shape:** phase-0.md + state-of-jsb rewrite + candidate queue update + this log. No PR.
+
+**Headline finding:** New error class identified — **active-jobs-with-404**. 7 companies with 2–178 active corpus jobs are 404-ing on their board URLs: Mistral AI (178), Coinbase (101), Thumbtack (35), Runway (35), Wordware (6), Synchron (3), Continua AI (2). These are scraper regressions: boards that worked well enough to populate the corpus but whose URLs have since changed. Their jobs will never re-fetch. This is distinct from the "404/0-jobs dead config" class (16 companies, Class B). Prior runs did not separate these two classes; state-of-jsb now does.
+
+**Secondary findings:**
+- DB stable: 99,331 active jobs, 0 distill backlog, 100% bio coverage. Tesla orphan backlog (5,919) unchanged — PR #69 unmerged.
+- Total sync errors: 32 (up from run 5's ~20, but this may reflect more thorough counting this run rather than a regression spike — all `last_sync` timestamps are 2026-05-19, the same sync).
+- PRs #68, #69: open 1 day, zero engagement. PRs #65, #67: open 6 days, zero engagement.
+- cc-explorer: MCP tools unavailable in terminal environment. Tried twice (runs 5 and 6); run 5 succeeded via skill invocation, run 6 could not load tool schemas. Noted as a candidate gap.
+
+**Candidates updated:** 4 existing candidates bumped runs-seen. 2 new candidates added: active-jobs-with-404 pattern (run 6 finding) and cc-explorer terminal gap. Observations-home candidate bumped to runs-seen=3 (eligible for promotion next run).
+
+**Deferred:** Slug corrections for the active-jobs-with-404 companies (need to verify correct URLs — requires web access or operator knowledge). Per-distill telemetry (schema change, operator judgment). sync_status history (schema change).
+
+**Keep-ability self-rating:** pause. The active-jobs-with-404 classification is sharper than the prior "404 errors" framing — it surfaces that Coinbase and Mistral specifically have stale corpus entries that degrade search quality. Whether it crosses into *merge/act-on* depends on whether those companies are in the operator's search scope. cc-explorer unavailability means I can't confirm that.
+
+---
+
 ## 2026-05-19 — run 5
 
 **Primary target:** escalation clause fires — meta-process. PRs #65/#67 still zero-comment after 5 runs. cc-explorer session-signal pass ran for the first time (deferred 4 runs). Signal: operator is in job-application mode ("just go man, i need to use the tool to apply for jobs"). Past dream PRs targeted fetcher coverage the operator isn't using. Root cause: sync-health ran before session signal, inverting the priority.
