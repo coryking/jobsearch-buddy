@@ -1,86 +1,62 @@
-# State of jsb — 2026-05-20
+# State of jsb — 2026-05-21
 
-Rewritten by each dream run, not appended. Run 6.
+Rewritten by each dream run, not appended. Run 7.
 
 ## TL;DR
 
-- **Corpus: stable.** 99,331 active jobs, 0 distill backlog, 100% bio coverage.
-- **Tesla orphan backlog unchanged.** PR #69 (orphan cleanup) still unmerged. 5,911 jobs with `description=NULL` continue to appear in search results and enrich backlog.
-- **New sync finding: 7 companies with active jobs are 404-ing.** This is a scraper regression class — not dead configs, but boards where the slug changed or ATS migrated after the corpus was populated. Their jobs will never re-fetch and will eventually go stale.
-- **cc-explorer unavailable in this terminal environment.** Can't confirm operator's session focus this run. Prior session signal (run 5): operator in job-application mode, focused on search quality + `get_application_form`.
-- **PRs #68/#69 still open, zero engagement (now 1 day old).** PRs #65/#67 unchanged.
-- **What to look at first:** Merge PR #69 (removes 5,911 dead jobs from search). Investigate the active-jobs-with-404 companies (below) — their existing corpus entries will drift stale.
-
----
-
-## Corpus health
-
-| Metric | Run 6 (today) | Run 5 |
-|---|---|---|
-| Active jobs | 99,331 | 99,499 |
-| Distill backlog | 0 | 0 |
-| Enrich backlog (active, description IS NULL) | 5,919 | 5,920 |
-| → Tesla orphans | 5,911 | 5,911 |
-| → Non-Tesla | 8 | ~9 |
-| Companies with ats | 645 | 694 |
-| Companies missing bio | 0 | 0 |
-
-PR #69 is filed but unmerged. Until it lands, the Tesla enrich backlog persists and those 5,911 jobs appear in search results with no description.
+- **Corpus: stable.** 99,291 active jobs, 0 distill backlog, ~100% bio coverage.
+- **Tesla orphan backlog: unchanged.** PR #69 (orphan cleanup migration) still unmerged. 5,920 jobs with `description=NULL` (almost all Tesla) appear in enrich backlog and can pollute search.
+- **ATS slug fix PR filed (#70).** Mistral AI (ashby→lever, 178 stale jobs) and Thumbtack (greenhouse→ashby, 35 stale jobs) verified and fixed. Next sync after merge will refresh their listings.
+- **5 companies remain 404-ing** with active corpus jobs. See detail below — most need operator judgment.
+- **Operator is in active job-application mode** (cc-explorer confirmed, run 7 via subagent). Not in dev mode. Prior session signal: search quality + `get_application_form` were the concerns.
+- **5 open PRs (#65, #67, #68, #69, #70) with zero engagement.** Dream output is outpacing review bandwidth.
 
 ## Sync health
 
-32 companies in error state. New breakdown distinguishing two error classes:
+**Error totals (as of 2026-05-20 sync):**
+| Error class | Companies | Jobs (last sync) |
+|---|---|---|
+| 404 Not Found (ATS migration / slug) | 24 | 360 |
+| 403 Forbidden (anti-bot, auth) | 3 | 7,783 |
+| 502 Bad Gateway (transient) | 3 | 6,274 |
+| Timeout | 1 | 612 |
 
-### Class A: Active-jobs-with-404 (scraper regression)
+**403 persistent** (not transient, won't self-heal):
+- Tesla (ats=NULL, 5,911 active jobs): 403 since May 6. PR #69 marks these as removed; blocked on merge.
+- Qualcomm (eightfold_v2, 1,868 jobs): `403 FORBIDDEN` on eightfold API. Anti-bot.
+- MX (workday, 4 jobs): 403 on Workday API. Low impact.
 
-Companies that successfully populated the corpus but are now returning 404 — board slug changed or ATS migrated. Their existing job rows accumulate as unfetchable stale listings.
+**502 / transient** (expected to self-heal):
+- Google (3,877 jobs), Walmart (1,217 jobs), Adobe (1,180 jobs): 502 on 2026-05-20. Likely transient.
 
-| Company | ATS | Board slug | Active jobs | Notes |
+**Timeout** (may be transient):
+- Airwallex (612 jobs): single timeout. Watch next sync.
+
+## Active-jobs-with-404 detail
+
+Companies whose ATS boards return 404 but still have active corpus jobs:
+
+| Company | ATS | Board | Active Jobs | Status |
 |---|---|---|---|---|
-| Mistral AI | Ashby | mistral | 178 | — |
-| Coinbase | Greenhouse | coinbase | 101 | — |
-| Airwallex | Ashby | airwallex | 612 | Timeout (not 404; may be transient) |
-| Snowflake | Ashby | snowflake | 417 | Timeout |
-| Skydio | Ashby | skydio | 110 | Timeout |
-| Replit | Ashby | replit | 79 | Timeout |
-| Thumbtack | Greenhouse | thumbtack | 35 | — |
-| Runway | Greenhouse | runwayml | 35 | — |
-| Wordware | Ashby | wordware.ai | 6 | — |
-| Synchron | Greenhouse | synchron | 3 | — |
-| Continua AI | Ashby | continua | 2 | — |
+| Mistral AI | ashby | mistral | 178 | **Fixed in PR #70** — moved to Lever/mistral |
+| Coinbase | greenhouse | coinbase | 101 | API 404; UI works at job-boards.greenhouse.io/coinbase. Possible Greenhouse API restriction. |
+| Runway | greenhouse | runwayml | 35 | Moved to Notion (unsupported ATS). No fix path without Notion support. |
+| Thumbtack | greenhouse | thumbtack | 35 | **Fixed in PR #70** — moved to Ashby/thumbtack |
+| Wordware | ashby | wordware.ai | 6 | API 404; UI works at jobs.ashbyhq.com/wordware.ai. Possible Ashby API restriction. |
+| Synchron | greenhouse | synchron | 3 | API 404; web search confirms still on Greenhouse. Possible slug mismatch. |
+| Continua AI | ashby | continua | 2 | API 404; UI works at jobs.ashbyhq.com/continua/. Possible Ashby API restriction. |
 
-Timeouts (Airwallex, Snowflake, Skydio, Replit) may be transient network failures — their boards may still be valid. The 404s are more definitive.
+**Pattern:** Coinbase, Wordware, and Continua AI all have public job board UIs that work but their machine-readable APIs return 404. This may reflect a change in how these ATSes expose the public listing API. Runway is a straightforward dead config (wrong ATS). Synchron needs slug investigation.
 
-### Class B: Dead configs (no active jobs, 404)
+## Data quality
 
-Config entries that never populated or whose jobs were all removed. Same as prior runs. Candidate for disable/delete per issue #42.
+- Distill backlog: 0 (clean)
+- `description=NULL` active jobs: 5,920 (all Tesla orphans, cleared by PR #69 on merge)
+- Bio coverage: 100% (as of run 6; no new companies added since)
 
-~16 companies: Adept AI, Cal.com, EvenUp, Fly.io, Groq, monday.com, Replicate, Tinybird, Turso, Flywire (board=**flywire2**, obviously wrong slug), Hebbia, Moment, Persona, WellSaid Labs, Weights & Biases, Test Corp (testcorp, looks like a test entry).
+## What to look at first
 
-### Class C: Persistent 403s
-
-| Company | ATS | Note |
-|---|---|---|
-| Qualcomm | Eightfold | Persistent. Not a slug issue. |
-| Tesla | Custom | 403 on new fetches; orphan jobs via PR #69. |
-| MX | Workday | Persistent. |
-
-### Other
-
-- **NetApp** (eightfold_v2): JSON parse error "Expecting value: line 2 column 1 (char 2)". Not a 404 or 403 — either empty response or HTML error page. 0 active jobs. May need investigation.
-
-## Open dream PRs
-
-| PR | Description | Status |
-|---|---|---|
-| #65 | Uber faucet config | Open, 0 comments, stale (not operator's current target) |
-| #67 | Taleo listing parser fixes | Open, 0 comments, stale |
-| #68 | dream.md: cc-explorer mandatory | Open, 0 comments (filed 2026-05-19) |
-| #69 | Migration: remove orphan Tesla jobs | Open, 0 comments (filed 2026-05-19) |
-
-## Open-question shapes pending operator judgment
-
-- **Active-jobs-with-404**: which companies had slug/ATS migrations vs. which are genuinely broken? Investigating current board URLs for Coinbase, Mistral, Runway, Thumbtack would distinguish.
-- **Dead slugs (Class B)**: fix slug (e.g. flywire2 → flywire), disable via #42 flag, or delete row?
-- `sync_status` history retention vs. last-attempt-wins (can't detect "failing for N days")
-- Per-distill telemetry (no cost tracking in DB)
+1. **Merge PR #70** — 213 stale corpus jobs (Mistral + Thumbtack) start refreshing on next sync. Low risk: two simple UPDATE statements.
+2. **Merge PR #69** — removes 5,920 Tesla dead rows from search results. Zero schema risk; 619 tests pass.
+3. **Coinbase 404** — may need a different scraping approach if Greenhouse blocked their API. Or the operator can investigate `job-boards.greenhouse.io` URL format.
+4. **5 open PRs total** — if review bandwidth is the bottleneck, the dream routine can shift to fewer/higher-value PRs.

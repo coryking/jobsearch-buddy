@@ -8,6 +8,33 @@ seeded, what was deferred.
 
 ---
 
+## 2026-05-21 — run 7
+
+**Primary target:** Active-jobs-with-404 class from run 6 — verify and fix the ATS slug regressions where possible.
+
+**Output shape:** PR #70 + state-of-jsb rewrite + candidate queue update + this log.
+
+**Headline finding:** Two confirmed ATS migrations verified and shipped as PR #70:
+- Mistral AI: Ashby (`mistral`) → Lever (`mistral`). Confirmed via `mistral.ai/careers` redirecting to `jobs.lever.co/mistral`.
+- Thumbtack: Greenhouse (`thumbtack`) → Ashby (`thumbtack`). Confirmed via `careers.thumbtack.com` redirecting to `jobs.ashbyhq.com/thumbtack` with 7 live jobs.
+
+After PR #70 merges and next sync runs, 213 stale active jobs (178 Mistral + 35 Thumbtack) will be refreshed.
+
+**Secondary findings:**
+- cc-explorer (via subagent, worked this run): operator in active job-application mode. Prior session (May 18) friction was search quality + `get_application_form`, both already shipped. No new friction signals.
+- DB health: 99,291 active jobs, 0 distill backlog. Unchanged from run 6 baseline.
+- Transient errors: Google/Walmart/Adobe 502s are likely one-day blips (last_sync 2026-05-20). Airwallex timeout also likely transient.
+- 5 remaining 404 companies (Coinbase 101, Runway 35, Wordware 6, Synchron 3, Continua AI 2): all investigated, none had clear fixable slugs. Coinbase/Wordware/Continua may have Ashby/Greenhouse API restrictions. Runway moved to Notion (unsupported). Synchron possibly slug-restricted.
+- cc-explorer subagent pattern confirmed viable. Run 6 failure was environment-specific; background subagent works reliably.
+
+**Candidates updated:** all bumped. active-with-404 updated to reflect PR #70 partial resolution and remaining 5 companies. cc-explorer candidate marked partially resolved.
+
+**Deferred:** Coinbase 404 investigation (may need new Greenhouse URL format support), Runway disable/Notion support decision, distill telemetry (blocked on schema, explicitly parked).
+
+**Keep-ability self-rating:** merge/act-on for PR #70 — two concrete UPDATE statements verified against live ATS APIs, 213 stale jobs cleared on next sync. The verification chain (careers page → ATS redirect → API test → PR) is the grounding that prior observation-only runs didn't have.
+
+---
+
 ## 2026-05-20 — run 6
 
 **Primary target:** Sync health audit + active-jobs-with-404 investigation (porting the prior run's baseline). cc-explorer ran but couldn't load MCP tools — terminal environment gap.

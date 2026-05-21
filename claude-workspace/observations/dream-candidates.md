@@ -20,7 +20,7 @@ Format: `seeded-on / shape / one-line description / state`.
   last-attempt-wins candidate below), this can't be detected from DB alone.
   Superseded by PR #69 for the active instance. Residual concern is the
   general detection problem.
-  Open. Runs seen: 4.
+  Open. Runs seen: 5.
 
 - **2026-05-15 / question / `sync_status` is last-attempt-wins, not append-only.**
   We can see *current* error state but not "this scraper has been failing
@@ -30,16 +30,15 @@ Format: `seeded-on / shape / one-line description / state`.
   small append-only `sync_run_history` table. The latter unlocks
   regression detection (success-rate-dropped-between-runs) which is named
   in dream.md Phase 2 patterns.
-  Open. Runs seen: 4.
+  Open. Runs seen: 5.
 
 - **2026-05-15 / question / No per-call distill telemetry stored.**
   The dream protocol references token-usage / cached-input ratio /
   cost-per-job tracking. None of those columns or tables exist. Either
-  rewrite the protocol, or add a lightweight `distill_telemetry` table
-  (jobs_id, model, input_tokens, output_tokens, cached_input_tokens,
-  cost_usd, ran_at). Without it, cost regressions cannot be caught from
-  the DB alone.
-  Open. Runs seen: 4.
+  rewrite the protocol, or add a lightweight `distill_telemetry` table.
+  **Status: blocked on schema.** Needs operator call on whether to add telemetry
+  storage. Not actionable without that decision. Stopped counting as a target.
+  Open. Runs seen: 5.
 
 - **2026-05-15 / question / "404 with 0 jobs" config errors — fix or disable?**
   ~16 companies are configured with a dead board slug and have never
@@ -50,44 +49,41 @@ Format: `seeded-on / shape / one-line description / state`.
   (c) Delete the row.
   The operator's call for most; `flywire2` and `testcorp` are clearly
   actionable without judgment.
-  Open. Runs seen: 4.
+  Open. Runs seen: 5.
 
 - **2026-05-15 / question / Open dream PRs without operator engagement.**
-  PRs #65, #67 (Uber/Taleo) open since 2026-05-14. PRs #68, #69 filed
-  2026-05-19, open 1 day. Total: 4 open dream PRs.
-  Status: zero engagement on all four. #68/#69 are too new to read; #65/#67
-  at 6 days with zero comments confirm these aren't on the operator's
-  near-term list. Next escalation: if #68/#69 still have zero engagement
-  at run 8 (i.e., after another full week), reassess dream's output shape.
-  Open. Runs seen: 6.
+  5 open dream PRs as of 2026-05-21:
+  - #65 (Uber/faucet config) — open since 2026-05-14, 7 days, 0 comments
+  - #67 (Taleo fetcher fix) — open since 2026-05-14, 7 days, 0 comments
+  - #68 (dream protocol: cc-explorer mandatory) — open since 2026-05-19, 2 days
+  - #69 (Tesla orphan cleanup migration) — open since 2026-05-19, 2 days
+  - #70 (ATS slug fixes: Mistral → Lever, Thumbtack → Ashby) — open since 2026-05-21
+  Zero engagement on all. cc-explorer signal (run 7): operator is in active
+  job-application mode, not dev mode — explains low review bandwidth.
+  Next calibration: if #65/#67 remain at 0 comments past run 9, consider
+  closing them (7→14 days without review likely signals low priority).
+  Open. Runs seen: 7.
 
 - **2026-05-15 / question / Is `claude-workspace/observations/` the right home?**
   The dream routine writes to a committed directory. The operator's
   re-read path is unclear. Worth one run's attention.
-  Open. Runs seen: 3.
+  Open. Runs seen: 4.
 
-- **2026-05-20 / pattern / Active-jobs-with-404: 7 companies, scraper regression class.**
-  NEW this run. Companies that successfully populated the corpus are now
-  returning 404 on their board URLs. Class A (404, not transient):
-  Mistral AI (ashby/mistral, 178 jobs), Coinbase (greenhouse/coinbase, 101),
-  Thumbtack (greenhouse/thumbtack, 35), Runway (greenhouse/runwayml, 35),
-  Wordware (ashby/wordware.ai, 6), Synchron (greenhouse/synchron, 3),
-  Continua AI (ashby/continua, 2). Plus 4 Ashby timeouts that may be
-  transient (Airwallex 612, Snowflake 417, Skydio 110, Replit 79).
-  These companies' jobs will never re-fetch. They need slug correction or
-  ATS migration. Operator judgment needed on which to investigate first.
-  If Coinbase/Mistral are priority companies, their stale jobs are
-  actively degrading search quality.
-  Open. Runs seen: 1.
+- **2026-05-20 / pattern / Active-jobs-with-404: 5 companies still unresolved.**
+  PR #70 fixes Mistral (178 jobs) and Thumbtack (35 jobs). Remaining:
+  - Coinbase (greenhouse/coinbase, 101 jobs): API 404 but UI works. May be
+    Greenhouse API restriction or new URL format (`job-boards.greenhouse.io`).
+  - Runway (greenhouse/runwayml, 35 jobs): moved to Notion (unsupported). Dead config.
+  - Wordware (ashby/wordware.ai, 6 jobs): API 404 but UI works. Ashby API restriction?
+  - Synchron (greenhouse/synchron, 3 jobs): API 404, still on Greenhouse per web search.
+    Slug capitalization or API restriction.
+  - Continua AI (ashby/continua, 2 jobs): API 404 but UI works. Ashby API restriction?
+  Coinbase is highest-value (101 stale jobs). Operator judgment on which to investigate.
+  Open. Runs seen: 2.
 
-- **2026-05-20 / gap / cc-explorer unavailable in terminal dream environment.**
-  The dream protocol mandates cc-explorer as first signal (PR #68). But
-  the cc-explorer MCP tools aren't available in the terminal environment
-  where the dream routine runs (they require a Claude Desktop MCP server
-  connection). Runs 5 and 6 both tried; run 5 got results via the skill
-  invocation, run 6 got no MCP tools loaded. This is a tool-availability
-  gap: the mandate in PR #68 can't be honored reliably.
-  Two paths: (a) document that cc-explorer is best-effort in the protocol,
-  or (b) find an alternative session-signal approach (grep JSONL directly,
-  which CLAUDE.md discourages). Needs operator input on acceptable fallback.
-  Open. Runs seen: 1.
+- **2026-05-20 / gap / cc-explorer availability.**
+  Run 5 used the skill directly (worked). Run 6 failed (MCP tools not loaded).
+  Run 7: worked via background subagent approach. Subagent pattern is viable —
+  add to protocol. The "cc-explorer is best-effort" note in PR #68 covers this.
+  **Partially resolved:** subagent pattern works. No further protocol change needed.
+  Open. Runs seen: 2.
