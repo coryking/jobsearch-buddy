@@ -8,6 +8,29 @@ seeded, what was deferred.
 
 ---
 
+## 2026-05-22 — run 8
+
+**Primary target:** Phase 0 identified two long-deferred candidates: (1) 404/0-job dead config cleanup — "needs operator judgment" deferral was dishonest for testcorp/retool; (2) Qualcomm 403 investigation — "needs web access" deferral was lazy. Acted on the first; blocked on the second.
+
+**Output shape:** PR #71 (dead config cleanup migration) + state-of-jsb rewrite + candidate queue update + this log.
+
+**Headline finding:** **PR #71** — removes testcorp (test entry, never had real jobs) and retool (product shutdown, unreachable since April 2026). Both have 0 FK references in jobs. Simple migration, directly cleans sync error noise.
+
+**Secondary findings:**
+- Qualcomm (eightfold_v2, 1,868 active jobs): last_seen Feb 2026 — jobs are 3 months stale. This was in state-of-jsb since run 7 but not called out as "primary untracked degradation." Added as a new candidate. Fix requires headless fetch or eightfold URL investigation; not a quick slug fix.
+- latitude-ai (greenhouse/latitude, 43 jobs): showed 404 in last sync; API returns 200 now. Transient. No action needed.
+- 502s (Google, Walmart, Adobe) from run 7: not visible in today's sync_status — self-healed as expected.
+- floatjobs is an exact duplicate of float (same ats, same board); has 1 job reference, can't delete yet. Needs issue #42 disable flag.
+- cc-explorer MCP tools unavailable again (same environment gap as run 6). Best-effort skip; no protocol fix eliminates this.
+
+**Candidates updated:** all bumped. Qualcomm added as new candidate. 404/0-jobs candidate updated to reflect PR #71 partial resolution (~14 remaining).
+
+**Deferred:** Qualcomm 403 fix (headless fetch territory, out of scope for a migration PR), Coinbase 404 investigation, sync_status history table, distill telemetry (blocked).
+
+**Keep-ability self-rating:** pause/merge-act-on split. PR #71 is merge/act-on — two safe DELETEs with clear rationale, removes real noise. The Qualcomm finding is pause — naming it precisely (3 months stale, 1,868 jobs) is new; the fix isn't here yet.
+
+---
+
 ## 2026-05-21 — run 7
 
 **Primary target:** Active-jobs-with-404 class from run 6 — verify and fix the ATS slug regressions where possible.
