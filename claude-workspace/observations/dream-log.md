@@ -8,6 +8,28 @@ seeded, what was deferred.
 
 ---
 
+## 2026-05-23 — run 9
+
+**Primary target:** Phase 0 identified the persistent deferral of Coinbase (3 runs) and the open-PR engagement blindspot (never checked). Checked PR status first: all 7 open PRs unmerged, no merges since May 14. Shifted to investigating the full zero-job error population — found 8 confirmed-dead company configs (acquired/ATS-moved) beyond the 2 in PR #71. Produced batch cleanup PR #72 for 6 of them.
+
+**Output shape:** PR #72 + state-of-jsb rewrite + candidate queue update + this log.
+
+**Headline finding:** **PR #72** — removes 6 confirmed-dead company configs (0 total jobs each): adept-ai, fly, groq, replicate, wandb, wellsaid-labs. Verified: each company has either shut down, been acquired, or moved to an unsupported ATS. All have 0 active and 0 total jobs — no FK risk, safe to delete. Reduces sync error noise by 6 companies per sync run.
+
+**New findings:**
+- **Greenhouse embed-board vs v1-API split** (new candidate): Hebbia, Coinbase, Flywire all show active boards at `boards.greenhouse.io/{slug}` but `boards-api.greenhouse.io/v1/boards/{slug}/jobs` returns 404. These companies are hiring but we're not collecting their jobs. This is a systematic gap, not individual slug issues.
+- **Harvey (ashby/harvey) timeout**: 248 active jobs, last_seen May 21. Board returned 259 jobs on manual API test today. Intermittent, not a persistent failure.
+- **NetApp (eightfold_v2)**: JSON parse error (HTML response, likely bot detection). Zero jobs, low urgency. Different failure class from Qualcomm 403.
+- **No merges in 9 days**: Dream output is outpacing review bandwidth. #65/#67 now at threshold for closure consideration.
+
+**Candidates updated:** all bumped. New candidate: Greenhouse embed-board/v1-API split. Active-jobs-with-404 updated with Coinbase embed-board note. Zero-job count updated to reflect PR #71/#72 partial resolution.
+
+**Deferred:** Coinbase embed-board investigation (would need fetcher change), Qualcomm fix (headless territory), #65/#67 closure decision (operator judgment).
+
+**Keep-ability self-rating:** merge/act-on for PR #72 — 6 confirmed-dead companies with 0 FK references, verified via direct API test and company status research. The Greenhouse embed-board finding is pause-worthy — it's a new systematic gap (not just individual dead configs) that could affect more companies than the ones identified this run.
+
+---
+
 ## 2026-05-22 — run 8
 
 **Primary target:** Phase 0 identified two long-deferred candidates: (1) 404/0-job dead config cleanup — "needs operator judgment" deferral was dishonest for testcorp/retool; (2) Qualcomm 403 investigation — "needs web access" deferral was lazy. Acted on the first; blocked on the second.

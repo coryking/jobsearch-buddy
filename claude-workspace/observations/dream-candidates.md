@@ -20,7 +20,7 @@ Format: `seeded-on / shape / one-line description / state`.
   last-attempt-wins candidate below), this can't be detected from DB alone.
   Superseded by PR #69 for the active instance. Residual concern is the
   general detection problem.
-  Open. Runs seen: 6.
+  Open. Runs seen: 7.
 
 - **2026-05-15 / question / `sync_status` is last-attempt-wins, not append-only.**
   We can see *current* error state but not "this scraper has been failing
@@ -30,7 +30,7 @@ Format: `seeded-on / shape / one-line description / state`.
   small append-only `sync_run_history` table. The latter unlocks
   regression detection (success-rate-dropped-between-runs) which is named
   in dream.md Phase 2 patterns.
-  Open. Runs seen: 6.
+  Open. Runs seen: 7.
 
 - **2026-05-15 / question / No per-call distill telemetry stored.**
   The dream protocol references token-usage / cached-input ratio /
@@ -38,51 +38,49 @@ Format: `seeded-on / shape / one-line description / state`.
   rewrite the protocol, or add a lightweight `distill_telemetry` table.
   **Status: blocked on schema.** Needs operator call on whether to add telemetry
   storage. Not actionable without that decision. Stopped counting as a target.
-  Open. Runs seen: 6.
+  Open. Runs seen: 7.
 
 - **2026-05-15 / question / "404 with 0 jobs" config errors — fix or disable?**
-  ~14 companies are configured with a dead board slug and have never
-  accumulated jobs (after removing testcorp + retool via PR #71). Fix options:
-  (a) Correct the slug where a working URL exists.
-  (b) Mark disabled via #42 flag (not yet implemented).
-  (c) Delete if clearly dead (shutdown companies).
-  PR #71 handles testcorp and retool. Remaining ~12 need investigation or
-  #42 to land first.
-  Open. Runs seen: 6.
+  ~10 companies still error on sync with 0 jobs (after PR #71 removes testcorp +
+  retool, and PR #72 removes 6 more). Remaining: cal, turso, monday, tinybird,
+  flywire, hebbia, moment, persona, synchron, continua. Some may be fixable
+  slugs, some may be dead companies, some may be API-restriction issues. Need
+  investigation per company.
+  Note: Hebbia specifically shows a board at `boards.greenhouse.io/hebbia` in
+  web search but `boards-api.greenhouse.io/v1/boards/hebbia/jobs` returns 404
+  — possible Greenhouse embed-board-only companies that don't expose the v1 API.
+  Open. Runs seen: 7.
 
 - **2026-05-15 / question / Open dream PRs without operator engagement.**
-  6 open dream PRs as of 2026-05-22:
-  - #65 (Uber/faucet config) — open since 2026-05-14, 8 days, 0 comments
-  - #67 (Taleo fetcher fix) — open since 2026-05-14, 8 days, 0 comments
-  - #68 (dream protocol: cc-explorer mandatory) — open since 2026-05-19, 3 days
-  - #69 (Tesla orphan cleanup migration) — open since 2026-05-19, 3 days
+  7 open dream PRs as of 2026-05-23:
+  - #65 (Uber/faucet config) — open since 2026-05-14, 9 days, 0 comments
+  - #67 (Taleo fetcher fix) — open since 2026-05-14, 9 days, 0 comments
+  - #68 (dream protocol: cc-explorer mandatory) — open since 2026-05-19, 4 days
+  - #69 (Tesla orphan cleanup migration) — open since 2026-05-19, 4 days
   - #70 (ATS slug fixes: Mistral → Lever, Thumbtack → Ashby) — open since 2026-05-21
   - #71 (dead config cleanup: testcorp + retool) — open since 2026-05-22
-  Per prior calibration: if #65/#67 remain at 0 comments past run 9 (14 days),
-  consider closing them. Dream output is outpacing review bandwidth.
-  Open. Runs seen: 8.
-
-- **2026-05-15 / question / Is `claude-workspace/observations/` the right home?**
-  The dream routine writes to a committed directory. The operator's
-  re-read path is unclear. Worth one run's attention.
-  Open. Runs seen: 5.
+  - #72 (dead config cleanup batch 2: 6 companies) — opened 2026-05-23
+  No merges since 2026-05-14 (9 days). Dream output is clearly outpacing review
+  bandwidth. Run 9 threshold for #65/#67: consider closing. If still unmerged
+  at run 10, close them with a comment explaining the stale rationale.
+  Open. Runs seen: 9.
 
 - **2026-05-20 / pattern / Active-jobs-with-404: 5 companies still unresolved.**
   PR #70 fixes Mistral (178 jobs) and Thumbtack (35 jobs). Remaining:
-  - Coinbase (greenhouse/coinbase, 101 jobs): API 404 but UI may work. Needs investigation.
+  - Coinbase (greenhouse/coinbase, 101 jobs): API 404 but UI at boards.greenhouse.io/coinbase
+    works. Could be an embed-only board — different fetch path needed.
   - Runway (greenhouse/runwayml, 35 jobs): moved to Notion (unsupported). Dead config.
-  - Wordware (ashby/wordware.ai, 6 jobs): API 404 but UI works. Ashby API restriction?
+  - Wordware (ashby/wordware.ai, 6 jobs): API 403 direct / 404 via fetcher. UI works.
   - Synchron (greenhouse/synchron, 3 jobs): API 404, still on Greenhouse per web search.
-  - Continua AI (ashby/continua, 2 jobs): API 404 but UI works. Ashby API restriction?
-  latitude-ai showed as 404 in last sync but API returns 200 today — likely transient.
-  Open. Runs seen: 3.
+  - Continua AI (ashby/continua, 2 jobs): API 403 direct / 404 via fetcher. UI works.
+  Open. Runs seen: 4.
 
 - **2026-05-20 / gap / cc-explorer availability.**
   Run 5: worked via skill directly. Run 6: MCP tools unavailable. Run 7: worked via
-  background subagent (but subagent_type 'project-mining:cc-explorer' not available in
-  Agent tool). Run 8: skill loaded, MCP tools not discoverable via ToolSearch.
+  background subagent. Run 8: skill loaded, MCP tools not discoverable. Run 9: not
+  attempted (MCP tools not loaded in this context).
   The gap is environment-specific; no protocol fix eliminates it. Best-effort.
-  Open. Runs seen: 3.
+  Open. Runs seen: 4.
 
 - **2026-05-22 / pattern / Qualcomm 403 — 1,868 active jobs stale since Feb 2026.**
   Qualcomm eightfold_v2 API returns 403 FORBIDDEN. Job corpus last refreshed
@@ -90,4 +88,14 @@ Format: `seeded-on / shape / one-line description / state`.
   If Qualcomm is in the operator's search scope this is a meaningful degradation.
   Options: headless fetch (camoufox), different eightfold URL pattern, or
   disable Qualcomm and accept the staleness.
+  Open. Runs seen: 2.
+
+- **2026-05-23 / pattern / Greenhouse embed-board vs v1-API split.**
+  Some companies use old-style Greenhouse boards (`boards.greenhouse.io/{slug}`)
+  that appear active in web search and show jobs at `boards.greenhouse.io/{slug}/jobs/{id}`,
+  but `boards-api.greenhouse.io/v1/boards/{slug}/jobs` returns 404. Confirmed for:
+  Hebbia, Coinbase, Flywire. Our fetcher uses only the v1 API. These companies have
+  real active postings we're not collecting. Could affect more companies we haven't
+  audited. Resolution: add an embed-board fetch path, or find the alternate API for
+  these boards.
   Open. Runs seen: 1.

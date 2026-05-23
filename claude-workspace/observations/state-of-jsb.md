@@ -1,31 +1,32 @@
-# State of jsb — 2026-05-22
+# State of jsb — 2026-05-23
 
-Rewritten by each dream run, not appended. Run 8.
+Rewritten by each dream run, not appended. Run 9.
 
 ## TL;DR
 
-- **Corpus: stable.** 99,340 active jobs, 0 distill backlog, 5,916 enrich backlog (Tesla orphans, unchanged — PR #69 pending merge).
-- **Qualcomm 403 is the biggest untracked degradation** — 1,868 active jobs last_seen Feb 2026 (3 months stale). Persistent eightfold_v2 403; anti-bot likely. No fix attempted yet.
-- **Dead config cleanup PR filed (#71).** Deletes testcorp (test entry) and retool (product shutdown). Zero corpus impact; removes sync noise.
-- **ATS slug fix PR (#70) still unmerged.** Mistral (178 stale) and Thumbtack (35 stale) await merge.
-- **5 open PRs (#65, #67, #68, #69, #70) + 1 new (#71) with zero engagement** on older ones.
-- **cc-explorer MCP unavailable this run** (same environment gap as run 6). Last operator signal (run 7 via subagent): active job-application mode.
+- **Corpus: stable.** 98,999 active jobs, 0 distill backlog, 5,917 enrich backlog (Tesla orphans — PR #69 pending merge).
+- **7 open PRs, 0 merged since May 14.** Output is outpacing review bandwidth.
+- **PR #72 (new this run):** removes 6 confirmed-dead company configs (0 total jobs each — acquired companies and ATS-moved companies with unsupported new platforms). Reduces sync error noise.
+- **Qualcomm 403** remains the biggest untracked degradation — 1,868 active jobs stale since Feb 2026 (3 months). Persistent eightfold_v2 403.
+- **Harvey (ashby/harvey)** timed out in last sync but returned 259 jobs on manual check today. Intermittent, not persistent.
+- **NetApp (eightfold_v2)** has a JSON parse error ("Expecting value"), not a 403. Zero jobs. Different failure class from Qualcomm.
+- **Hebbia**: old-style `boards.greenhouse.io/hebbia` board shows jobs in web search, but `boards-api.greenhouse.io/v1/boards/hebbia/jobs` returns 404. Possible API-restriction class on old Greenhouse embed boards.
 
 ## Sync health
 
-**Error totals (2026-05-21 sync):**
-| Error class | Companies | Jobs in corpus |
+**Error totals (2026-05-22 sync):**
+| Error class | Companies | Active jobs affected |
 |---|---|---|
-| 404 Not Found (ATS migration / slug) | ~24 | 400+ |
-| 403 Forbidden (anti-bot, auth) | 3 | 7,783 |
+| 404 Not Found (slug dead / API restricted) | 24 | ~370 |
+| 403 Forbidden (anti-bot, auth) | 4 | 7,783 |
+| Timeout (intermittent) | 1 (harvey) | 248 (not stale — seen May 21) |
 | JSON parse error | 1 (netapp) | 0 |
 
-**403 persistent** (not transient, won't self-heal):
+**403 persistent** (not transient):
 - Tesla (ats=NULL, 5,911 active jobs): 403 since May 6. PR #69 marks these as removed; blocked on merge.
-- Qualcomm (eightfold_v2, 1,868 jobs): `403 FORBIDDEN` since at least Feb 2026. Jobs are 3 months stale. No fix path identified — may require headless fetch or manual investigation.
-- MX (workday, 4 jobs): 403. Low corpus impact.
-
-**502 / transient from prior run:** Google, Walmart, Adobe — not visible in today's sync_status errors. Likely self-healed.
+- Qualcomm (eightfold_v2, 1,868 jobs): `403 FORBIDDEN` since Feb 2026. Jobs 3 months stale. No fix path identified.
+- MX (workday, 4 jobs): 403. Low impact.
+- NetApp (eightfold_v2, 0 jobs): JSON parse error. Bot detection returning HTML? Different failure from Qualcomm 403.
 
 ## Active-jobs-with-404 detail
 
@@ -34,22 +35,26 @@ Rewritten by each dream run, not appended. Run 8.
 | Mistral AI | ashby→lever | mistral | 178 | **Fixed in PR #70** — awaiting merge |
 | Coinbase | greenhouse | coinbase | 101 | API 404; UI may work via different URL. Needs investigation. |
 | Thumbtack | greenhouse→ashby | thumbtack | 35 | **Fixed in PR #70** — awaiting merge |
-| Runway | greenhouse | runwayml | 35 | Moved to Notion (unsupported ATS). Dead config. |
-| latitude-ai | greenhouse | latitude | 43 | Showed 404 in 2026-05-21 sync; API returns 200 today (run 8). Likely transient. |
+| Runway | greenhouse | runwayml | 35 | Moved to Notion (unsupported). Dead config — needs disable/delete. |
 | Wordware | ashby | wordware.ai | 6 | API 404; UI works. Possible Ashby API restriction. |
-| Synchron | greenhouse | synchron | 3 | API 404; still on Greenhouse per web search. Slug or restriction. |
+| Synchron | greenhouse | synchron | 3 | API 404; still on Greenhouse per web search. |
 | Continua AI | ashby | continua | 2 | API 404; UI works. Possible Ashby API restriction. |
+
+## Zero-job dead configs (sync noise, no corpus impact)
+
+About 16 companies error on every sync but have 0 jobs. PR #72 (new) removes 6 of these.
+Remaining (~10): testcorp, retool (PR #71 pending), and others with unclear status (cal, turso, monday, tinybird, etc. — all return 403/404, need investigation to categorize as dead vs. fixable slug).
 
 ## Data quality
 
 - Distill backlog: 0 (clean)
-- Enrich backlog: 5,916 (Tesla orphans — unchanged; cleared by PR #69 on merge)
+- Enrich backlog: 5,917 (Tesla orphans — PR #69 clears on merge)
 - Bio coverage: 100%
+- Harvey: 248 active jobs, last_seen May 21 — not degraded despite timeout in last sync
 
 ## What to look at first
 
-1. **Merge PR #70** — 213 stale corpus jobs (Mistral + Thumbtack) refresh on next sync. Low risk.
-2. **Merge PR #69** — removes 5,916 Tesla dead rows from search. Zero schema risk.
-3. **Merge PR #71** — removes testcorp + retool from sync noise. Two safe DELETEs.
-4. **Qualcomm** — 1,868 jobs haven't refreshed since Feb 2026. If Qualcomm roles are in scope, these results are months stale and degrading search quality. May need headless fetch or a URL pattern change on the eightfold_v2 fetcher.
-5. **PRs #65/#67** — 8 days without review. Consider closing if they're not a priority; the PR backlog is becoming its own noise.
+1. **Merge PRs #70, #69, #71, #72** — each is a concrete fix. Combined effect: ~213 stale jobs refreshed, 5,917 dead search results removed, ~8 dead sync errors eliminated. All low-risk.
+2. **PRs #65 / #67** — 9 days open, 0 comments. At run 9. Consider closing; the PR backlog is becoming its own noise signal.
+3. **Qualcomm** — 1,868 jobs stale since Feb. If Qualcomm roles are in scope, search quality is meaningfully degraded. No code fix available without headless fetch.
+4. **Coinbase** — 101 active jobs, 404 on v1 API but UI works at `boards.greenhouse.io/coinbase`. Could be an API-restricted board needing a different fetch path.
