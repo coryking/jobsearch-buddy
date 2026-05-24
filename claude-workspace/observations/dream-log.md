@@ -8,6 +8,31 @@ seeded, what was deferred.
 
 ---
 
+## 2026-05-24 — run 10
+
+**Primary target:** Run-10 threshold: close PRs #65 and #67 (10 days open, 0 engagement). Phase 0 correctly identified dead-config PR pattern-lock across runs 7/8/9 and redirected toward PR queue reduction. Also investigated Greenhouse embed-board hypothesis from run 9 — not confirmed.
+
+**Output shape:** PR closes (#65, #67) + state-of-jsb rewrite + candidate queue update + phase-0.md + this log.
+
+**Headline action:** Closed PR #65 (Uber faucet config) and PR #67 (Taleo parser fix) with explanatory comments. Both open 10 days with 0 engagement. Queue reduced from 7 to 5 open PRs.
+
+**Greenhouse embed-board hypothesis (run 9) revised:** Tested `boards.greenhouse.io` redirects for coinbase, synchron, hebbia. All redirect to `job-boards.greenhouse.io/{slug}` (404 or 500). Run 9's hypothesis that these companies use embed-only boards was wrong — they appear to have left Greenhouse entirely. The companies with active-jobs-and-404 in the corpus (coinbase 101, synchron 3) are more likely moved-off-Greenhouse than fixable via an embed-board fetch path.
+
+**New findings:**
+- `evenup` (ashby/evenup, 0 jobs): new 404, not in candidates. Added. Both `evenup` and `evenuplegal` Ashby slugs return 404.
+- `mx` (workday 403, 4 jobs): new 403, small company. Not investigated.
+- Corpus: 99,417 active jobs, 0 distill backlog. Stable.
+
+**cc-explorer:** MCP tools not discoverable again (run 8 same). Best-effort skip.
+
+**Candidates updated:** all bumped. Greenhouse embed-board hypothesis revised. `evenup` added. PR engagement candidate updated to reflect closures.
+
+**Deferred:** remaining 5 open PRs (operator review), batch dead-config cleanup for ~9 remaining 0-job companies (deferring until queue clears), Qualcomm 403 fix (headless fetch territory).
+
+**Keep-ability self-rating:** pause. Closing #65/#67 reduces visible reviewer debt and signals the dream is tracking review bandwidth, not just output. The embed-board hypothesis correction is a genuine audit of a prior wrong call — more valuable than confirming the wrong finding across another run.
+
+---
+
 ## 2026-05-23 — run 9
 
 **Primary target:** Phase 0 identified the persistent deferral of Coinbase (3 runs) and the open-PR engagement blindspot (never checked). Checked PR status first: all 7 open PRs unmerged, no merges since May 14. Shifted to investigating the full zero-job error population — found 8 confirmed-dead company configs (acquired/ATS-moved) beyond the 2 in PR #71. Produced batch cleanup PR #72 for 6 of them.
