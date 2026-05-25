@@ -20,7 +20,7 @@ Format: `seeded-on / shape / one-line description / state`.
   last-attempt-wins candidate below), this can't be detected from DB alone.
   Superseded by PR #69 for the active instance. Residual concern is the
   general detection problem.
-  Open. Runs seen: 8.
+  Open. Runs seen: 9.
 
 - **2026-05-15 / question / `sync_status` is last-attempt-wins, not append-only.**
   We can see *current* error state but not "this scraper has been failing
@@ -30,7 +30,7 @@ Format: `seeded-on / shape / one-line description / state`.
   small append-only `sync_run_history` table. The latter unlocks
   regression detection (success-rate-dropped-between-runs) which is named
   in dream.md Phase 2 patterns.
-  Open. Runs seen: 8.
+  Open. Runs seen: 9.
 
 - **2026-05-15 / question / No per-call distill telemetry stored.**
   The dream protocol references token-usage / cached-input ratio /
@@ -38,7 +38,7 @@ Format: `seeded-on / shape / one-line description / state`.
   rewrite the protocol, or add a lightweight `distill_telemetry` table.
   **Status: blocked on schema.** Needs operator call on whether to add telemetry
   storage. Not actionable without that decision. Stopped counting as a target.
-  Open. Runs seen: 8.
+  Open. Runs seen: 9.
 
 - **2026-05-15 / question / "404 with 0 jobs" config errors — fix or disable?**
   After PRs #71 and #72 merge, ~9 companies will still error with 0 jobs:
@@ -47,15 +47,13 @@ Format: `seeded-on / shape / one-line description / state`.
   clears. Next run: if any of #71/#72 merged, consider a batch cleanup PR for these.
   Note: the Greenhouse embed-board hypothesis for hebbia/flywire is not confirmed —
   see revised embed-board candidate below.
-  Open. Runs seen: 8.
+  Open. Runs seen: 9.
 
 - **2026-05-15 / question / Open dream PRs without operator engagement.**
-  As of 2026-05-24: 5 open PRs (#68, #69, #70, #71, #72). #65 and #67 closed
-  today (run-10 threshold, 10 days open, 0 engagement). No merges since 2026-05-14
-  (10 days). PR output is outpacing review bandwidth. Future runs should avoid
-  opening new PRs unless existing ones have started merging, or the fix is
-  significantly higher-leverage than what's already queued.
-  Open. Runs seen: 10.
+  As of 2026-05-25: 5 open PRs (#68, #69, #70, #71, #72). No merges since 2026-05-14
+  (11 days). No new PRs opened run 11 — PR gate held. Future runs: avoid new PRs
+  unless existing ones start merging.
+  Open. Runs seen: 11.
 
 - **2026-05-20 / pattern / Active-jobs-with-404: 5 companies still unresolved.**
   PR #70 fixes Mistral (178 jobs) and Thumbtack (35 jobs). Remaining:
@@ -66,37 +64,33 @@ Format: `seeded-on / shape / one-line description / state`.
   - Synchron (greenhouse/synchron, 3 jobs): 404 on v1 API and new embed domain.
     Likely moved off Greenhouse.
   - Continua AI (ashby/continua, 2 jobs): API 403 direct / 404 via fetcher.
-  Open. Runs seen: 5.
+  Open. Runs seen: 6.
 
 - **2026-05-20 / gap / cc-explorer availability.**
   Run 5: worked via skill directly. Run 6: MCP tools unavailable. Run 7: worked via
   background subagent. Run 8: skill loaded, MCP tools not discoverable. Run 9: not
-  attempted. Run 10: skill loaded, MCP tools not discoverable (same as run 8).
+  attempted. Run 10: skill loaded, MCP tools not discoverable. Run 11: same.
   The gap is environment-specific; no protocol fix eliminates it. Best-effort.
-  Open. Runs seen: 5.
+  Open. Runs seen: 6.
 
 - **2026-05-22 / pattern / Qualcomm 403 — 1,868 active jobs stale since Feb 2026.**
   Qualcomm eightfold_v2 API returns 403 FORBIDDEN. Job corpus last refreshed
-  Feb 2026 — 3+ months stale. Persistent, not transient. No fix path identified.
-  If Qualcomm is in the operator's search scope this is a meaningful degradation.
-  Options: headless fetch (camoufox), different eightfold URL pattern, or
-  disable Qualcomm and accept the staleness.
-  Open. Runs seen: 3.
+  Feb 2026 — 3+ months stale. Persistent, not transient. Run 11 confirmed:
+  Netflix uses the same eightfold_v2 fetcher and works — this is Qualcomm-specific
+  domain bot detection, not a fetcher bug. No fix without headless fetch (camoufox).
+  Options: camoufox session bootstrap, or disable Qualcomm and accept the staleness.
+  Open. Runs seen: 4.
 
 - **2026-05-23 / pattern / Greenhouse embed-board hypothesis — REVISED.**
   Run 9 hypothesized that Hebbia, Coinbase, Flywire use embed-only Greenhouse boards
-  not exposed via the v1 API. Run 10 tested: `boards.greenhouse.io/coinbase` redirects
-  to `job-boards.greenhouse.io/coinbase` (404); `boards.greenhouse.io/synchron`
-  redirects to `job-boards.greenhouse.io/synchron` (404); `boards.greenhouse.io/hebbia`
-  redirects to `job-boards.greenhouse.io/hebbia` (500). All three 404/500 on the
-  new Greenhouse embed domain. The embed-board hypothesis is not confirmed —
-  these companies appear to have left Greenhouse rather than using a different board type.
-  Recommend: reclassify coinbase, synchron, hebbia as likely-moved-off-Greenhouse
-  (similar to Runway→Notion). Move to "0-job or stale dead configs" category if confirmed.
-  Open. Runs seen: 2.
+  not exposed via the v1 API. Run 10 tested: all redirect to `job-boards.greenhouse.io`
+  and 404/500. Embed-board hypothesis not confirmed — these companies appear to have
+  left Greenhouse. Reclassified: coinbase, synchron, hebbia as likely-moved-off-Greenhouse
+  (same as Runway→Notion). Will be included in next batch dead-config PR when queue clears.
+  Open. Runs seen: 3.
 
 - **2026-05-24 / pattern / evenup (ashby, 0 jobs) — new dead config.**
   EvenUp returns 404 on Ashby (`api.ashbyhq.com/posting-api/job-board/evenup`).
   Also tried `evenuplegal` — also 404. 0 jobs in corpus. Low priority given PR
   backlog saturation. Include in next batch dead-config PR when queue clears.
-  Open. Runs seen: 1.
+  Open. Runs seen: 2.

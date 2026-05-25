@@ -8,6 +8,30 @@ seeded, what was deferred.
 
 ---
 
+## 2026-05-25 — run 11
+
+**Primary target:** Phase 0 identified dead-config-PR pattern-lock (runs 7–10, 4 consecutive). PR gate enforced: 5 open PRs, 0 merges in 11 days — no new PR this run. Mandatory investment: areas that have never been checked. Executed first distill quality audit and first bio staleness check.
+
+**Output shape:** state-of-jsb rewrite + candidate queue update + phase-0.md + this log. No PR.
+
+**Headline finding (new territory): Distill quality is healthy.** First audit of `short_jd` length distribution across 93,424 distilled active jobs: p50=521 chars, p10=374, p90=672, range 76–1,253. No systematic truncation. Short outliers (< 200 chars) are international postings (Apple Japan/Korea, Coupang Taiwan) or genuinely brief JDs, not distill failures. This rules distill quality out as a source of search degradation.
+
+**Second new finding: Bio coverage 100%.** All 595 companies with active jobs have short_bio, long_bio, and embedding. Bios are 19–20 days old (May 5–6 research run), within the 90-day threshold. Bio staleness is not a current concern.
+
+**Qualcomm 403 (4-run threshold):** Confirmed domain-level bot detection. Netflix uses the same eightfold_v2 fetcher and works. The issue is Qualcomm-specific, not a fetcher bug. No fix without headless (camoufox). Updated candidate with this finding.
+
+**Sync status:** 29 companies erroring, same classes as run 10. No new regressions. Several covered by pending PRs that haven't merged.
+
+**cc-explorer:** MCP tools not discoverable again (runs 8, 10, 11 all same). Best-effort skip.
+
+**Candidates updated:** all bumped. Qualcomm candidate updated with Netflix comparison finding. Greenhouse embed-board reclassified as moved-off-Greenhouse.
+
+**Deferred:** remaining 5 open PRs (operator review — gate holds), batch dead-config cleanup for ~9 remaining 0-job companies, Qualcomm headless fix, cc-explorer terminal gap.
+
+**Keep-ability self-rating:** pause. The distill quality audit is the first clean-bill-of-health report on an area the protocol has always listed but never checked. Knowing distill is NOT the problem is useful — it focuses the actual search quality question on corpus staleness (Qualcomm, Tesla, active-with-404). Not merge/act-on because no fix landed, but not performative either — the audit required real queries and has a concrete finding.
+
+---
+
 ## 2026-05-24 — run 10
 
 **Primary target:** Run-10 threshold: close PRs #65 and #67 (10 days open, 0 engagement). Phase 0 correctly identified dead-config PR pattern-lock across runs 7/8/9 and redirected toward PR queue reduction. Also investigated Greenhouse embed-board hypothesis from run 9 — not confirmed.
