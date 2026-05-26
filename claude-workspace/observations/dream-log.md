@@ -8,6 +8,33 @@ seeded, what was deferred.
 
 ---
 
+## 2026-05-26 — run 12
+
+**Primary target:** cc-explorer via background subagent (pattern-lock audit identified 3 consecutive inline skill failures; background subagent worked in run 7). cc-explorer succeeded this run.
+
+**Output shape:** issue #63 closure + state-of-jsb rewrite + candidate queue update + phase-0.md + this log. No PR (gate holds).
+
+**Headline finding: cc-explorer session signal — operator active, real friction on May 18-19.**
+Last live operator sessions were May 18-19 (7-8 days ago). Friction in both sessions:
+- **Date field confusion:** `search_jobs` returns `"posted": published_at` but `posted_since` filters by `effective_date = COALESCE(last_listing_update, published_at)`. LLM couldn't reconcile why a job with an old "posted" date appeared in recent results. 33,063/99,174 active jobs (33%) have `last_listing_update` — for those, the gap is real. Fix: add `"updated": last_listing_update` to result rows. Small, targeted, no schema work.
+- **Staleness noise:** operator frustrated by evergreen listings mixing with fresh ones.
+- **Watchlist composition:** LLM rewrote watchlist filter instead of composing on top.
+- **Urgency:** "just go man, I need to use the tool to apply for jobs" (×3). Operator wants to apply, not debug.
+
+**Issue #63 closed:** Root cause resolved — the `ai-as-product` watchlist already has `location_filter` set in the DB. Filed May 13, operator fixed it via MCP at some point. Issue closure is grounded in DB state, not assumption.
+
+**cc-explorer learning:** background subagent (run 7, run 12) works reliably. Inline skill path (runs 6, 8, 10, 11) does not. Candidate updated with explicit routing note.
+
+**Sync:** 29 companies erroring, same classes as run 11. No new regressions. Harvey reclassified from "persistent timeout" to "intermittent" — active jobs last_seen 2026-05-24, board responds 200 in <1s manually. Corpus: 99,174 active, 0 distill backlog.
+
+**Candidates updated:** all bumped. New candidate: date field confusion (high priority, live operator friction, small fix). cc-explorer candidate updated with routing learning.
+
+**Deferred:** date field fix (added as high-priority candidate for next run if gate allows), remaining 5 open PRs (operator review), batch dead-config PR #3, Qualcomm headless fix.
+
+**Keep-ability self-rating:** pause/merge-act-on split. The cc-explorer finding is the most valuable thing this run — it confirms real operator friction and names a specific, small code fix (`last_listing_update` in results). Issue #63 closure is merge/act-on: grounded in DB evidence, removes a stale open ticket. No PR this run respects the gate. Total: pause.
+
+---
+
 ## 2026-05-25 — run 11
 
 **Primary target:** Phase 0 identified dead-config-PR pattern-lock (runs 7–10, 4 consecutive). PR gate enforced: 5 open PRs, 0 merges in 11 days — no new PR this run. Mandatory investment: areas that have never been checked. Executed first distill quality audit and first bio staleness check.
