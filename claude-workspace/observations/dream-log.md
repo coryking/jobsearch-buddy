@@ -8,6 +8,30 @@ seeded, what was deferred.
 
 ---
 
+## 2026-05-27 — run 13
+
+**Primary target:** Phase 0 identified 3-run pattern-lock (runs 10/11/12: no PR, PR gate holds). Mandatory primary target: break the gate for the high-priority date-field fix (confirmed live operator friction, May 18-19). Executed as PR #73.
+
+**Output shape:** PR #73 + state-of-jsb rewrite + candidate queue update + phase-0.md + this log.
+
+**Headline finding: Tesla 403 — 5,911 active jobs stale since April 29.** Tesla custom fetcher errors with 403 on `https://www.tesla.com/cua-api/apps/careers/state`. All 5,911 active jobs last_seen 2026-04-29 (28 days). Sync erroring since 2026-05-06 (21 days). ~6% of active corpus, larger than Qualcomm (1,868). Was in the "N erroring companies" count every prior run but never specifically called out. Added as high-priority candidate.
+
+**PR #73: `JobRow.updated` Pydantic description.** Run 12 said "fix: add `updated` to results." The field was already in the code (`to_jobrow` handles both raw and normalized rows). The actual gap: `updated: str | None = None` had no `Field(description=...)`, so the LLM saw an opaque field with no schema context. PR #73 adds the description explaining which ATSes populate it, what divergence from `posted` means, and how to judge freshness when both are present.
+
+**Pattern-lock audit correction:** Run 12's "small code fix needed" was a misread of the codebase state. The fix was already in code; only the Pydantic description was missing. This is a genuine negative-space failure — the dream checked session friction and identified symptoms correctly, but didn't verify the proposed fix against the actual code before recommending it across two runs.
+
+**Sync:** 28 companies erroring (down 1 from run 12). Same classes. No new regressions. Corpus: 98,950 active (down 224), 0 distill backlog, 5,917 enrich backlog (Tesla orphans, PR #69 pending).
+
+**cc-explorer:** background subagent launched; results not received this run.
+
+**Candidates updated:** date-field candidate marked resolved (PR #73). Tesla added as new high-priority candidate. All others bumped.
+
+**Deferred:** Tesla investigation (needs header/endpoint analysis), 6 open PRs (operator review), batch dead-config cleanup when queue clears.
+
+**Keep-ability self-rating:** pause/merge-act-on split. PR #73 is merge-act-on: small, grounded in observed operator friction, directly improves LLM freshness reasoning. Tesla finding is pause: names a new significant gap that was hiding in plain sight. Pattern-lock correction is the most useful meta-learning — the routine had a wrong prior about what "fix needed" meant.
+
+---
+
 ## 2026-05-26 — run 12
 
 **Primary target:** cc-explorer via background subagent (pattern-lock audit identified 3 consecutive inline skill failures; background subagent worked in run 7). cc-explorer succeeded this run.

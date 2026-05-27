@@ -1,48 +1,44 @@
-# State of jsb — 2026-05-26
+# State of jsb — 2026-05-27
 
-Rewritten by each dream run, not appended. Run 12.
+Rewritten by each dream run, not appended. Run 13.
 
 ## TL;DR
 
-- **Operator is in active application mode** — last live session May 18-19. Friction: date-field confusion (`posted_since` filters by `effective_date` but results show `published_at`; LLM can't reconcile why an old-looking job appeared), and stale evergreen req noise.
-- **Corpus: stable.** 99,174 active jobs, 0 distill backlog, 5,916 enrich backlog (Tesla orphans — PR #69 pending).
-- **PR queue: 5 open, 0 merges in 12 days.** No new PRs this run. Gate holds.
-- **Issue #63 closed.** Root cause resolved — the `ai-as-product` watchlist has a `location_filter` already set in the DB. Filed on May 13, fixed without a code change.
-- **Qualcomm 403** remains the largest single degradation — 1,868 jobs stale since Feb 2026.
-
-## Session signal (run 12 — cc-explorer worked)
-
-Operator had two live sessions May 18-19 (7-8 days ago). Both involved real search friction:
-
-**Date field confusion:** LLM callers don't reliably distinguish `posted` (published_at) from effective recency (effective_date = COALESCE(last_listing_update, published_at)). When a job ranked high because of a recent `last_listing_update` but showed an old `published_at` in results, the operator noticed the LLM misread the signals. Root: `search_jobs` returns `"posted"` (published_at) but `posted_since` filters by `effective_date`. 33,063/99,174 active jobs (33%) have `last_listing_update` — for those, the gap is real. Fix: expose `updated` (last_listing_update) in search results alongside `posted`.
-
-**Staleness noise:** Operator frustrated by evergreen/perennial listings mixing with fresh ones. Freshness-bucket ranking is in place but isn't eliminating the noise for the operator's watchlists.
-
-**Watchlist composition:** On May 18, an LLM rewrote a watchlist's built-in filter instead of composing on top of it. This is an LLM behavior gap, not a code bug — but may benefit from a clearer tool description on how watchlist filters compose.
-
-**Urgency signal:** "Just go man, I need to use the tool to apply for jobs" (repeated 3x on May 18). Feature velocity is fine; review bandwidth is the constraint.
+- **Tesla 403 — largest untracked corpus gap.** 5,911 active jobs (6% of corpus) stale since April 29, sync erroring since May 6. Bigger than Qualcomm (1,868). Was in the error count every run but never specifically called out.
+- **PR #73 opened.** `JobRow.updated` now has `Field(description=...)` so the LLM understands `posted` vs `updated` semantics. Fixes confirmed operator friction from May 18-19 sessions.
+- **Date field fix correction.** Run 12 identified the fix as "add `updated` to results." The field was already in the code — the actual gap was missing Pydantic description. LLM was seeing `updated: null | string` with no context. PR #73 closes this.
+- **6 open PRs, 0 merges in 13 days.** PR gate broken this run by the high-priority date-field fix.
+- **Corpus: 98,950 active, 0 distill backlog, 5,917 enrich backlog (Tesla orphans, PR #69 pending).**
 
 ## Sync health
 
-**29 companies erroring** on last sync (2026-05-25). No new regressions vs. run 11.
+**28 companies erroring** on last sync (2026-05-26). Down one from run 12 (likely Harvey recovered).
 
-| Class | Companies | Coverage |
+| Class | Companies | Notes |
 |---|---|---|
-| Covered by open PRs | testcorp, retool (PR #71); wandb, fly, groq, replicate, adept-ai, wellsaid-labs (PR #72); mistral→Lever, thumbtack→Ashby (PR #70); Tesla orphans (PR #69) | Merge resolves |
+| Covered by open PRs | testcorp, retool (PR #71); wandb, fly, groq, replicate, adept-ai, wellsaid-labs (PR #72); mistral, thumbtack (PR #70); Tesla orphan backlog (PR #69) | Merge resolves |
 | 0-job dead configs, no PR yet | cal, turso, monday, tinybird, flywire, hebbia, moment, persona, evenup | ~9 companies; deferring until PR queue clears |
-| Active-jobs erroring | coinbase (101 jobs), runway (35), wordware (6), synchron (3), continua (2) | Likely moved off their ATS — dead corpus entries |
-| Persistent 403 | qualcomm (1,868 jobs, eightfold_v2), mx (4 jobs, workday) | No easy fix path |
-| Intermittent timeout | harvey (259 jobs, ashby) | Last_seen 2026-05-24; board responds 200 in <1s; pattern is intermittent not structural |
+| Active-jobs erroring | coinbase (101 jobs), runway (35), wordware (6), synchron (3), continua (2) | Likely moved off their ATS |
+| Persistent 403 — large corpus | **tesla (5,911 jobs, custom fetcher)**, qualcomm (1,868 jobs, eightfold_v2) | Tesla stale since April 29; Qualcomm since Feb 2026 |
+| Small 403 | mx (4 jobs, workday) | Low priority |
 | JSON parse / bot detection | netapp (eightfold_v2, 0 jobs) | HTML response |
 
 ## Corpus
 
-- **Active jobs:** 99,174
+- **Active jobs:** 98,950 (down from 99,174 run 12; ~224 listings aged out)
 - **Distill backlog:** 0 (healthy)
-- **Enrich backlog:** 5,916 — entirely Tesla orphans (ats IS NULL). Cleared by PR #69 merge.
-- **last_listing_update coverage:** 33,063/99,174 active jobs (33%) — relevant to the date-field confusion issue above
-- **Bio coverage:** 100% (595/595 companies with active jobs)
-- **Bio freshness:** researched 2026-05-05 to 2026-05-06; 20-21 days old, within 90-day threshold
+- **Enrich backlog:** 5,917 — entirely Tesla orphans (description IS NULL). Cleared by PR #69 merge.
+- **last_listing_update coverage:** 32,998/98,950 (33%) — relevant to date-field freshness
+- **Bio coverage:** 100% (all companies with active jobs have bio + embedding)
+- **Bio freshness:** researched 2026-05-05 to 2026-05-06; ~22 days old, within 90-day threshold
+
+## Tesla — new primary degradation finding
+
+5,911 active jobs, all last_seen 2026-04-29. Sync erroring since 2026-05-06 with 403 Forbidden on
+`https://www.tesla.com/cua-api/apps/careers/state`. Custom fetcher (`tesla.py`). Tesla is ~6% of
+the active corpus — larger than Qualcomm (1,868). Was in the "N erroring companies" count across
+all runs but never specifically called out. No fix path identified without network investigation
+(header changes? endpoint change? bot detection?).
 
 ## Distill quality (audited run 11 — still current)
 
@@ -52,27 +48,30 @@ Short_jd length distribution across 93,424 distilled active jobs:
 |-----|-----|-----|-----|-----|-----|-----|-----|-----|
 | 374 | 444 | 521 | 599 | 672 | 826 |  76 | 1,253 | 523 |
 
-No systematic truncation. Short outliers are international postings (Apple Japan/Korea) or genuinely brief JDs — not a distill failure.
+No systematic truncation. Short outliers are international postings or genuinely brief JDs.
 
 ## PR queue
 
 | PR | Title | Age | Status |
 |---|---|---|---|
-| #72 | Remove 6 dead company configs | 3 days | Open |
-| #71 | Remove testcorp + retool | 4 days | Open |
-| #70 | Fix Mistral→Lever, Thumbtack→Ashby | 5 days | Open |
-| #69 | Remove Tesla orphan jobs | 7 days | Open |
-| #68 | dream: cc-explorer mandatory | 7 days | Open |
+| #73 | types: document JobRow.updated semantics | today | Open |
+| #72 | Remove 6 dead company configs | 4 days | Open |
+| #71 | Remove testcorp + retool | 5 days | Open |
+| #70 | Fix Mistral→Lever, Thumbtack→Ashby | 6 days | Open |
+| #69 | Remove Tesla orphan jobs | 8 days | Open |
+| #68 | dream: cc-explorer mandatory | 8 days | Open |
 
-No merges since 2026-05-14 (12 days). Gate holds.
+No merges since 2026-05-14 (13 days). PR #73 is the high-value quick-merge candidate.
 
 ## What to look at first
 
-1. **Merge PR #70** — direct corpus benefit: 213 stale Mistral/Thumbtack jobs refreshed.
-2. **Merge PR #69** — clears 5,916 enrich backlog.
-3. **PRs #71/#72** — removes ~8 dead configs from sync error log.
-4. **Date field confusion** — `search_jobs` should return `updated` (last_listing_update) alongside `posted` (published_at) so LLMs can reason about why a job appeared despite an old posted date. Small code change, no schema work needed.
+1. **Merge PR #73** — 3-line fix, directly addresses LLM freshness confusion confirmed from your sessions.
+2. **Merge PR #70** — 213 stale Mistral/Thumbtack jobs refreshed.
+3. **Merge PR #69** — clears 5,917 enrich backlog.
+4. **PRs #71/#72** — removes ~8 dead configs from sync error log.
+5. **Tesla 403** — investigate `https://www.tesla.com/cua-api/apps/careers/state` response headers; determine if endpoint changed, bot detection, or auth required. 5,911 jobs at stake.
 
 ## Qualcomm
 
-1,868 active jobs last fetched Feb 2026. eightfold_v2 returns 403. Netflix uses same fetcher and works — Qualcomm-specific bot detection. No fix without headless fetch (camoufox). Corpus entries are 3+ months stale.
+1,868 active jobs last fetched Feb 2026. eightfold_v2 returns 403. Netflix uses same fetcher and
+works — Qualcomm-specific bot detection. No fix without headless fetch (camoufox).
