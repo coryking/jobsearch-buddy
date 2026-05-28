@@ -1,4 +1,8 @@
-"""MCP server entry point: wires Azure auth, telemetry, and starts FastMCP.
+"""MCP server entry point: wires auth, telemetry, and starts FastMCP.
+
+`main()` selects a run mode: Azure Functions (Entra OAuth + Redis, gated on
+`ENTRA_OAUTH_CLIENT_ID`), devbox HTTP (GitHub OAuth, no Redis, gated on
+`GITHUB_OAUTH_CLIENT_ID`), or bare stdio (no auth).
 
 Tool and resource implementations live in `jobbuddy.mcp_tools.*`. Importing
 that package registers everything on the shared `mcp` instance defined in
@@ -73,6 +77,29 @@ def build_azure_auth():
     return auth
 
 
+def build_github_auth():
+    """Build GitHubProvider for the devbox HTTP deployment.
+
+    Unlike the Azure path, one long-lived devbox process backs OAuth/DCR
+    state in memory — no Redis, no Entra. Reads GITHUB_OAUTH_* and BASE_URL
+    from the environment.
+    """
+    from fastmcp.server.auth.providers.github import GitHubProvider
+
+    client_id = os.environ["GITHUB_OAUTH_CLIENT_ID"]
+    client_secret = os.environ["GITHUB_OAUTH_CLIENT_SECRET"]
+    base_url = os.environ.get("BASE_URL", "http://localhost:8001")
+
+    auth = GitHubProvider(
+        client_id=client_id,
+        client_secret=client_secret,
+        base_url=base_url,
+    )
+
+    log.info("GitHubProvider initialized (base_url=%s)", base_url)
+    return auth
+
+
 async def assert_account_dependency_stripped() -> None:
     """Confirm FastMCP's DI machinery hides the `account` parameter from
     every tool's JSON schema. If a fastmcp regression or downgrade ever
@@ -132,6 +159,27 @@ def main():
         asyncio.run(assert_account_dependency_stripped())
 
         auth = build_azure_auth()
+        mcp.auth = auth
+        mcp.run(transport="streamable-http", stateless_http=True)
+    elif os.environ.get("GITHUB_OAUTH_CLIENT_ID"):
+        # Devbox HTTP deployment: GitHub OAuth, local Postgres, no Redis/Entra.
+        # Host/port come from FASTMCP_HOST/FASTMCP_PORT (set in the systemd unit
+        # so jsb binds localhost:8001 and stays off SMH's :8000).
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s %(name)s %(levelname)s %(message)s",
+        )
+
+        if get_settings().auth_provider != "github":
+            raise RuntimeError(
+                "GITHUB_OAUTH_CLIENT_ID is set but JOBBUDDY_AUTH_PROVIDER is not "
+                "\"github\". Authenticated tools cannot resolve a claim shape "
+                "without it."
+            )
+
+        asyncio.run(assert_account_dependency_stripped())
+
+        auth = build_github_auth()
         mcp.auth = auth
         mcp.run(transport="streamable-http", stateless_http=True)
     else:
