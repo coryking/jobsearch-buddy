@@ -22,7 +22,8 @@ seeded, what was deferred.
 
 **PR queue:** 6 open, 0 merges in 14 days. PR #68 (dream meta, 9 days) at 1 day from close threshold. PRs #73 and #70 are highest-value for operator's job search.
 
-**cc-explorer:** launched as background subagent (run 14). Prior runs (13, 14) show background subagent launched but results not available during this run's window. Pattern: background subagent runs reliably but doesn't return within the dream run window. Not a failure — just a timing gap.
+**cc-explorer:** background subagent returned this run (results received after initial commit). Confirmed prior known friction (date field confusion, evergreen staleness noise — PR #73 pending). **New finding:** watchlist + query composability confusion (May 18 PM) — the LLM rewrote the watchlist's built-in FTS query instead of composing on top of it. Operator wanted "WITH blah AS (watchlist query) SELECT WHERE (llm query)" semantics. Worked around but unresolved. Added as candidate.
+Background subagent worked again this run — the reliable path confirmed across runs 7, 12, 14.
 
 **Candidates updated:** Tesla and Qualcomm moved to "resolved to issue #74." WorkOS added. All others bumped.
 

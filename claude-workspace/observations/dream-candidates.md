@@ -106,6 +106,17 @@ Format: `seeded-on / shape / one-line description / state`.
   vs accept staleness). No further dream investigation needed.
   Tracking: issue #74. Runs seen: 2. **Closed as candidate; tracking in issue.**
 
+- **2026-05-28 / fix / Watchlist + query composability — LLM replaces watchlist filter instead of composing.**
+  May 18 PM session: operator ran a search via a watchlist that has a built-in query/filter. The LLM
+  wrote its own FTS query instead of layering on top of the watchlist's SQL. Operator described the
+  desired behavior as "WITH blah AS (watchlist query) SELECT WHERE (llm query)". Operator shipped a
+  workaround ("YOLO that bitch") but the underlying composability issue is unresolved.
+  Options: (a) a `search_watchlist` tool that accepts a user query and composes it with the watchlist's
+  built-in filter; (b) explicit tool description update to `search_jobs` clarifying when to use watchlist
+  ID + user query together vs separately; (c) schema or API change to expose composability semantics.
+  This is operator friction on the actual job-search workflow (not just search quality).
+  Open. Runs seen: 1.
+
 - **2026-05-28 / pattern / WorkOS (lever/workos) — new 404, 0 jobs.**
   New 404 on Lever API. 0 jobs in corpus. Include in next batch dead-config PR when
   queue clears. Total 0-job error configs now: cal, turso, monday, tinybird, flywire,
