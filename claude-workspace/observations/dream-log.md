@@ -8,6 +8,30 @@ seeded, what was deferred.
 
 ---
 
+## 2026-05-28 — run 14
+
+**Primary target:** Phase 0 identified Qualcomm as 6-run-deferred pattern-lock (runs 8–13, never resolved). Investigation was already complete — base fetcher uses Chrome headers, still 403 on both Tesla and Qualcomm. Issue is TLS fingerprinting, not headers. Action: open issue #74 (headless integration design decision) and close both as active candidates.
+
+**Output shape:** issue #74 + state-of-jsb rewrite + candidate queue update + phase-0.md + this log. No PR (6 open, 14 days since last merge — gate holds for small issues like dead-config batch).
+
+**Headline finding: Tesla + Qualcomm investigation closed.** Both confirmed as TLS fingerprinting / bot-detection that cannot be fixed with headers. Base `ATSFetcher` already sends Chrome User-Agent, Accept-Language, DNT, Sec-Fetch-* headers. Still 403 on both. The Tesla fetcher docstring already documented this; it was not recognized as "investigation done" in run 13. Issue #74 converts from "recurring dream investigation" to "operator design decision."
+
+**WorkOS: new 404.** lever/workos returns 404, 0 jobs. Added to dead-config batch candidate (~10 companies total, pending PR queue clearance).
+
+**Corpus:** 96,049 active (down 2,901 from run 13). Confirmed normal churn — 11,139 jobs marked removed in last sync, not a systematic issue. 0 distill backlog. 5,917 enrich backlog (Tesla orphans, PR #69 pending).
+
+**PR queue:** 6 open, 0 merges in 14 days. PR #68 (dream meta, 9 days) at 1 day from close threshold. PRs #73 and #70 are highest-value for operator's job search.
+
+**cc-explorer:** launched as background subagent (run 14). Prior runs (13, 14) show background subagent launched but results not available during this run's window. Pattern: background subagent runs reliably but doesn't return within the dream run window. Not a failure — just a timing gap.
+
+**Candidates updated:** Tesla and Qualcomm moved to "resolved to issue #74." WorkOS added. All others bumped.
+
+**Deferred:** batch dead-config PR (~10 companies, wait for PR queue to clear), cc-explorer results (async), PR #68 close decision (at threshold next run).
+
+**Keep-ability self-rating:** pause. Issue #74 is solution-shaped (three options, operator picks one) rather than problem-shaped. Closing Tesla/Qualcomm as active dream candidates removes 6 runs of recurring reinvestigation. WorkOS discovery is routine. No PR this run is correct (gate holds).
+
+---
+
 ## 2026-05-27 — run 13
 
 **Primary target:** Phase 0 identified 3-run pattern-lock (runs 10/11/12: no PR, PR gate holds). Mandatory primary target: break the gate for the high-priority date-field fix (confirmed live operator friction, May 18-19). Executed as PR #73.

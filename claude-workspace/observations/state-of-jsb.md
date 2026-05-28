@@ -1,44 +1,44 @@
-# State of jsb — 2026-05-27
+# State of jsb — 2026-05-28
 
-Rewritten by each dream run, not appended. Run 13.
+Rewritten by each dream run, not appended. Run 14.
 
 ## TL;DR
 
-- **Tesla 403 — largest untracked corpus gap.** 5,911 active jobs (6% of corpus) stale since April 29, sync erroring since May 6. Bigger than Qualcomm (1,868). Was in the error count every run but never specifically called out.
-- **PR #73 opened.** `JobRow.updated` now has `Field(description=...)` so the LLM understands `posted` vs `updated` semantics. Fixes confirmed operator friction from May 18-19 sessions.
-- **Date field fix correction.** Run 12 identified the fix as "add `updated` to results." The field was already in the code — the actual gap was missing Pydantic description. LLM was seeing `updated: null | string` with no context. PR #73 closes this.
-- **6 open PRs, 0 merges in 13 days.** PR gate broken this run by the high-priority date-field fix.
-- **Corpus: 98,950 active, 0 distill backlog, 5,917 enrich backlog (Tesla orphans, PR #69 pending).**
+- **Tesla + Qualcomm: investigation closed.** Both 403 from bot-detection (Akamai / eightfold). Base fetcher already uses Chrome headers — still 403. TLS fingerprinting confirmed. No header fix possible. Issue #74 opened to track camoufox headless integration decision.
+- **Corpus: 96,049 active** (down 2,901 from run 13 — normal churn, 11,139 jobs marked removed in last sync). 0 distill backlog. 5,917 enrich backlog (Tesla orphans).
+- **6 open PRs, 0 merges in 14 days.** PRs #73 and #70 are highest-value.
+- **WorkOS: new 404** (lever/workos, 0 jobs) — add to next dead-config batch.
 
 ## Sync health
 
-**28 companies erroring** on last sync (2026-05-26). Down one from run 12 (likely Harvey recovered).
+**29 companies erroring** on last sync (2026-05-27). Up 1 from run 13 (WorkOS is new).
 
 | Class | Companies | Notes |
 |---|---|---|
 | Covered by open PRs | testcorp, retool (PR #71); wandb, fly, groq, replicate, adept-ai, wellsaid-labs (PR #72); mistral, thumbtack (PR #70); Tesla orphan backlog (PR #69) | Merge resolves |
-| 0-job dead configs, no PR yet | cal, turso, monday, tinybird, flywire, hebbia, moment, persona, evenup | ~9 companies; deferring until PR queue clears |
+| 0-job dead configs, no PR yet | cal, turso, monday, tinybird, flywire, hebbia, moment, persona, evenup, **workos** | ~10 companies; batch PR pending PR queue clearance |
 | Active-jobs erroring | coinbase (101 jobs), runway (35), wordware (6), synchron (3), continua (2) | Likely moved off their ATS |
-| Persistent 403 — large corpus | **tesla (5,911 jobs, custom fetcher)**, qualcomm (1,868 jobs, eightfold_v2) | Tesla stale since April 29; Qualcomm since Feb 2026 |
+| Bot-blocked — large corpus | **tesla (5,911 jobs, Akamai)**, **qualcomm (1,868 jobs, eightfold_v2)** | Issue #74. Camoufox required. No header fix. |
 | Small 403 | mx (4 jobs, workday) | Low priority |
 | JSON parse / bot detection | netapp (eightfold_v2, 0 jobs) | HTML response |
 
 ## Corpus
 
-- **Active jobs:** 98,950 (down from 99,174 run 12; ~224 listings aged out)
+- **Active jobs:** 96,049 (down 2,901 from run 13; 11,139 jobs removed in last sync — normal churn)
 - **Distill backlog:** 0 (healthy)
 - **Enrich backlog:** 5,917 — entirely Tesla orphans (description IS NULL). Cleared by PR #69 merge.
-- **last_listing_update coverage:** 32,998/98,950 (33%) — relevant to date-field freshness
 - **Bio coverage:** 100% (all companies with active jobs have bio + embedding)
-- **Bio freshness:** researched 2026-05-05 to 2026-05-06; ~22 days old, within 90-day threshold
+- **Bio freshness:** researched 2026-05-05 to 2026-05-06; ~23 days old, within 90-day threshold
 
-## Tesla — new primary degradation finding
+## Bot-blocked scrapers — investigation complete (issue #74)
 
-5,911 active jobs, all last_seen 2026-04-29. Sync erroring since 2026-05-06 with 403 Forbidden on
-`https://www.tesla.com/cua-api/apps/careers/state`. Custom fetcher (`tesla.py`). Tesla is ~6% of
-the active corpus — larger than Qualcomm (1,868). Was in the "N erroring companies" count across
-all runs but never specifically called out. No fix path identified without network investigation
-(header changes? endpoint change? bot detection?).
+Both Tesla and Qualcomm return persistent 403s. The base fetcher uses Chrome User-Agent, Accept-Language, DNT, Sec-Fetch-Dest/Mode/Site headers. Still 403 on both. This is TLS fingerprinting + behavioral analysis — not fixable with headers.
+
+**Tesla** (custom `tesla.py`): Akamai Bot Manager. 5,911 active jobs stale since 2026-04-29. The fetcher docstring already names the fix: session cookies or browser-bootstrapped session. Erroring since 2026-05-06.
+
+**Qualcomm** (`eightfold_v2`): 403 FORBIDDEN. Netflix uses same fetcher and works — Qualcomm-specific bot detection. 1,868 active jobs stale since 2026-02-27.
+
+Issue #74 is the tracker for the "invest in camoufox headless" design decision. Candidates updated to point there. No further investigation needed in dream runs.
 
 ## Distill quality (audited run 11 — still current)
 
@@ -52,26 +52,21 @@ No systematic truncation. Short outliers are international postings or genuinely
 
 ## PR queue
 
-| PR | Title | Age | Status |
+| PR | Title | Age | Priority |
 |---|---|---|---|
-| #73 | types: document JobRow.updated semantics | today | Open |
-| #72 | Remove 6 dead company configs | 4 days | Open |
-| #71 | Remove testcorp + retool | 5 days | Open |
-| #70 | Fix Mistral→Lever, Thumbtack→Ashby | 6 days | Open |
-| #69 | Remove Tesla orphan jobs | 8 days | Open |
-| #68 | dream: cc-explorer mandatory | 8 days | Open |
+| #73 | types: document JobRow.updated semantics | 1 day | **HIGH** — direct operator friction fix |
+| #70 | Fix Mistral→Lever, Thumbtack→Ashby | 7 days | **HIGH** — 213 stale jobs refreshed |
+| #69 | Remove Tesla orphan jobs | 9 days | Medium — clears 5,917 enrich backlog |
+| #72 | Remove 6 dead company configs | 5 days | Low — noise reduction |
+| #71 | Remove testcorp + retool | 6 days | Low — noise reduction |
+| #68 | dream: cc-explorer mandatory | 9 days | Meta — 1 day from close threshold |
 
-No merges since 2026-05-14 (13 days). PR #73 is the high-value quick-merge candidate.
+No merges since 2026-05-14 (14 days).
 
 ## What to look at first
 
-1. **Merge PR #73** — 3-line fix, directly addresses LLM freshness confusion confirmed from your sessions.
-2. **Merge PR #70** — 213 stale Mistral/Thumbtack jobs refreshed.
-3. **Merge PR #69** — clears 5,917 enrich backlog.
-4. **PRs #71/#72** — removes ~8 dead configs from sync error log.
-5. **Tesla 403** — investigate `https://www.tesla.com/cua-api/apps/careers/state` response headers; determine if endpoint changed, bot detection, or auth required. 5,911 jobs at stake.
-
-## Qualcomm
-
-1,868 active jobs last fetched Feb 2026. eightfold_v2 returns 403. Netflix uses same fetcher and
-works — Qualcomm-specific bot detection. No fix without headless fetch (camoufox).
+1. **Merge PR #73** — 3-line Pydantic description fix. Directly addresses LLM date-field confusion from your May 18-19 sessions. Trivially small.
+2. **Merge PR #70** — Mistral and Thumbtack ATS migrations confirmed. 213 stale jobs will refresh on next sync.
+3. **Issue #74** — decide whether to invest in camoufox headless for Tesla (5,911 stale) + Qualcomm (1,868 stale). Options: session bootstrap, full headless, or accept staleness.
+4. **Merge PR #69** — clears 5,917 enrich backlog.
+5. **PRs #71/#72** — dead-config noise reduction, safe merges.
