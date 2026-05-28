@@ -26,10 +26,14 @@ QUERY_FIELD_DESC = (
 )
 
 WATCHLIST_FILTER_DESC = (
-    "Saved-search defaults applied when search_jobs is called with "
+    "Saved-search filter applied when search_jobs is called with "
     "watchlist=<slug>. JSON object with optional keys matching search_jobs "
     "params: `query`, `location_filter`, `posted_since`, "
-    "`exclude_companies`. Keys not set fall through to caller args. "
+    "`published_since`, `exclude_companies`. Curation keys (query, "
+    "location_filter, exclude_companies) compose with caller args, "
+    "narrowing the saved search — they can't be loosened. The recency keys "
+    "(posted_since/published_since) are defaults the caller overrides "
+    "freely, narrower or wider. "
     "Example: {\"query\": \"staff engineer\", \"posted_since\": \"7d\"}."
 )
 

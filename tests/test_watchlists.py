@@ -182,9 +182,11 @@ class TestListWithCounts:
 
 
 class TestMergeDefaults:
-    """The watchlist saved filter is a *view*: caller args compose with it,
-    not override it. Queries AND, companies intersect, exclusions union,
-    date floors take the stricter cutoff.
+    """The watchlist's *curation* is a view: caller args compose with it,
+    narrowing not overriding — queries AND, companies intersect, exclusions
+    union. The *recency window* (posted_since/published_since) is the
+    exception: a saved value is a default the caller overrides freely,
+    narrower OR wider.
     """
 
     def test_only_caller_args(self):
@@ -251,7 +253,7 @@ class TestMergeDefaults:
         )
         assert set(ex) == {"microsoft", "meta"}
 
-    def test_posted_since_stricter_wins(self):
+    def test_posted_since_caller_overrides(self):
         wl = {
             "filter": {"posted_since": "30d"},
             "companies": [],
@@ -260,17 +262,18 @@ class TestMergeDefaults:
             wl, query="", exclude_companies=None,
             location="", posted_since="1w",
         )
-        # 1w (7d) is stricter than 30d → caller wins.
+        # Caller narrows below the saved window → caller wins.
         assert since == "1w"
 
         _, _, _, since2, _, _ = merge_watchlist_defaults(
             wl, query="", exclude_companies=None,
             location="", posted_since="90d",
         )
-        # 30d is stricter than 90d → watchlist wins.
-        assert since2 == "30d"
+        # Caller widens past the saved window → caller still wins (the fix:
+        # the saved window is a default, not a floor that clamps narrower).
+        assert since2 == "90d"
 
-    def test_published_since_composes(self):
+    def test_published_since_caller_overrides(self):
         wl = {
             "filter": {"published_since": "30d"},
             "companies": [],
@@ -280,7 +283,37 @@ class TestMergeDefaults:
             location="", posted_since="",
             published_since="1w",
         )
-        assert pubsince == "1w"  # stricter
+        assert pubsince == "1w"  # caller narrows → wins
+
+        *_, pubsince2 = merge_watchlist_defaults(
+            wl, query="", exclude_companies=None,
+            location="", posted_since="",
+            published_since="90d",
+        )
+        assert pubsince2 == "90d"  # caller widens → still wins
+
+    def test_recency_window_widens_past_saved_default(self):
+        """Regression: a watchlist saved at 1w must still honor a caller's
+        2w request. Previously stricter-wins clamped this back to 1w, which
+        forced callers to bypass the watchlist or destructively edit it.
+        """
+        wl = {"filter": {"posted_since": "1w", "published_since": "1w"}, "companies": []}
+
+        # Caller widens to 2w → 2w on both axes.
+        _, _, _, since, _, pubsince = merge_watchlist_defaults(
+            wl, query="", exclude_companies=None,
+            location="", posted_since="2w", published_since="2w",
+        )
+        assert since == "2w"
+        assert pubsince == "2w"
+
+        # Caller omits a window → the saved default still "shows new jobs".
+        _, _, _, since2, _, pubsince2 = merge_watchlist_defaults(
+            wl, query="", exclude_companies=None,
+            location="", posted_since="", published_since="",
+        )
+        assert since2 == "1w"
+        assert pubsince2 == "1w"
 
     def test_location_AND_stacks(self):
         wl = {"filter": {"location_filter": "seattle,remote"}, "companies": []}

@@ -52,17 +52,6 @@ class EmptyCompanyIntersectError(ValueError):
     """
 
 
-def _stricter_duration(a: str, b: str) -> str:
-    """Pick whichever of two duration strings yields the more recent cutoff.
-
-    Both inputs are expected to parse via `parse_duration_to_date` (raise
-    ValueError otherwise). The stricter one (more recent ISO date) wins.
-    """
-    da = parse_duration_to_date(a)
-    db = parse_duration_to_date(b)
-    return a if da >= db else b
-
-
 def merge_watchlist_defaults(
     watchlist: dict,
     *,
@@ -75,9 +64,12 @@ def merge_watchlist_defaults(
 ) -> tuple[str, list[str] | None, str, str, list[str] | None, str]:
     """Compose a watchlist's saved filter with caller-passed arguments.
 
-    The watchlist's saved filter is the **view**, not a default — caller
-    filters are applied *on top* of the watchlist's view, narrowing it
-    further. Composition rules per field:
+    The **curation** axes are a view, not a default — caller filters apply
+    *on top*, narrowing the watchlist further (you can't loosen the saved
+    curation). The **recency** axes are the deliberate exception: a saved
+    date window is a *default* the caller fully overrides — narrower OR
+    wider — because "how far back am I looking right now" is a view knob the
+    caller owns, not curation. Composition rules per field:
 
     - `query`: AND-stack. Both watchlist and caller queries apply
       simultaneously; the composed FTS expression is `(A) AND (B)` and is
@@ -88,8 +80,9 @@ def merge_watchlist_defaults(
       watchlist's saved companies. Empty intersect raises
       `EmptyCompanyIntersectError`.
     - `exclude_companies`: union — both exclusion lists apply.
-    - `posted_since`: AND — stricter (more recent) cutoff wins.
-    - `published_since`: AND — stricter (more recent) cutoff wins.
+    - `posted_since`: default — caller value wins when present (narrower or
+      wider); the saved window is used only when the caller omits one.
+    - `published_since`: default — same as `posted_since`.
 
     Returns the resolved tuple
     `(query, exclude_companies, location, posted_since, companies,
@@ -134,17 +127,12 @@ def merge_watchlist_defaults(
     else:
         resolved_location = location or wl_location
 
-    # posted_since: AND (stricter wins)
-    if posted_since and wl_posted_since:
-        resolved_posted_since = _stricter_duration(posted_since, wl_posted_since)
-    else:
-        resolved_posted_since = posted_since or wl_posted_since
+    # posted_since: caller overrides the watchlist's default (narrower OR wider).
+    # The recency window is a view knob the caller owns, not curation.
+    resolved_posted_since = posted_since or wl_posted_since
 
-    # published_since: AND (stricter wins)
-    if published_since and wl_published_since:
-        resolved_published_since = _stricter_duration(published_since, wl_published_since)
-    else:
-        resolved_published_since = published_since or wl_published_since
+    # published_since: same — caller overrides the watchlist's default.
+    resolved_published_since = published_since or wl_published_since
 
     # exclude_companies: union
     caller_exclude = exclude_companies or []

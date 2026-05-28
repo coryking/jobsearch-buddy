@@ -135,12 +135,14 @@ def get_job_post_details(
 def search_jobs(
     query: Annotated[str, Field(default="", description=QUERY_FIELD_DESC)] = "",
     watchlist: Annotated[str, Field(default="", description=(
-        "Watchlist slug to scope this search to. The watchlist is a *view* — "
-        "its saved companies and filter (query, location_filter, posted_since, "
-        "published_since, exclude_companies) are composed with any caller-"
-        "passed params: queries AND, locations AND, companies intersect, "
-        "exclusions union, date floors take whichever is stricter. List "
-        "available watchlists with `watchlist_list`."
+        "Watchlist slug to scope this search to. Its saved companies plus its "
+        "filter curation (query, location_filter, exclude_companies) compose "
+        "with caller params — queries AND, locations AND, companies intersect, "
+        "exclusions union — narrowing only. Its saved recency window "
+        "(posted_since/published_since) is a default the caller overrides "
+        "freely, narrower or wider — widen by passing a wider window here, not "
+        "by editing the watchlist. List available watchlists with "
+        "`watchlist_list`."
     ))] = "",
     exclude_companies: Annotated[list[str], Field(default=[], description="Companies the user has ruled out (e.g. ['microsoft', 'meta']).")] = [],
     location_filter: Annotated[str, Field(default="", description="Where the user wants to work. Substring match on the posting's location field. Comma-separated for OR (e.g. 'seattle,remote').")] = "",
@@ -162,11 +164,14 @@ def search_jobs(
     For a watch-list-scoped scan or per-company breakdown, use
     `survey_jobs_by_companies` instead.
 
-    Pass `watchlist=<slug>` to scope to a saved watchlist. The watchlist is
-    treated as a **view, not a default**: its saved filter is composed with
-    any caller-passed params (queries AND, locations AND, companies
-    intersect, exclusions union, date floors take whichever is stricter).
-    Call `watchlist_list` first to see what's saved.
+    Pass `watchlist=<slug>` to scope to a saved watchlist. Its saved
+    *curation* (queries AND, locations AND, companies intersect, exclusions
+    union) composes on top of caller params — narrowing only, you can't
+    loosen it. Its saved *recency window* is a **default you override
+    freely**: pass `posted_since`/`published_since` and your value wins,
+    narrower OR wider — a watchlist saved at "1w" still returns "2w" when
+    you ask for it, so widen the window in the call, never by editing the
+    watchlist. Call `watchlist_list` first to see what's saved.
 
     `posted_since` vs `published_since`: `posted_since` matches ATS-side
     freshness (publish OR last update) — good for \"what the ATS still
