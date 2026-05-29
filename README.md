@@ -1,6 +1,6 @@
 # jobsearch-buddy
 
-A CLI tool and cloud-hosted MCP server for job searching. Scrapes job listings from 100+ company ATS boards (Greenhouse, Ashby, Lever, Workday, and others), caches them in PostgreSQL with pgvector, and supports semantic search via OpenAI-compatible embeddings. The MCP server runs on Azure Functions so Claude can search jobs from anywhere.
+A CLI tool and MCP server for job searching. Scrapes job listings from 100+ company ATS boards (Greenhouse, Ashby, Lever, Workday, and others), caches them in PostgreSQL with pgvector, and supports semantic search via OpenAI-compatible embeddings. The MCP server runs locally over stdio, or self-hosted over HTTPS with OAuth so Claude can search jobs from anywhere.
 
 Built for personal use during a job search, evolving toward something more polished. Not enterprise software yet.
 
@@ -39,19 +39,20 @@ Run the full sync pipeline with all four phases:
 jsb sync                          # fetch → enrich → strip → embed
 ```
 
-## Cloud-Hosted MCP Server
+## Remote MCP Server
 
-The MCP server is deployed on Azure Functions (Flex Consumption) with Entra ID authentication. This lets Claude (mobile, web, desktop) search jobs and log applications without a local install.
+The MCP server can be self-hosted over HTTPS so Claude (mobile, web, desktop) can
+search jobs and log applications without a local install. Set
+`JOBBUDDY_AUTH_PROVIDER=github` plus the GitHub OAuth app credentials and run
+`jsb-mcp`: it serves FastMCP over streamable HTTP with GitHub OAuth, keeping
+OAuth/DCR state in-memory in a single long-lived process (no external state
+store). Point it at a PostgreSQL instance with pgvector for job data, and expose
+it behind any HTTPS ingress that gives the server its own origin (a reverse
+proxy or tunnel). Access is gated by the OAuth provider — every authenticated
+account owns its own application-log rows.
 
-The cloud deployment uses:
-- **Azure Functions** (Flex Consumption) running FastMCP with streamable HTTP
-- **Azure PostgreSQL** (Flexible Server) with pgvector for job data
-- **Azure Managed Redis** for OAuth state (DCR registrations, auth codes)
-- **Entra ID** for authentication (managed identity for service-to-service, OAuth for clients)
-
-Infrastructure is managed with Terraform in `infrastructure/`. The server is not publicly available yet — access is restricted to the owner's Entra tenant.
-
-See `docs/azure-migration.md` for architecture details.
+Bare `jsb-mcp` with no auth env runs the same server over stdio for a local
+Claude Desktop install.
 
 ## Application Log
 
@@ -172,7 +173,7 @@ src/jobbuddy/
   cli/           Typer CLI, split into sync/search/jobs/log/migrate submodules
   sync/          Sync pipeline: fetch, enrich, strip, embed phases
   fetchers/      Per-ATS-platform scrapers (strategy pattern)
-  mcp_server.py  FastMCP server (local stdio + cloud HTTP)
+  mcp_server.py  FastMCP server (local stdio + remote HTTP)
   core.py        Shared logic for CLI and MCP
   store.py       PostgreSQL + pgvector storage layer
   search.py      Vector search (HNSW via pgvector)
@@ -182,7 +183,6 @@ src/jobbuddy/
   models.py      Pydantic data models
   web.py         Flask web search UI
 
-infrastructure/  Terraform for Azure deployment
 docs/            Architecture docs, migration notes
 ```
 
