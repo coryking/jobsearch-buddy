@@ -26,3 +26,7 @@ scratchpad/
 .context/
 
 .context/
+
+# Claude/dream scratch workspace — never publish (holds dream-scratch run logs
+# with named-company DB analysis and operator activity; public-repo rule)
+claude-workspace/
