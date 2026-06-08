@@ -1,0 +1,55 @@
+---
+# Day-2 deploy: update jobsearch-buddy on devbox and converge service state.
+#
+# Usage — run from ~/projects/home-it-services/ansible/ so that inventory.yml
+# and the extended roles_path are available (see deploy/README.md):
+#
+#   ansible-playbook \
+#     -i ~/projects/home-it-services/ansible/inventory.yml \
+#     ~/projects/jobsearch-buddy/deploy/deploy.yml
+#
+# Pass --tags pull  to skip the service convergence and only update code.
+# Pass --tags services to skip the git pull and only converge units.
+
+- name: Deploy jobsearch-buddy to devbox
+  hosts: devbox
+  gather_facts: true
+
+  vars:
+    jsb_project_dir: "/Users/{{ jsb_services_user }}/projects/jobsearch-buddy"
+
+  roles:
+    - role: "{{ playbook_dir }}/ansible/roles/jsb_services"
+
+  tasks:
+    - name: Pull latest jobsearch-buddy code
+      ansible.builtin.git:
+        repo: "https://github.com/coryking/jobsearch-buddy.git"
+        dest: "{{ jsb_project_dir }}"
+        version: main
+        update: true
+      become: true
+      become_user: "{{ jsb_services_user }}"
+      tags: [pull]
+
+    - name: Refresh venv with uv sync
+      ansible.builtin.command:
+        cmd: "/Users/{{ jsb_services_user }}/.local/bin/uv sync"
+        chdir: "{{ jsb_project_dir }}"
+      become: true
+      become_user: "{{ jsb_services_user }}"
+      # uv sync is idempotent; changed_when guards noisy yellow output
+      register: uv_sync_result
+      changed_when: "'Resolved' in uv_sync_result.stdout or uv_sync_result.rc != 0"
+      tags: [pull]
+
+    - name: Restart jsb-mcp.service to pick up code changes
+      ansible.builtin.systemd:
+        name: jsb-mcp.service
+        state: restarted
+        scope: user
+      become: true
+      become_user: "{{ jsb_services_user }}"
+      environment:
+        XDG_RUNTIME_DIR: "/run/user/{{ jsb_services_user_uid }}"
+      tags: [services]

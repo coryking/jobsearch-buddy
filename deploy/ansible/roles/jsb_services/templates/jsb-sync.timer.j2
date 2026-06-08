@@ -1,0 +1,11 @@
+# Deployed by Ansible (jsb_services role). Edit the template in
+# deploy/ansible/roles/jsb_services/templates/.
+[Unit]
+Description=Run jsb sync daily at 3am
+
+[Timer]
+OnCalendar=*-*-* 03:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

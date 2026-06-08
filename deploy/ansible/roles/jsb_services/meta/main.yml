@@ -1,0 +1,16 @@
+---
+galaxy_info:
+  role_name: jsb_services
+  author: coryking
+  description: >
+    Deploy and activate systemd user units for jobsearch-buddy (jsb-mcp MCP
+    server, jsb-sync oneshot service, and jsb-sync daily timer).
+  min_ansible_version: "2.14"
+  platforms:
+    - name: Ubuntu
+      versions:
+        - "22.04"
+        - "24.04"
+        - "26.04"
+
+dependencies: []

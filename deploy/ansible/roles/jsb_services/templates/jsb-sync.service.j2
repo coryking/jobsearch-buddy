@@ -1,0 +1,16 @@
+# systemd USER oneshot service for daily jsb sync.
+#
+# Deployed by Ansible (jsb_services role). Edit the template in
+# deploy/ansible/roles/jsb_services/templates/.
+#
+# This unit is static — triggered by jsb-sync.timer; do NOT enable it directly.
+# Requires ~/.config/jsb-mcp.env and ~/projects/jobsearch-buddy/.venv to exist
+# (see jsb-mcp.service.j2 for provisioning notes).
+[Unit]
+Description=Job Search Buddy sync
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/projects/jobsearch-buddy
+EnvironmentFile=%h/.config/jsb-mcp.env
+ExecStart=%h/projects/jobsearch-buddy/.venv/bin/jsb sync

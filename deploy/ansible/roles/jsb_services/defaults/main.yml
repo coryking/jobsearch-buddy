@@ -1,0 +1,11 @@
+---
+# Target user whose systemd session hosts the jsb units.
+# Override in inventory (host_vars/devbox.yml) or with -e.
+jsb_services_user: coryking
+jsb_services_user_uid: 1000
+
+# Resolved path for the user systemd unit directory.
+# /Users/<user> is the home prefix on both devbox and wigglebutt (Ubuntu VMs
+# provisioned with useradd -d /Users/...). Override if deploying to a host
+# that uses the conventional /home prefix.
+jsb_services_systemd_user_dir: "/Users/{{ jsb_services_user }}/.config/systemd/user"
