@@ -28,13 +28,13 @@
     - jsb-mcp.service
     - jsb-sync.service
     - jsb-sync.timer
-  notify: Reload user systemd daemon
+  notify: Reload jsb_services user systemd daemon
 
 - name: Flush handlers so daemon-reload runs before enable/start
   ansible.builtin.meta: flush_handlers
 
-# Always-on MCP daemon. ignore_errors because env file / venv may not exist on
-# a fresh provision — unit files are in place; re-run after prereqs to activate.
+# Always-on MCP daemon. failed_when: false because env file / venv may not exist
+# on a fresh provision — unit files are in place; re-run after prereqs to activate.
 - name: Enable and start jsb-mcp.service
   ansible.builtin.systemd:
     name: jsb-mcp.service
@@ -45,7 +45,7 @@
   become_user: "{{ jsb_services_user }}"
   environment:
     XDG_RUNTIME_DIR: "/run/user/{{ jsb_services_user_uid }}"
-  ignore_errors: true
+  failed_when: false
 
 # Timer is enabled (so it loads on next boot / linger start); timers
 # self-activate once enabled — no state: started needed.
@@ -58,7 +58,7 @@
   become_user: "{{ jsb_services_user }}"
   environment:
     XDG_RUNTIME_DIR: "/run/user/{{ jsb_services_user_uid }}"
-  ignore_errors: true
+  failed_when: false
 
 - name: Note prerequisites required before services will start
   ansible.builtin.debug:
