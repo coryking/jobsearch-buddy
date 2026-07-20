@@ -37,6 +37,21 @@ def _validate_date(value: str | date | None) -> date | None:
         return None
 
 
+def _strip_nul(value: str | None) -> str | None:
+    """Remove NUL (0x00) bytes from text bound for a Postgres text column.
+
+    Postgres rejects NUL in text with a DataError, and text reaching the
+    store carries them anyway — scraped JD bodies, and LLM structured
+    output emitting \\u0000 (which is legal JSON). One such byte in a
+    distill result killed the WriteQueue and took down the 2026-07-10
+    sync. The store is the last gate before Postgres, so every text write
+    path sanitizes here rather than trusting upstream.
+    """
+    if value and "\x00" in value:
+        return value.replace("\x00", "")
+    return value
+
+
 class JobStore:
     """PostgreSQL persistence for job listings, sync bookkeeping, and activity log.
 
@@ -340,15 +355,15 @@ class JobStore:
                 (
                     slug,
                     j.id,
-                    j.title,
-                    j.location or None,
-                    j.url or None,
+                    _strip_nul(j.title),
+                    _strip_nul(j.location) or None,
+                    _strip_nul(j.url) or None,
                     _validate_date(j.published_at),
                     _validate_date(j.last_listing_update),
-                    j.department or None,
-                    j.team or None,
-                    j.salary or None,
-                    j.description or None,
+                    _strip_nul(j.department) or None,
+                    _strip_nul(j.team) or None,
+                    _strip_nul(j.salary) or None,
+                    _strip_nul(j.description) or None,
                     json.dumps(j.ats_metadata) if j.ats_metadata else None,
                     now,
                 )
@@ -795,7 +810,7 @@ class JobStore:
             with self.conn.cursor() as cur:
                 cur.executemany(
                     "UPDATE jobs SET description = %s WHERE company_slug = %s AND job_id = %s",
-                    [(desc, slug, job_id) for job_id, desc in descs.items()],
+                    [(_strip_nul(desc), slug, job_id) for job_id, desc in descs.items()],
                     returning=False,
                 )
 
@@ -844,7 +859,11 @@ class JobStore:
                     set_clause = ", ".join(
                         f"{c} = {self._ENRICHMENT_WRITE_EXPR[c]}" for c in cols
                     )
-                    params = tuple(fields[c] for c in cols) + (slug, jid)
+                    params = tuple(
+                        _strip_nul(fields[c]) if isinstance(fields[c], str)
+                        else fields[c]
+                        for c in cols
+                    ) + (slug, jid)
                     cur.execute(
                         f"UPDATE jobs SET {set_clause} "
                         f"WHERE company_slug = %s AND job_id = %s",
@@ -946,7 +965,12 @@ class JobStore:
                 description_normalized = %s,
                 salary = COALESCE(%s, salary)
                WHERE id = %s""",
-            (short_jd, description_normalized, salary, job_pk),
+            (
+                _strip_nul(short_jd),
+                _strip_nul(description_normalized),
+                _strip_nul(salary),
+                job_pk,
+            ),
         )
 
     def get_job_by_ids(self, job_ids: list[int]) -> list[dict]:

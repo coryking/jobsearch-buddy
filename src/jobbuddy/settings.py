@@ -46,6 +46,15 @@ class Settings(BaseSettings):
     distill_reasoning_effort: ReasoningEffort = "high"
     distill_prompt_version: str = "distill-v3.1"
 
+    # Hard per-run spend ceiling (USD) for cost-tracked sync phases
+    # (currently distill — the only phase that computes per-call cost).
+    # The phase aborts, loudly and non-zero, once a run's tracked spend
+    # crosses this. A full-backlog distill run costs roughly $15-20; the
+    # default leaves headroom for that while capping runaway spend from
+    # retry loops or an unexpectedly huge backlog. Set higher (or None to
+    # disable) deliberately for a known-big catch-up run.
+    sync_max_phase_cost_usd: Optional[float] = 25.0
+
     research_model: str = "gpt-5.4"
     research_endpoint: Optional[str] = None
     research_max_workers: int = 4  # Bing web_search 429s observed >4 concurrent

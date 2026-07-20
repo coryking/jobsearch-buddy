@@ -840,3 +840,62 @@ class TestCompanyBios:
         assert company is not None
         assert company.short_bio == "short text"
         assert company.long_bio == "long text"
+
+
+class TestNulByteSanitization:
+    """Postgres text columns reject NUL (0x00). Real-world text reaching the
+    store carries them anyway — the 2026-07-10 sync outage was triggered by a
+    distill LLM emitting \\u0000 in its JSON output, which killed the
+    WriteQueue mid-run. The store is the last gate before Postgres: every
+    text write path must strip NULs rather than crash.
+    """
+
+    def test_update_job_distill_strips_nul(self, store):
+        store.upsert_jobs("acme", [make_job("1", description="raw jd")])
+        pk = store.conn.execute(
+            "SELECT id FROM jobs WHERE company_slug = 'acme' AND job_id = '1'"
+        ).fetchone()["id"]
+
+        store.update_job_distill(
+            pk,
+            short_jd="short\x00jd",
+            description_normalized="normal\x00ized",
+            salary="$100k\x00-$150k",
+        )
+        row = store.conn.execute(
+            "SELECT short_jd, description_normalized, salary FROM jobs WHERE id = %s",
+            (pk,),
+        ).fetchone()
+        assert row["short_jd"] == "shortjd"
+        assert row["description_normalized"] == "normalized"
+        assert row["salary"] == "$100k-$150k"
+
+    def test_upsert_jobs_strips_nul_from_text_fields(self, store):
+        store.upsert_jobs(
+            "acme",
+            [make_job("1", title="Eng\x00ineer", description="desc\x00ription",
+                      salary="$1\x000")],
+        )
+        row = store.conn.execute(
+            "SELECT title, description, salary FROM jobs"
+            " WHERE company_slug = 'acme' AND job_id = '1'"
+        ).fetchone()
+        assert row["title"] == "Engineer"
+        assert row["description"] == "description"
+        assert row["salary"] == "$10"
+
+    def test_update_descriptions_strips_nul(self, store):
+        store.upsert_jobs("acme", [make_job("1")])
+        store.update_descriptions("acme", {"1": "enriched\x00 body"})
+        row = store.conn.execute(
+            "SELECT description FROM jobs WHERE company_slug = 'acme' AND job_id = '1'"
+        ).fetchone()
+        assert row["description"] == "enriched body"
+
+    def test_update_enrichment_strips_nul(self, store):
+        store.upsert_jobs("acme", [make_job("1")])
+        store.update_enrichment("acme", {"1": {"description": "fill\x00ed"}})
+        row = store.conn.execute(
+            "SELECT description FROM jobs WHERE company_slug = 'acme' AND job_id = '1'"
+        ).fetchone()
+        assert row["description"] == "filled"

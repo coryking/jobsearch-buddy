@@ -94,6 +94,7 @@ class DistillPhase(WorkerPhase["DistillWorkItem"]):
         super().__init__(
             conninfo, max_workers=max_workers, display=display,
             conninfo_factory=conninfo_factory,
+            max_cost_usd=get_settings().sync_max_phase_cost_usd,
         )
         self._slugs = slugs
         self._client: OpenAI | None = None

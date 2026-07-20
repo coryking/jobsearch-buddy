@@ -129,11 +129,13 @@ class TestWriteQueueReconnect:
             "factory must be re-invoked on reconnect to refresh Entra token"
         )
 
-    def test_non_connection_exception_is_logged_not_retried(
+    def test_non_connection_exception_is_fatal_not_retried(
         self, conninfo_factory, caplog
     ):
         """A callable that raises a non-connection error (e.g. ValueError)
-        should be logged-and-dropped without triggering a reconnect."""
+        must NOT trigger a reconnect — it marks the queue fatal, and the
+        next flush() re-raises so the phase crashes loudly (the row was
+        paid for upstream; dropping it silently burns money)."""
 
         def bad_write(store: JobStore) -> None:
             raise ValueError("data bug, not transport")
@@ -143,13 +145,15 @@ class TestWriteQueueReconnect:
         try:
             with caplog.at_level(logging.WARNING, logger="jobbuddy.sync.base"):
                 wq.submit(bad_write)
-                wq.flush()
+                with pytest.raises(RuntimeError, match="data bug"):
+                    wq.flush()
         finally:
             wq.stop()
 
+        assert wq.is_fatal
         assert conninfo_factory.calls["n"] == 1, (
             "factory must NOT be re-invoked for non-connection errors"
         )
         assert any("data bug" in rec.message or "ValueError" in rec.message
                    for rec in caplog.records), \
-            f"expected warning log; got {[r.message for r in caplog.records]}"
+            f"expected error log; got {[r.message for r in caplog.records]}"

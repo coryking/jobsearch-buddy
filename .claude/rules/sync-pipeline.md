@@ -92,3 +92,28 @@ of the phase's `run()`, and crashes the sync with a non-zero exit. The
 upstream LLM/HTTP call that produced the row was already paid for, so
 silently dropping the row would mean burning money for nothing AND
 leaving stale NULLs that look identical to "never processed".
+
+Ordering invariants that keep "fatal" honest (all pinned by
+`tests/test_worker_phase_fatal.py`):
+
+- The writer publishes `_fatal` **before** `task_done()`, so the first
+  `flush()` after a poison write sees it rather than racing past.
+- `run()` sends worker sentinels in a `finally` — a producer-loop
+  exception must terminate the phase, not strand workers on
+  `work_queue.get()` and deadlock the executor join.
+- Workers check `WriteQueue.is_fatal` **before** `process_item()`. The
+  paid LLM call happens inside `process_item`; once the write path is
+  dead, starting more paid work buys results with nowhere to land.
+  Post-fatal failures don't count as per-item errors and don't retry.
+
+## Spend ceiling
+
+Cost-tracked phases (distill) enforce `sync_max_phase_cost_usd`
+(default $25/run, `JOBBUDDY_SYNC_MAX_PHASE_COST_USD`): once the run's
+tracked spend crosses the ceiling, workers stop starting paid items and
+the producer raises `PhaseCostLimitExceeded` → non-zero exit. The
+ceiling is a hard budget on unattended spend, not advice — raise it
+deliberately for a known-big backfill, don't remove it. Text bound for
+Postgres is NUL-stripped in the store layer (`_strip_nul`), so a
+`\x00` in LLM output degrades to a cleaned string instead of a fatal
+write.

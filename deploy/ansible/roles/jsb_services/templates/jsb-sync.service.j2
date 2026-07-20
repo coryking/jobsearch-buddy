@@ -14,3 +14,10 @@ Type=oneshot
 WorkingDirectory=%h/projects/jobsearch-buddy
 EnvironmentFile=%h/.config/jsb-mcp.env
 ExecStart=%h/projects/jobsearch-buddy/.venv/bin/jsb sync
+# Backstop against a wedged run. A oneshot that never exits blocks every
+# subsequent timer firing (systemd won't start an already-active service),
+# so a hang silently halts the daily sync until a human notices — a
+# 2026-07 incident ran 10 days that way. A healthy full sync completes in
+# well under an hour; anything past this is stuck, and SIGTERM'ing it is
+# safe (DB-as-queue: unfinished items are still NULL and picked up next run).
+RuntimeMaxSec=4h
