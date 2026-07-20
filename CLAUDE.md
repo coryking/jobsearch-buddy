@@ -149,6 +149,7 @@ Override defaults with env vars (prefix `JOBBUDDY_`) or a `.env` file:
 | `distill_model`            | `JOBBUDDY_DISTILL_MODEL`             | `gpt-5.4-nano`                             |
 | `distill_reasoning_effort` | `JOBBUDDY_DISTILL_REASONING_EFFORT`  | `high`                                     |
 | `distill_prompt_version`   | `JOBBUDDY_DISTILL_PROMPT_VERSION`    | `distill-v3.1`                             |
+| `sync_max_phase_cost_usd`  | `JOBBUDDY_SYNC_MAX_PHASE_COST_USD`   | `25.0` *(hard per-run spend ceiling; phase aborts past it)* |
 | `research_model`           | `JOBBUDDY_RESEARCH_MODEL`            | `gpt-5.4`                                  |
 | `research_endpoint`        | `JOBBUDDY_RESEARCH_ENDPOINT`         | `None` *(Azure OpenAI resource root URL)*  |
 | `research_max_workers`     | `JOBBUDDY_RESEARCH_MAX_WORKERS`      | `4`                                        |

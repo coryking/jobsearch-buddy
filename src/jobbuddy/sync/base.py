@@ -36,6 +36,12 @@ from jobbuddy.sync.display import PhaseState
 log = logging.getLogger(__name__)
 
 
+class PhaseCostLimitExceeded(RuntimeError):
+    """A phase hit its per-run spend ceiling (`max_cost_usd`) and refused to
+    start more paid work. Raised out of run() so the sync exits non-zero —
+    the ceiling is a hard budget, not advice."""
+
+
 def _is_connection_dead(store: JobStore | None, exc: BaseException) -> bool:
     """Heuristic: did this exception come from a dead/closed connection?
 
@@ -130,21 +136,25 @@ class WriteQueue:
                         try:
                             store = self._open_store()
                         except Exception as reopen_err:
-                            self._queue.task_done()
+                            # _bail BEFORE task_done: flush() unblocks on the
+                            # task_done count, so _fatal must already be
+                            # visible when it does — the reverse order let a
+                            # single flush() race past the error unseen.
                             self._bail(reopen_err)
+                            self._queue.task_done()
                             return
                         try:
                             fn(store)
                         except Exception as retry_err:
-                            self._queue.task_done()
                             self._bail(retry_err)
+                            self._queue.task_done()
                             return
                     else:
                         # Per-row write error. We refuse to drop the row --
                         # the upstream call was paid for. Bail and let the
                         # operator see exactly what failed.
-                        self._queue.task_done()
                         self._bail(e)
+                        self._queue.task_done()
                         return
                 self._queue.task_done()
         finally:
@@ -152,6 +162,12 @@ class WriteQueue:
                 store.close()
             except Exception:
                 pass
+
+    @property
+    def is_fatal(self) -> bool:
+        """True once the writer has bailed. Phases check this BEFORE starting
+        paid work — a dead write path means any LLM/HTTP spend is wasted."""
+        return self._fatal is not None
 
     def submit(self, fn: Callable[[JobStore], None]) -> None:
         if self._fatal is not None:
@@ -189,7 +205,8 @@ class WorkerPhase(ABC, Generic[T]):
     def __init__(self, conninfo: str, *, max_workers: int,
                  display: PhaseState,
                  upstream_done: threading.Event | None = None,
-                 conninfo_factory: Callable[[], str] | None = None):
+                 conninfo_factory: Callable[[], str] | None = None,
+                 max_cost_usd: float | None = None):
         self.conninfo = conninfo
         # Factory is invoked at WriteQueue startup AND on every reconnect, so
         # each reconnect picks up a fresh Entra token in Azure mode. Default
@@ -201,6 +218,9 @@ class WorkerPhase(ABC, Generic[T]):
         )
         self.max_workers = max_workers
         self.display = display
+        # Hard per-run spend ceiling for phases that pay per item (LLM
+        # calls). None = no ceiling. Checked against display.info_cost_usd.
+        self.max_cost_usd = max_cost_usd
         self._shutdown = threading.Event()
         self._upstream_done = upstream_done
         self._reader: JobStore | None = None
@@ -324,54 +344,87 @@ class WorkerPhase(ABC, Generic[T]):
                     for _ in range(self.max_workers)
                 ]
 
-                # Producer loop (this thread)
-                while not self._shutdown.is_set():
-                    # Flush writes so DB reflects completed work, then poll
-                    self._writer.flush()
-                    # Over-fetch past in-flight items that are still NULL
-                    poll_limit = self.batch_size + len(dispatched)
-                    items = self.poll_work(poll_limit)
-                    new_items = [i for i in items if self.item_key(i) not in dispatched]
-
-                    if not new_items:
-                        if self._upstream_done and not self._upstream_done.is_set():
-                            self._shutdown.wait(timeout=1.0)
-                            continue
-                        break
-
-                    for item in new_items:
-                        dispatched.add(self.item_key(item))
-                        # put() with timeout so we can respond to shutdown
-                        while not self._shutdown.is_set():
-                            try:
-                                work_queue.put(item, timeout=0.5)
-                                break
-                            except queue.Full:
-                                continue
-
-                    # Update total as upstream produces more work
-                    if self._upstream_done:
+                try:
+                    # Producer loop (this thread)
+                    while not self._shutdown.is_set():
+                        # Flush writes so DB reflects completed work, then poll
                         self._writer.flush()
-                        new_total = self.count_remaining() + self.display.done
-                        if self.display.total is not None and new_total > self.display.total:
-                            self.display.total = new_total
+                        self._check_cost_limit()
+                        # Over-fetch past in-flight items that are still NULL
+                        poll_limit = self.batch_size + len(dispatched)
+                        items = self.poll_work(poll_limit)
+                        new_items = [i for i in items if self.item_key(i) not in dispatched]
 
-                # Signal workers to stop
-                for _ in range(self.max_workers):
-                    work_queue.put(None)
+                        if not new_items:
+                            if self._upstream_done and not self._upstream_done.is_set():
+                                self._shutdown.wait(timeout=1.0)
+                                continue
+                            break
+
+                        for item in new_items:
+                            dispatched.add(self.item_key(item))
+                            # put() with timeout so we can respond to shutdown
+                            while not self._shutdown.is_set():
+                                try:
+                                    work_queue.put(item, timeout=0.5)
+                                    break
+                                except queue.Full:
+                                    continue
+
+                        # Update total as upstream produces more work
+                        if self._upstream_done:
+                            self._writer.flush()
+                            new_total = self.count_remaining() + self.display.done
+                            if self.display.total is not None and new_total > self.display.total:
+                                self.display.total = new_total
+                except BaseException:
+                    # Freeze the workers before releasing them: on a
+                    # producer failure the items still in the queue must
+                    # be skipped, not processed — process_item is where
+                    # money is spent.
+                    self._shutdown.set()
+                    raise
+                finally:
+                    # ALWAYS send the worker sentinels. When the producer
+                    # loop raises (fatal writer, cost limit), skipping the
+                    # sends leaves max_workers threads parked on
+                    # work_queue.get() and ThreadPoolExecutor.__exit__
+                    # joins them forever — the 2026-07-10 sync hung for
+                    # 10 days in exactly that state. On the normal path
+                    # the sentinels queue behind remaining items and the
+                    # workers finish them first; on the abort path the
+                    # shutdown flag makes those items fast skips, so
+                    # these puts can't block on a full queue for long.
+                    for _ in range(self.max_workers):
+                        work_queue.put(None)
 
                 for f in worker_futures:
                     f.result()
-        finally:
-            if self._writer:
+                # Post-loop checks: workers may have recorded spend (or the
+                # writer may have gone fatal) after the producer's last
+                # in-loop check — e.g. when every item was dispatched in the
+                # first few polls and the loop exited before any completed.
                 self._writer.flush()
-                self._writer.stop()
-            self.on_phase_end()
-            if self._reader is not None:
-                self._reader.close()
-            self.display.finish()
-            log.info("%s phase done (%d done, %d errors)",
-                     self.display.name, self.display.done, self.display.errors)
+                self._check_cost_limit()
+        finally:
+            try:
+                if self._writer:
+                    try:
+                        # Final flush: on the normal path this surfaces a
+                        # late writer failure; on the exception path it
+                        # re-raises the same fatal error that's already
+                        # propagating (harmless). Nested finally keeps
+                        # stop() and the rest of teardown running either way.
+                        self._writer.flush()
+                    finally:
+                        self._writer.stop()
+            finally:
+                self.on_phase_end()
+                if self._reader is not None:
+                    self._reader.close()
+                self.display.finish()
+                log.info("%s phase done (%d done, %d errors)",
+                         self.display.name, self.display.done, self.display.errors)
 
     def shutdown(self) -> None:
         self._shutdown.set()
@@ -392,12 +445,54 @@ class WorkerPhase(ABC, Generic[T]):
             finally:
                 work_queue.task_done()
 
+    def _check_cost_limit(self) -> None:
+        """Raise if this phase has spent past its per-run budget.
+
+        The ceiling is a hard bound on unattended spend: a cron-driven
+        phase that pays per item must not be able to burn past a number
+        the operator chose, no matter what the backlog or a retry loop
+        looks like. Raise the limit deliberately (settings /
+        JOBBUDDY_SYNC_MAX_PHASE_COST_USD) for a known-big run.
+        """
+        if self.max_cost_usd is None:
+            return
+        spent = self.display.info_cost_usd
+        if spent >= self.max_cost_usd:
+            raise PhaseCostLimitExceeded(
+                f"{self.display.name} phase spent ${spent:.2f} >= "
+                f"${self.max_cost_usd:.2f} limit after {self.display.done} "
+                f"items; aborting before starting more paid work"
+            )
+
+    def _spend_is_frozen(self) -> bool:
+        """True when workers must not start new paid work: the write path
+        is dead (results would have nowhere to land) or the phase is over
+        its cost ceiling (the producer is about to raise)."""
+        if self._writer is not None and self._writer.is_fatal:
+            return True
+        return (
+            self.max_cost_usd is not None
+            and self.display.info_cost_usd >= self.max_cost_usd
+        )
+
     def _safe_process(self, item: T, dispatched: set[Hashable],
                       failures: dict[Hashable, int]) -> None:
+        if self._shutdown.is_set() or self._spend_is_frozen():
+            # Skip silently: not an error, not a retry. The producer
+            # raises the real failure (or the operator asked for
+            # shutdown); paying for this item first would be the
+            # incident's 1,167-discarded-LLM-calls mode again.
+            return
         self.display.active_workers += 1
         try:
             self.process_item(item)
         except Exception as e:
+            if self._writer is not None and self._writer.is_fatal:
+                # The failure is downstream of the dead write path
+                # (submit_write refusing the result). Don't count it or
+                # un-dispatch for retry — a retry would re-pay for the
+                # LLM call and be refused again.
+                return
             key = self.item_key(item)
             label = self.item_label(item)
             count = failures.get(key, 0) + 1
