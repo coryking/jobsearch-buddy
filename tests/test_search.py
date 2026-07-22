@@ -371,6 +371,72 @@ class TestFreshnessBucketOrdering:
         assert ids.index("fresh") < ids.index("stale-touched")
 
 
+class TestTitleMatchTier:
+    """Rows whose *title* matches the query outrank rows that only match in
+    the body — across freshness buckets. Searching "product manager" must
+    surface Product Manager roles before fresh postings that merely mention
+    product managers in the JD. Within a tier, the freshness bucket and
+    ts_rank still apply.
+    """
+
+    def test_title_match_beats_fresher_body_mention(self, store):
+        today = date.today()
+        # Published 20 days ago (bucket 1), but the title IS the query.
+        _seed_distilled(store, "acme", "real-pm",
+                        title="Senior Product Manager",
+                        short_jd="Own the roadmap.",
+                        published_at=today - timedelta(days=20))
+        # Published today (bucket 0), query terms only in the body.
+        _seed_distilled(store, "beta", "ux-mention",
+                        title="UX Designer",
+                        short_jd="Partner with product managers on discovery.",
+                        published_at=today)
+        rows = store.search_jobs_fts(query="product manager", limit=10)
+        ids = [r["job_id"] for r in rows]
+        assert ids.index("real-pm") < ids.index("ux-mention")
+
+    def test_quoted_phrase_title_match_beats_fresher_body_mention(self, store):
+        today = date.today()
+        _seed_distilled(store, "acme", "real-pm",
+                        title="Senior Product Manager",
+                        short_jd="Own the roadmap.",
+                        published_at=today - timedelta(days=20))
+        _seed_distilled(store, "beta", "ux-mention",
+                        title="UX Designer",
+                        short_jd="Partner with product managers on discovery.",
+                        published_at=today)
+        rows = store.search_jobs_fts(query='"product manager"', limit=10)
+        ids = [r["job_id"] for r in rows]
+        assert ids.index("real-pm") < ids.index("ux-mention")
+
+    def test_freshness_bucket_still_orders_within_title_tier(self, store):
+        today = date.today()
+        _seed_distilled(store, "acme", "pm-fresh",
+                        title="Product Manager, Payments", short_jd="x",
+                        published_at=today - timedelta(days=2))
+        _seed_distilled(store, "beta", "pm-older",
+                        title="Product Manager, Risk", short_jd="x",
+                        published_at=today - timedelta(days=20))
+        rows = store.search_jobs_fts(query="product manager", limit=10)
+        ids = [r["job_id"] for r in rows]
+        assert ids.index("pm-fresh") < ids.index("pm-older")
+
+    def test_title_match_tier_in_survey_top(self, store):
+        today = date.today()
+        _seed_distilled(store, "acme", "real-pm",
+                        title="Senior Product Manager",
+                        short_jd="Own the roadmap.",
+                        published_at=today - timedelta(days=20))
+        _seed_distilled(store, "acme", "ux-mention",
+                        title="UX Designer",
+                        short_jd="Partner with product managers on discovery.",
+                        published_at=today)
+        env = store.survey_jobs_by_company(
+            companies=["acme"], query="product manager", top_per_company=10)
+        ids = [r["job_id"] for r in env["acme"]["top"]]
+        assert ids.index("real-pm") < ids.index("ux-mention")
+
+
 class TestCoreSearchJobs:
     def test_invalid_posted_since_raises_value_error(self, store):
         from jobbuddy.core import search_jobs

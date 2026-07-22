@@ -179,6 +179,11 @@ def search_jobs(
     use when the user wants newly-created roles and evergreen-with-recent-
     touch listings would be misleading.
 
+    When `query` is set, rows whose *title* matches the query come first
+    (freshest-published leading), then rows matching only in the body —
+    \"product manager\" surfaces Product Manager roles before postings
+    that merely mention product managers.
+
     Rows are fact-dense (snippet + salary + posted + location inline), so
     do NOT call `get_job_post_details` per row to rank or filter — only
     when the user asks for the full description. Rows the user has already
