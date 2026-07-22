@@ -1,11 +1,9 @@
 # systemd USER service for the Job Search Buddy MCP server.
 #
-# Deployed by Ansible (jsb_services role). Edit the template in
-# deploy/ansible/roles/jsb_services/templates/.
+# Installed by deploy/deploy.sh — edit here, not in ~/.config/systemd/user/.
 #
-# Prerequisites NOT managed by Ansible (provision manually before enabling):
+# Prerequisites not managed by the deploy script (provision manually once):
 #   - Env file at ~/.config/jsb-mcp.env  (secrets — keep in 1Password)
-#   - Project venv: cd ~/projects/jobsearch-buddy && uv sync
 [Unit]
 Description=Job Search Buddy MCP server
 After=network-online.target

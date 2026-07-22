@@ -1,9 +1,0 @@
----
-- name: Reload jsb_services user systemd daemon
-  ansible.builtin.systemd:
-    daemon_reload: true
-    scope: user
-  become: true
-  become_user: "{{ jsb_services_user }}"
-  environment:
-    XDG_RUNTIME_DIR: "/run/user/{{ jsb_services_user_uid }}"
