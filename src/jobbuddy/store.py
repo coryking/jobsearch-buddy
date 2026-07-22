@@ -446,6 +446,17 @@ class JobStore:
         "ELSE 3 END"
     )
 
+    # Does the job *title* match the query? Same websearch_to_tsquery
+    # semantics as the fts_vector filter (phrase quotes, stemming), scoped
+    # to the title alone. Leads the ORDER BY when a query is present so
+    # title matches form the top tier of the result set. Computed per
+    # already-matched row — the GIN-indexed fts_vector filter narrows
+    # first, so no title index is needed.
+    _TITLE_MATCH_EXPR: LiteralString = (
+        "(to_tsvector('english', coalesce(j.title, '')) "
+        "@@ websearch_to_tsquery('english', %s))"
+    )
+
     def query_jobs(
         self,
         *,
@@ -535,7 +546,11 @@ class JobStore:
     ) -> list[dict]:
         """Phase 1 search: FTS over fts_vector with deterministic ranking.
 
-        - When `query` is set: rank by ts_rank DESC, tie-break on
+        - When `query` is set: rows whose *title* matches the query (same
+          websearch_to_tsquery semantics) form the leading tier — searching
+          "product manager" surfaces Product Manager roles before postings
+          that merely mention product managers in the body. Within a tier:
+          freshness bucket, then ts_rank DESC, tie-break on
           (effective_date DESC, company_slug, job_id).
         - When `query` is empty: pure effective_date DESC,
           tie-break on (company_slug, job_id).
@@ -565,9 +580,20 @@ class JobStore:
         # effective_date tie-breakers operate within each bucket.
         order_inner = f"{bucket}, j.effective_date DESC, j.company_slug, j.job_id"
         if query:
-            select_extra = f", {ts_rank_expr} AS rank"
-            params.insert(0, query)  # bound to the SELECT-list ts_rank
-            order_inner = f"{bucket}, rank DESC, j.effective_date DESC, j.company_slug, j.job_id"
+            # Title-match tier leads: the ORDER BY is built from explicit
+            # signals the calling LLM can reason about (title match,
+            # freshness), with ts_rank only breaking ties within a tier.
+            # Without the tier, the freshness bucket lets weak body-only
+            # matches published this week outrank strong title matches
+            # published last month.
+            select_extra = (
+                f", {ts_rank_expr} AS rank, {self._TITLE_MATCH_EXPR} AS title_match"
+            )
+            params[:0] = [query, query]  # bound to SELECT-list rank, title_match
+            order_inner = (
+                f"title_match DESC, {bucket}, rank DESC, "
+                "j.effective_date DESC, j.company_slug, j.job_id"
+            )
 
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
 
@@ -715,12 +741,18 @@ class JobStore:
             )
             select_extra = (
                 f", {ts_rank_expr} AS rank, "
+                f"{self._TITLE_MATCH_EXPR} AS title_match, "
                 f"CASE WHEN j.short_jd IS NULL THEN NULL "
                 f"     ELSE {headline_expr} END AS snippet"
             )
-            # Bind order: [rank-query, headline-query, headline-opts] then existing filter params.
-            top_params = [query, query, self._HEADLINE_OPTS] + top_params
-            order_by = f"{bucket}, rank DESC, j.effective_date DESC, j.company_slug, j.job_id"
+            # Bind order: [rank-query, title-match-query, headline-query,
+            # headline-opts] then existing filter params.
+            top_params = [query, query, query, self._HEADLINE_OPTS] + top_params
+            # Title-match tier leads, same as search_jobs_fts.
+            order_by = (
+                f"title_match DESC, {bucket}, rank DESC, "
+                "j.effective_date DESC, j.company_slug, j.job_id"
+            )
 
         top_where = f"WHERE {' AND '.join(top_conditions)}" if top_conditions else ""
         top_params.append(top_per_company)

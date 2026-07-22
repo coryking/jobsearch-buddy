@@ -206,8 +206,10 @@ def search_jobs(
 ) -> list[JobRow]:
     """Flat ranked job search across the whole stored corpus.
 
-    Returns rows ranked by Postgres FTS when `query` is set, or by
-    `effective_date DESC` when it is not. Optionally scope to a specific
+    When `query` is set, rows whose title matches the query form the
+    leading tier (freshness-bucketed, then Postgres FTS rank within);
+    body-only matches follow. Without a query, rows order by
+    `effective_date DESC`. Optionally scope to a specific
     `companies` list — useful when called via a watchlist. Use
     `survey_jobs_by_companies` for a per-company envelope keyed by slug.
 

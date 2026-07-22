@@ -85,8 +85,8 @@ ceilings with currency and unit.
 
 The rule is recursive: the bio is NPOV. The distill is NPOV. Tool descriptions
 are NPOV. `search_jobs` returns rows in a stable order, not a "best-fit"
-order — sort comes from explicit signals (posting freshness, location match)
-the LLM can reason about, not a hidden score.
+order — sort comes from explicit signals (title match, posting freshness,
+location match) the LLM can reason about, not a hidden score.
 
 ## Workplace-defining facts beat company-press-release facts
 
