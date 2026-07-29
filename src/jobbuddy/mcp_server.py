@@ -108,10 +108,7 @@ async def assert_account_dependency_stripped() -> None:
     discovering it the hard way."""
     leaked: list[str] = []
     for tool_name in (
-        "log_job_application", "log_job_activity", "search_jobs",
-        "find_companies", "review_activity_log",
-        "watchlist_create", "watchlist_update", "watchlist_delete",
-        "watchlist_list",
+        "log_job_application", "log_job_activity", "review_activity_log",
     ):
         tool = await mcp.get_tool(tool_name)
         schema = tool.parameters

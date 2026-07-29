@@ -196,8 +196,8 @@ class TestMcpTool:
     string the calling LLM can show the user."""
 
     def test_unrecognized_url(self, monkeypatch):
-        # Trigger registration; mcp_tools.jobs decorates on import
-        from jobbuddy.mcp_tools import jobs as jobs_module
+        # Trigger registration; mcp_tools.live decorates on import
+        from jobbuddy.mcp_tools import live as jobs_module
 
         result = jobs_module.get_application_form(
             url="https://example.com/not-a-job"
@@ -205,7 +205,7 @@ class TestMcpTool:
         assert "URL" in result or "recognize" in result.lower()
 
     def test_unsupported_ats(self, monkeypatch):
-        from jobbuddy.mcp_tools import jobs as jobs_module
+        from jobbuddy.mcp_tools import live as jobs_module
 
         # A Workday URL parses but Workday doesn't support form fetch
         url = "https://acme.wd1.myworkdayjobs.com/en-US/acme/job/Senior_JR123"
@@ -214,7 +214,7 @@ class TestMcpTool:
 
     def test_supported_ats_returns_json(self, monkeypatch):
         from jobbuddy import fetchers as fetchers_pkg
-        from jobbuddy.mcp_tools import jobs as jobs_module
+        from jobbuddy.mcp_tools import live as jobs_module
 
         sample = json.loads((FIXTURES / "greenhouse_sample.json").read_text())
 
