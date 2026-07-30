@@ -62,3 +62,37 @@ def test_no_secondary_locations_is_primary_only():
     jobs = _make_fetcher().list_jobs()
     eng = next(j for j in jobs if j.id == "bbb-222")
     assert eng.location == "Remote"
+
+
+def _fetcher_with_board(board: dict) -> AshbyFetcher:
+    f = AshbyFetcher("acme")
+    f.client = MagicMock()
+    resp = MagicMock(spec=httpx.Response)
+    resp.json.return_value = board
+    resp.raise_for_status = MagicMock()
+    f.client.get.return_value = resp
+    return f
+
+
+def test_duplicate_locations_deduped():
+    """A primary repeated in secondaryLocations must not render 'Remote; Remote'."""
+    board = {"jobs": [{
+        "id": "ccc-333", "title": "Engineer", "location": "Remote",
+        "secondaryLocations": [{"location": "Remote"}, {"location": "Austin, TX"},
+                               {"location": "Austin, TX"}],
+        "jobUrl": "u", "applyUrl": "a", "descriptionPlain": "desc",
+    }]}
+    jobs = _fetcher_with_board(board).list_jobs()
+    assert jobs[0].location == "Remote; Austin, TX"
+
+
+def test_malformed_secondary_entries_do_not_fail_the_board():
+    """One posting with odd-shaped secondaries must not take down the fetch
+    for every other posting at the company."""
+    board = {"jobs": [{
+        "id": "ddd-444", "title": "Engineer", "location": "NYC",
+        "secondaryLocations": ["Austin, TX", None, {"location": "Seattle, WA"}],
+        "jobUrl": "u", "applyUrl": "a", "descriptionPlain": "desc",
+    }]}
+    jobs = _fetcher_with_board(board).list_jobs()
+    assert jobs[0].location == "NYC; Austin, TX; Seattle, WA"

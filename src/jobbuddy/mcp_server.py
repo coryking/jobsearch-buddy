@@ -105,16 +105,17 @@ async def assert_account_dependency_stripped() -> None:
     every tool's JSON schema. If a fastmcp regression or downgrade ever
     let `account` slip into the schema, the calling LLM could populate
     it and bypass authentication. Fail loudly at startup rather than
-    discovering it the hard way."""
+    discovering it the hard way.
+
+    Sweeps every registered tool rather than a hardcoded list, so
+    restoring the withdrawn corpus modules (or adding new authenticated
+    tools) can never outrun the guard."""
     leaked: list[str] = []
-    for tool_name in (
-        "log_job_application", "log_job_activity", "review_activity_log",
-    ):
-        tool = await mcp.get_tool(tool_name)
+    for tool in await mcp.list_tools():
         schema = tool.parameters
         props = schema.get("properties", {}) if isinstance(schema, dict) else {}
         if "account" in props:
-            leaked.append(tool_name)
+            leaked.append(tool.name)
     if leaked:
         raise RuntimeError(
             f"`account` parameter leaked into tool input schema for: {leaked}. "

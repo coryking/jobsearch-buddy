@@ -19,7 +19,12 @@ from jobbuddy.models import CompactJob
 log = logging.getLogger(__name__)
 
 
-@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
+# Not readOnlyHint: the URL path auto-registers unknown companies (a registry
+# insert). Idempotent though — re-registering the same company is a no-op.
+@mcp.tool(annotations={
+    "readOnlyHint": False, "destructiveHint": False,
+    "idempotentHint": True, "openWorldHint": True,
+})
 def get_job(
     url: Annotated[str, Field(description=(
         "Job posting URL — anything the user pasted (LinkedIn deep-link, "
@@ -69,32 +74,43 @@ def list_company_jobs(
         "Company slug or display name from the registry (see the "
         "ats://companies resource for what's registered)."
     ))],
-    published_since: Annotated[str, Field(description=(
-        "Only rows published in this window (e.g. '24h', '3d', '1w'). "
-        "Rows with no publish date are kept — unknown is not old."
+    posted_since: Annotated[str, Field(description=(
+        "Only rows with ATS activity in this window (e.g. '24h', '3d', "
+        "'1w') — publish date OR most recent listing update, whichever is "
+        "later, so evergreen postings refreshed recently still count as "
+        "fresh. Rows with no date at all are kept — unknown is not old."
     ))] = "",
     limit: Annotated[int, Field(ge=1, le=1000, description=(
-        "Max rows returned. The envelope's `total` is always the full "
-        "board size, so truncation is visible."
-    ))] = 500,
+        "Max rows returned. `matched > offset + returned` in the envelope "
+        "means there are more matching rows — page with `offset` or "
+        "narrow with `posted_since`."
+    ))] = 50,
+    offset: Annotated[int, Field(ge=0, description=(
+        "Skip this many matching rows (newest-first order) — for paging "
+        "past `limit` on large boards."
+    ))] = 0,
 ) -> dict:
     """List a company's open jobs live from its ATS — compact rows (title,
     location, salary, published date, id, url), newest first.
 
     Use for "what's open at X?", "anything new at X this week?"
-    (published_since='1w'), or scanning the user's companies of interest —
-    fan out one call per company; they run fast and in parallel. The board
+    (posted_since='1w'), or scanning the user's companies of interest —
+    one call per company. Most boards answer in one round trip; large
+    paginated ATSes (Workday especially) can take tens of seconds per
+    company, so fan those out sparingly rather than all at once. The board
     is fetched at call time: no staleness, and an error means the fetch
     failed rather than silently serving old rows.
 
-    Rows carry enough to rank and filter in-context — do that yourself
-    rather than re-calling. Descriptions are deliberately excluded; call
-    `get_job` for the handful of rows the user cares about."""
-    from jobbuddy.core.live import list_company_jobs_live
+    The envelope reports `total` (whole board), `matched` (after
+    posted_since), and `returned` (this page). Rows carry enough to rank
+    and filter in-context — do that yourself rather than re-calling.
+    Descriptions are deliberately excluded; call `get_job` for the handful
+    of rows the user cares about."""
+    from jobbuddy.core import list_company_jobs_live
 
     try:
         return list_company_jobs_live(
-            company, published_since=published_since, limit=limit,
+            company, posted_since=posted_since, limit=limit, offset=offset,
         )
     except ValueError as e:
         return {"error": str(e)}

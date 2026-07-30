@@ -10,33 +10,56 @@ JD inline, and dumping hundreds of them would swamp the calling LLM. The
 per-job detail path (`fetch_from_url` / `fetch_by_id`) returns the full JD.
 """
 
+from datetime import date
+
 from jobbuddy.fetchers import SUPPORTED_ATS_TYPES, get_fetcher
+from jobbuddy.models import Job
 from jobbuddy.registry import lookup_by_name
 
 # Fields a listing row carries. Everything else on Job (description,
-# ats_metadata) is detail-fetch territory.
+# ats_metadata) is detail-fetch territory. `last_listing_update`
+# disambiguates a year-old `published_at` that the ATS touched yesterday
+# (evergreen reqs — issue #53); the posted_since filter honors it too.
 _ROW_FIELDS = (
     "id", "title", "location", "department", "team",
-    "salary", "published_at", "url",
+    "salary", "published_at", "last_listing_update", "url",
 )
+
+
+def job_freshness(j: Job) -> date | None:
+    """Most recent ATS activity we know about: publish or listing update."""
+    dates = [d for d in (j.published_at, j.last_listing_update) if d is not None]
+    return max(dates) if dates else None
 
 
 def list_company_jobs_live(
     company: str,
     *,
-    published_since: str = "",
-    limit: int = 500,
+    posted_since: str = "",
+    limit: int = 50,
+    offset: int = 0,
 ) -> dict:
     """Live-fetch a company's job board and return compact listing rows.
 
-    `published_since` (e.g. '3d', '1w') keeps rows published on/after the
-    cutoff — rows with no publish date survive the filter (unknown is not
-    old). `total` is always the full board size before filtering, so the
-    caller can tell "quiet board" from "filtered down".
+    `posted_since` (e.g. '3d', '1w') keeps rows whose freshness — publish
+    date or most recent ATS listing update, whichever is later — falls on
+    or after the cutoff. Rows with neither date survive the filter (unknown
+    is not old). The envelope carries three counts: `total` (full board,
+    pre-filter), `matched` (post-filter, pre-slice), and `returned` — so
+    `matched > offset + returned` is the unambiguous "there's more" signal
+    and `offset` pages through the remainder.
 
-    Raises ValueError for unknown companies or companies with no usable
-    board config.
+    Raises ValueError for unknown companies, companies with no usable
+    board config, or an unparseable `posted_since`.
     """
+    # Validate inputs before any I/O — a bad duration must not cost a
+    # full board fetch.
+    cutoff: date | None = None
+    if posted_since:
+        from jobbuddy.core.durations import parse_duration_to_date
+
+        cutoff = date.fromisoformat(parse_duration_to_date(posted_since))
+
     resolved = lookup_by_name(company)
     if not resolved:
         raise ValueError(
@@ -49,32 +72,42 @@ def list_company_jobs_live(
             "Fetch a specific posting by URL instead — it auto-detects the ATS."
         )
 
-    fetcher = get_fetcher(resolved)
-    jobs = fetcher.list_jobs()
+    with get_fetcher(resolved) as fetcher:
+        jobs = fetcher.list_jobs()
     total = len(jobs)
 
-    if published_since:
-        from jobbuddy.core.durations import parse_duration_to_date
+    if cutoff is not None:
+        jobs = [
+            j for j in jobs
+            if (fresh := job_freshness(j)) is None or fresh >= cutoff
+        ]
+    matched = len(jobs)
 
-        cutoff = parse_duration_to_date(published_since)
-        jobs = [j for j in jobs if j.published_at is None or str(j.published_at) >= cutoff]
-
-    # Newest first; undated rows sort as "" which lands last under reverse.
-    jobs.sort(key=lambda j: str(j.published_at) if j.published_at else "", reverse=True)
+    # Newest first by publish date; undated rows land last.
+    jobs.sort(
+        key=lambda j: (j.published_at is not None, j.published_at or date.min),
+        reverse=True,
+    )
 
     rows = []
-    for j in jobs[:limit]:
+    for j in jobs[offset:offset + limit]:
         dumped = j.model_dump()
+        if dumped.get("team") == dumped.get("department"):
+            dumped["team"] = None  # some ATSes mirror the fields; don't pay twice
         rows.append({
             k: dumped[k] for k in _ROW_FIELDS
             if dumped.get(k) not in (None, "")
         })
 
-    return {
+    envelope = {
         "company": resolved.slug,
         "company_name": resolved.name,
         "ats": resolved.ats,
         "total": total,
+        "matched": matched,
         "returned": len(rows),
         "rows": rows,
     }
+    if offset:
+        envelope["offset"] = offset
+    return envelope

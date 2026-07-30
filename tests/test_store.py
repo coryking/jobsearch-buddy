@@ -1,6 +1,6 @@
 """Tests for jobbuddy.store -- JobStore class (PostgreSQL)."""
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import psycopg
 import pytest
@@ -764,11 +764,15 @@ class TestCompanyBios:
         assert sorted(i["slug"] for i in items) == ["acme", "beta"]
 
     def test_update_company_bio_writes_all_fields(self, store):
-        before = datetime.now(timezone.utc)
+        # bio_researched_at is SQL now() — transaction-start time. The store
+        # connection's transaction can open microseconds before this line
+        # runs, so the bounds need slop to avoid a sub-millisecond flake.
+        slop = timedelta(seconds=2)
+        before = datetime.now(timezone.utc) - slop
         store.update_company_bio(
             "acme", short_bio="short", long_bio="long prose", model="gpt-5.4"
         )
-        after = datetime.now(timezone.utc)
+        after = datetime.now(timezone.utc) + slop
         row = store.conn.execute(
             "SELECT short_bio, long_bio, bio_researched_at, bio_model"
             " FROM companies WHERE slug = 'acme'"

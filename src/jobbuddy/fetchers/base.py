@@ -73,6 +73,18 @@ class ATSFetcher(ABC):
             follow_redirects=True,
         )
 
+    def close(self) -> None:
+        """Release the underlying HTTP connection pool. Long-lived callers
+        (the MCP server) build a fetcher per request; without an explicit
+        close, sockets linger until GC gets around to the transport."""
+        self.client.close()
+
+    def __enter__(self) -> "ATSFetcher":
+        return self
+
+    def __exit__(self, *exc_info) -> None:
+        self.close()
+
     @abstractmethod
     def list_jobs(
         self,
