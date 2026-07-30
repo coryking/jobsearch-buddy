@@ -33,8 +33,12 @@ main() {
                   "$repo/deploy/jsb-sync.service" \
                   "$repo/deploy/jsb-sync.timer" "$unit_dir/"
   systemctl --user daemon-reload
-  # jsb-sync.service is static — the timer drives it; never enable it directly.
-  systemctl --user enable jsb-mcp.service jsb-sync.timer
+  # The sync pipeline is withdrawn while the stateless live-fetch surface is
+  # evaluated: unit files stay installed for a cheap revert, but the timer is
+  # forced off so a deploy can't silently resurrect it. To bring sync back,
+  # swap the disable for `enable --now jsb-sync.timer`.
+  systemctl --user enable jsb-mcp.service
+  systemctl --user disable --now jsb-sync.timer 2>/dev/null || true
   systemctl --user restart jsb-mcp.service
 
   sleep 1

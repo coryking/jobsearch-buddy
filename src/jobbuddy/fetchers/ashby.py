@@ -54,11 +54,23 @@ class AshbyFetcher(ATSFetcher):
             if comp:
                 salary = comp.get("compensationTierSummary")
 
+            # Ashby splits multi-location postings across `location` (primary)
+            # and `secondaryLocations`. Join them the way the hosted page
+            # renders them ("City A; City B; ...") so no site is dropped.
+            # Secondary entries are usually dicts but the shape isn't
+            # contractual — a stray string must not fail the whole board.
+            locations = [j.get("location", "")]
+            locations += [
+                s.get("location", "") if isinstance(s, dict) else str(s or "")
+                for s in j.get("secondaryLocations") or []
+            ]
+            location = "; ".join(dict.fromkeys(loc for loc in locations if loc))
+
             jobs.append(
                 Job(
                     id=j["id"],
                     title=j["title"],
-                    location=j.get("location", ""),
+                    location=location,
                     url=j.get("jobUrl", ""),
                     apply_url=j.get("applyUrl", ""),
                     published_at=j.get("publishedAt", "")[:10] if j.get("publishedAt") else None,

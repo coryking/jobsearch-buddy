@@ -9,14 +9,22 @@ jobsearch-buddy has two interfaces sharing a single core:
 
 Both call into `core.py`. Core raises `ValueError`; callers handle presentation.
 
-Phase 1 of the search redesign replaced the strip+embed pipeline with a
-single LLM **distill** phase that produces three derived fields per job
-(`short_jd`, `description_normalized`, `salary`). Search is PostgreSQL
-full-text search over those fields plus title/location/department.
+The registered MCP surface is **stateless live fetch** plus application
+tracking: `get_job` / `list_company_jobs` / `get_application_form` hit the
+ATS at call time via `core/fetch.py` and `core/live.py` and never read the
+jobs table; `log_job_application` / `log_job_activity` / `review_activity_log`
+are the stateful, OAuth-gated half. The corpus-backed tool modules
+(`mcp_tools/jobs.py`, `companies.py`, `watchlists.py`) remain on disk but are
+deliberately not imported — see `mcp_tools/__init__.py` for the one-line
+restore.
 
-Phase 2 (company-side) is partly merged: the `ResearchPhase` populates
-`companies.short_bio` and `long_bio` via Azure Responses API + web_search.
-`long_bio` feeds the distill prompt as `<company_bio>` context. The
+The corpus machinery behind those withdrawn tools still exists and the CLI
+can drive it: a sync pipeline with an LLM **distill** phase producing three
+derived fields per job (`short_jd`, `description_normalized`, `salary`),
+PostgreSQL full-text search over those fields plus title/location/department,
+and a `ResearchPhase` that populates `companies.short_bio` / `long_bio` via
+Azure Responses API + web_search (`long_bio` feeds the distill prompt as
+`<company_bio>` context). The deploy keeps the sync timer disabled. The
 `pgvector` extension stays installed but no current code uses it.
 
 ## Data Access — JobStore
@@ -28,12 +36,12 @@ worker threads in the sync pipeline each create their own instance.
 
 | Operation | Source | Notes |
 |-----------|--------|-------|
-| `search_jobs` MCP | JobStore | FTS over title/short_jd/description_normalized/location/department |
-| `get_job_post_details` MCP | JobStore + live fallback | Returns `description_normalized` if distilled, else raw `description` |
+| `get_job` MCP | Live API | By URL (auto-registers unknown companies) or company+job_id |
+| `list_company_jobs` MCP | Live API | Whole-board compact rows, newest first |
 | `jsb list-jobs` CLI | JobStore | Optional company filter |
 | `jsb search` CLI | JobStore | Title/location/company filters |
-| `jsb sync` CLI | Live API + LLM | Populates/refreshes cache, runs distill |
-| `log_job_application` MCP | Live API | Saves listing as markdown |
+| `jsb sync` CLI | Live API + LLM | Populates/refreshes the corpus, runs distill (not scheduled) |
+| `log_job_application` MCP | Live API | Snapshots the posting at log time |
 | `jsb lookup` CLI | Live API | Single-job detail fetch |
 
 ### Schema
@@ -70,11 +78,13 @@ re-distill source. MCP `get_job_post_details` returns
 `distilled: bool` marker so consumers can tell.
 
 When the distill phase writes `short_jd` / `description_normalized`, the
-`fts_vector` generated column updates automatically. When `upsert_jobs`
-sees the raw `description` change on an existing job, it nulls
-`short_jd` / `description_normalized` so the distill phase picks the
-row up again on the next pass — replaces the content_hash invalidation
-path that the embedding pipeline used.
+`fts_vector` generated column updates automatically. Note the upsert is
+**pure-insert** for content columns: title, location, salary, description,
+and `published_at` are fixed at first insert, and only operational state
+(`last_seen`, `listing_status`, `last_listing_update`) mutates on conflict.
+There is no re-distill trigger on description change — a stored row reflects
+the posting as it looked when first captured. This staleness class is why
+the MCP surface serves live fetches instead of the corpus.
 
 ### Date columns
 

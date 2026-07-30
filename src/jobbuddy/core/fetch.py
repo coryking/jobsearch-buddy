@@ -65,8 +65,8 @@ def fetch_from_url(url: str) -> FetchResult:
     if not company or not company.ats:
         company = auto_register_from_url(url, parsed)
 
-    fetcher = get_fetcher(company)
-    job = fetcher.fetch_job(parsed.job_id)
+    with get_fetcher(company) as fetcher:
+        job = fetcher.fetch_job(parsed.job_id)
 
     return FetchResult(company=company, job=job)
 
@@ -100,8 +100,8 @@ def fetch_paylocity_detail(url, parsed) -> FetchResult:
         company_slug = ""
         # Can't determine board UUID — create a temporary fetcher with empty board
         display_name = name_m.group(1) if name_m else "Unknown"
-        temp_fetcher = PaylocityFetcher("", display_name, ats_prefix=ats_prefix)
-        job = temp_fetcher._parse_detail_page(resp.text, parsed.job_id, url)
+        with PaylocityFetcher("", display_name, ats_prefix=ats_prefix) as temp_fetcher:
+            job = temp_fetcher._parse_detail_page(resp.text, parsed.job_id, url)
         company = register_company(display_name, "paylocity", "", company_slug=company_slug, ats_prefix=ats_prefix)
         return FetchResult(company=company, job=job)
 
@@ -115,8 +115,8 @@ def fetch_paylocity_detail(url, parsed) -> FetchResult:
             extra["ats_prefix"] = ats_prefix
         company = register_company(display_name, "paylocity", parsed.board, **extra)
 
-    temp_fetcher = PaylocityFetcher(parsed.board, company.name, company_slug=company_slug, ats_prefix=ats_prefix)
-    job = temp_fetcher._parse_detail_page(resp.text, parsed.job_id, url)
+    with PaylocityFetcher(parsed.board, company.name, company_slug=company_slug, ats_prefix=ats_prefix) as temp_fetcher:
+        job = temp_fetcher._parse_detail_page(resp.text, parsed.job_id, url)
     return FetchResult(company=company, job=job)
 
 
@@ -124,8 +124,8 @@ def auto_register_from_url(url, parsed):
     """Auto-register a company from an ATS URL — pulls per-ATS host bits."""
     from urllib.parse import urlparse as urlparse_
 
-    temp = create_fetcher(parsed.ats, board=parsed.board)
-    display_name = temp.resolve_name() or parsed.board.replace("-", " ").replace("_", " ").title()
+    with create_fetcher(parsed.ats, board=parsed.board) as temp:
+        display_name = temp.resolve_name() or parsed.board.replace("-", " ").replace("_", " ").title()
     extra = {}
     if parsed.ats == "workday":
         host = urlparse_(url).hostname or ""
@@ -175,7 +175,7 @@ def fetch_by_id(company_input: str, job_id: str) -> FetchResult:
             "Use a job listing URL instead — it auto-detects the ATS type."
         )
 
-    fetcher = get_fetcher(company)
-    job = fetcher.fetch_job(job_id)
+    with get_fetcher(company) as fetcher:
+        job = fetcher.fetch_job(job_id)
 
     return FetchResult(company=company, job=job)

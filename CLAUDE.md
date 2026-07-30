@@ -10,13 +10,19 @@ the user.
 
 ## What This Project Is
 
-A command-line tool and MCP server for job searching: scrapes ATS job boards
-(see Supported ATS Platforms below), stores listings in PostgreSQL, and exposes
-them via a FastMCP server for use with Claude Desktop or any MCP-compatible
-client. Job search uses PostgreSQL full-text search over a per-job distill
-pipeline that produces `short_jd`, `description_normalized`, and `salary`.
-Company search (`find_companies`) uses hybrid vector + FTS over researched
-company bios, fused with reciprocal rank fusion.
+A command-line tool and MCP server for job searching. The registered MCP
+surface is **stateless live fetch**: `get_job` (any posting by URL or
+company+id) and `list_company_jobs` (a whole board, compact rows) hit the ATS
+at call time and never read the jobs table — plus OAuth-gated application
+tracking, which is the stateful half. PostgreSQL holds the company registry
+(the name→board phone book) and the activity log.
+
+The corpus machinery — scrape-to-Postgres sync pipeline, FTS search over
+LLM-distilled fields (`short_jd`, `description_normalized`, `salary`), hybrid
+vector+FTS company search over researched bios — exists in the codebase and
+the CLI can drive it, but its MCP tools (`mcp_tools/jobs.py`, `companies.py`,
+`watchlists.py`) are deliberately unregistered and the sync timer is disabled
+by the deploy. `mcp_tools/__init__.py` documents the one-line restore.
 
 This is a practical tool, not enterprise software. Bias toward shipping.
 80% today beats 99% tomorrow.

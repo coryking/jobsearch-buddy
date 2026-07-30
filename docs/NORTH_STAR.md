@@ -9,15 +9,28 @@
 ## What jobsearch-buddy is
 
 jobsearch-buddy (`jsb`) is a structured, fact-dense data provider for an LLM
-that does the actual ranking. It scrapes ATS job boards, distills postings into
-comparable fields, researches the companies posting them, and exposes the
-result through a small MCP surface and a CLI.
+that does the actual ranking. Its load-bearing asset is a normalization layer
+over a dozen-plus ATS wire dialects: give it any job URL or a registered
+company and it returns clean, comparable JSON — fetched from the ATS at call
+time, never served from a cache. The stateful half is application tracking
+(what the seeker applied to, who they talked to), plus a small operator-curated
+company registry that maps names to board configs.
 
 The thing it is *not*: a search engine, a ranker, or a recommender. It does not
 decide which jobs fit a seeker. The calling LLM — Claude Desktop, ChatGPT, an
-agent on the seeker's machine — does that. jsb's job is to make the LLM's job
-possible by handing it evidence it could not assemble in one shot from
-`web_search` + `web_fetch`.
+agent on the seeker's machine — does that, reading live listing rows
+in-context. The context window is the database; the LLM is the query engine;
+jsb is the wire-protocol adapter. Cross-company *discovery* ("who is hiring
+for X anywhere?") is explicitly ceded to Indeed/LinkedIn — jsb starts from
+companies the seeker already cares about.
+
+A corpus-backed search surface (scraped jobs table, FTS, distilled snippets,
+bio embeddings) exists in the codebase but is withdrawn from the MCP surface:
+a cache of yesterday's fetch presents itself as today's truth, and both
+data-integrity failures that motivated the withdrawal were staleness bugs in
+that cache while the live fetch path was correct. The modules stay on disk;
+`src/jobbuddy/mcp_tools/__init__.py` documents the one-line restore if usage
+proves the corpus tools are missed.
 
 ## Who the user is
 
@@ -35,35 +48,32 @@ call. If a parameter would let the LLM work around a tool limitation by
 enumerating synonyms, we don't add that parameter — we make the tool good
 enough that intent-shaped calls work.
 
-## The search chain
+## The fetch chain
 
 This is the actual flow when somebody uses the MCP server. Every architectural
 decision in this repo is downstream of these steps.
 
-1. **The calling LLM filters with `search_jobs(title=…, location=…,
-   company=…, posted_since=…, query=…)`.** PostgreSQL full-text search, not
-   vector. The LLM issues structured keyword queries (`staff software engineer
-   AND ai`), plus location and company filters — it does not issue "vibe"
-   queries like "high-energy AI startups." Embeddings cannot help with the
-   queries the LLM actually issues against jobs.
-2. **Each result row carries `short_jd` inline.** This is the SERP snippet the
-   LLM reads to decide which postings are worth deeper inspection. The LLM
-   scans many; it reads few in full.
-3. **For company context, the LLM either flips `include_company_bio=true` on
-   `search_jobs` or calls `get_company(slug)`** one company at a time. Company
-   bios disambiguate vague JD language (a JD that says "support compliance
-   programs" reads differently when the bio says "ITAR-regulated defense
-   contractor"). They do not get restated inside `short_jd`.
-4. **For jobs worth a real read, the LLM pulls `get_job_post_details`,**
-   which returns `description_normalized` (boilerplate-stripped JD).
+1. **The seeker's watch list lives with the calling LLM** — in its project
+   context or preferences, never as server state. jsb's `ats://companies`
+   resource is the phone book (slug, name, ATS) for resolving names.
+2. **The LLM pulls live boards with `list_company_jobs(company,
+   posted_since=…)`** — one call per company of interest, compact rows
+   (title, locations, salary, publish date, last ATS touch, id, url),
+   newest first. The rows are what the board says right now.
+3. **The LLM ranks and filters those rows in-context.** Location, level,
+   domain, the seeker's quirks — that judgment happens in the caller, over
+   complete fresh rows, not in SQL over a cache. jsb returns rows in a
+   stable newest-first order, never a "best-fit" order.
+4. **For the finalists, the LLM pulls `get_job(url=…)`** — the full JD,
+   normalized, plus `get_application_form` to preview the questions behind
+   the Apply button.
 5. **The LLM matches against what it knows about the seeker.** That's the
    compatibility judgment. jsb does not make it; jsb does not encode the
    seeker's preferences anywhere.
 
-The company-side path is similar in shape: `find_companies` is hybrid
-vector + FTS over researched bios, but again it returns evidence — what these
-companies are, what working there empirically looks like — for the LLM to
-reason over, not a ranked list ordered by fit.
+For company context, `ats://companies/{slug}` carries a researched NPOV bio
+where one exists — evidence about what working there empirically looks like,
+for the LLM to reason over.
 
 ## NPOV — neutral point of view
 
@@ -84,9 +94,9 @@ named programs, named regulatory bodies, schedule shape, hard gates
 ceilings with currency and unit.
 
 The rule is recursive: the bio is NPOV. The distill is NPOV. Tool descriptions
-are NPOV. `search_jobs` returns rows in a stable order, not a "best-fit"
-order — sort comes from explicit signals (title match, posting freshness,
-location match) the LLM can reason about, not a hidden score.
+are NPOV. `list_company_jobs` returns rows in a stable newest-first order, not
+a "best-fit" order — sort comes from an explicit signal (publish date) the LLM
+can reason about, not a hidden score.
 
 ## Workplace-defining facts beat company-press-release facts
 
@@ -107,15 +117,15 @@ scope, hard gates — these are what distinguish.
 
 ## Evidence beats ranking
 
-jsb's competition is `web_search` + `web_fetch`. Those tools can find any one
-job posting or company page faster than a sync pipeline can. They cannot
-assemble normalized, comparable data across many companies in a single round
-trip — they cannot tell the calling LLM that of 47 companies in the seeker's
-filter, 6 are on ITAR-regulated work, 12 have published pay floors above
-$X, 3 have multi-year-old reqs that are still listed. That comparability *is*
-the edge. Architectural changes that make individual rows richer at the cost
-of cross-company comparability move us toward web_search and away from where
-the edge is.
+jsb's competition is `web_search` + `web_fetch`. Those tools can find a job
+posting's *page*; they hand back scraped HTML that drops structured fields
+(secondary locations, salary tiers, publish dates, apply-form questions) and
+can't reliably enumerate a whole board. jsb hits the ATS's own API and returns
+every posting on a board as normalized, comparable rows in one round trip —
+the same shape whether the board speaks Greenhouse, Ashby, or Workday. That
+normalization *is* the edge. Architectural changes that make one ATS's rows
+richer at the cost of cross-ATS comparability move us toward web_search and
+away from where the edge is.
 
 ## Practical, not enterprise
 
@@ -142,8 +152,8 @@ code cold, understand what's going on and trust the data? If yes, ship.
   same-titled sibling at a different company. Bio leaks (importing bio
   facts the JD didn't gesture at) and title restatement are the two
   dominant failure modes.
-- Comparability across companies is the load-bearing property. When changes
-  improve one company's data at the cost of cross-company comparability,
+- Normalization across ATS dialects is the load-bearing property. When
+  changes improve one platform's data at the cost of the shared row shape,
   the change is suspect.
 - The seeker's context never lives in jsb. Filters and preferences flow
   through the calling LLM. If a feature would require us to encode the

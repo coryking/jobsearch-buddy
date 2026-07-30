@@ -5,6 +5,11 @@ globs: src/jobbuddy/sync/**/*.py
 
 # Sync Pipeline
 
+**Status: dormant.** The MCP surface serves stateless live fetches and the
+deploy keeps `jsb-sync.timer` disabled, so nothing runs this pipeline on a
+schedule. The machinery remains fully functional via `jsb sync` and this rule
+stays authoritative for anyone touching `src/jobbuddy/sync/`.
+
 The sync pipeline uses a **DB-as-queue** pattern. Four phases are wired:
 
 1. **Fetch** — parallel company fetching via ThreadPoolExecutor
@@ -58,9 +63,9 @@ run independently via phase selection (`jsb sync research`,
 The distill phase's "needs work" predicate (already enforced by the
 `idx_jobs_needs_distill` partial index) is a stable column-presence check
 (`short_jd IS NULL AND description IS NOT NULL AND listing_status = 'active'`)
-— no hash. The upsert nulls `short_jd`/`description_normalized` whenever a
-job's `description` body changes, so the distill phase will pick the row up
-again on the next pass.
+— no hash. Note the upsert is pure-insert for content columns: a changed
+`description` on the ATS side does NOT update the stored row and does NOT
+re-trigger distill. Stored content reflects first capture.
 
 ## Logging and progress
 

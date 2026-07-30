@@ -20,6 +20,7 @@ from jobbuddy.core.fetch import (
     fetch_from_url,
     is_supported_ats_url,
 )
+from jobbuddy.core.live import list_company_jobs_live
 from jobbuddy.core.output import (
     job_to_markdown,
     result_to_dict,
@@ -41,6 +42,7 @@ __all__ = [
     "find_companies",
     "is_supported_ats_url",
     "job_to_markdown",
+    "list_company_jobs_live",
     "merge_watchlist_defaults",
     "parse_duration_to_date",
     "resolve_company_slugs",
