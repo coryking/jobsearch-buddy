@@ -2,7 +2,23 @@
 
 from datetime import date, datetime, timezone
 
-from jobbuddy.models import parse_published_at
+from jobbuddy.models import Job, parse_published_at
+
+
+class TestJobLocation:
+    """An ATS that emits an explicit ``"location": null`` must not take down
+    the whole company's sync. ``dict.get("location", "")`` defends a *missing*
+    key but returns None on an explicit null, so the value reaches Job; the
+    model is the single chokepoint that has to tolerate it. Coerce None to ""
+    — the already-handled no-location representation — rather than raising."""
+
+    BASE = dict(id="1", title="Engineer", url="u", apply_url="a")
+
+    def test_explicit_none_location_coerced_to_empty(self):
+        assert Job(location=None, **self.BASE).location == ""
+
+    def test_real_location_preserved(self):
+        assert Job(location="Remote, US", **self.BASE).location == "Remote, US"
 
 
 class TestParsePublishedAt:
