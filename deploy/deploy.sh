@@ -16,10 +16,14 @@ set -euo pipefail
 
 main() {
   local repo unit_dir
-  repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+  # jsb-mcp.service launches %h/projects/jobsearch-buddy/.venv/bin/jsb-mcp, so the
+  # canonical checkout is the tree to pull and sync — not whatever worktree this
+  # script was invoked from.
+  repo="$HOME/projects/jobsearch-buddy"
   unit_dir="$HOME/.config/systemd/user"
   export PATH="$HOME/.local/bin:$PATH"
   command -v uv >/dev/null || { echo "uv not found (expected ~/.local/bin/uv)"; exit 1; }
+  [[ -d "$repo" ]] || { echo "$repo does not exist — the unit runs that path; clone it there first"; exit 1; }
 
   echo "== pull =="
   git -C "$repo" pull --ff-only
