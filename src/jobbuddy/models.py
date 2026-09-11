@@ -258,30 +258,125 @@ class CompactJob(BaseModel):
 
 
 class _HTMLStripper(HTMLParser):
+    """Flatten description HTML to text while preserving the two structures
+    the calling LLM actually ranks against: list nesting and link targets.
+
+    `get_job` hands this output to the LLM as the evidence payload
+    (docs/NORTH_STAR.md), so a requirement list rendered as undifferentiated
+    paragraphs is lost information, and a sub-bullet promoted to sibling
+    level is *changed* information.
+    """
+
     _BLOCK_TAGS = frozenset(
         "p div br hr li tr dt dd h1 h2 h3 h4 h5 h6 blockquote pre ol ul table".split()
     )
+    _LIST_TAGS = frozenset({"ol", "ul"})
+
+    # Marks the start of a list item's content so leading source whitespace
+    # (ATS HTML is pretty-printed) can be dropped without disturbing the rest.
+    _ITEM_MARK = "\ue000"
 
     def __init__(self):
         super().__init__()
         self._pieces: list[str] = []
+        self._list_depth = 0
+        # items emitted so far at each open list level
+        self._item_counts: list[int] = []
+        # (index into _pieces where the anchor's text starts, href)
+        self._anchors: list[tuple[int, str]] = []
 
     def handle_starttag(self, tag: str, attrs: list):
-        if tag in self._BLOCK_TAGS:
+        if tag in self._LIST_TAGS:
+            self._list_depth += 1
+            self._item_counts.append(0)
+            self._pieces.append("\n")
+        elif tag == "li":
+            # Pull the bullet up onto its own line, closing whatever gap the
+            # source HTML left. The one gap worth keeping is the break before
+            # a top-level list's first item -- that separates the list from
+            # the heading or paragraph introducing it.
+            first_of_top_level = (
+                self._list_depth == 1 and self._item_counts and self._item_counts[-1] == 0
+            )
+            if not first_of_top_level:
+                self._rstrip_pieces()
+            if self._item_counts:
+                self._item_counts[-1] += 1
+            indent = "  " * max(self._list_depth - 1, 0)
+            self._pieces.append("\n" + indent + "- " + self._ITEM_MARK)
+        elif tag == "a":
+            href = dict(attrs).get("href") or ""
+            self._anchors.append((len(self._pieces), href.strip()))
+        elif tag in self._BLOCK_TAGS:
             self._pieces.append("\n")
 
     def handle_endtag(self, tag: str):
-        if tag in self._BLOCK_TAGS:
+        if tag in self._LIST_TAGS:
+            self._list_depth = max(self._list_depth - 1, 0)
+            if self._item_counts:
+                self._item_counts.pop()
+            self._pieces.append("\n")
+        elif tag == "li":
+            # The start tag already opened the item's line; a newline here
+            # would put a blank line between every bullet.
+            pass
+        elif tag == "a":
+            self._close_anchor()
+        elif tag in self._BLOCK_TAGS:
             self._pieces.append("\n")
 
     def handle_data(self, data: str):
         self._pieces.append(data)
 
+    def _close_anchor(self):
+        if not self._anchors:
+            return
+        start, href = self._anchors.pop()
+        text = "".join(self._pieces[start:]).strip()
+        del self._pieces[start:]
+        self._pieces.append(format_link_text(text, href))
+
+    def _rstrip_pieces(self):
+        """Drop trailing whitespace so a bullet starts its own line.
+
+        Skipped while an anchor is open: popping pieces would invalidate the
+        recorded start index. An <li> cannot legitimately open inside an <a>.
+        """
+        if self._anchors:
+            return
+        while self._pieces:
+            trimmed = self._pieces[-1].rstrip()
+            if trimmed:
+                self._pieces[-1] = trimmed
+                return
+            self._pieces.pop()
+
     def get_text(self) -> str:
-        import re as _re
+        while self._anchors:  # unclosed <a> — emit what it wrapped
+            self._close_anchor()
         text = "".join(self._pieces)
-        text = _re.sub(r"\n{3,}", "\n\n", text)
+        text = re.sub(self._ITEM_MARK + r"\s*", "", text)
+        text = re.sub(r"^[ ]*-[ ]*$\n?", "", text, flags=re.MULTILINE)
+        text = re.sub(r"[ \t]+$", "", text, flags=re.MULTILINE)
+        text = re.sub(r"\n{3,}", "\n\n", text)
         return text
+
+
+def format_link_text(text: str, href: str) -> str:
+    """Render anchor text plus target as markdown, or bare text when the
+    target carries no standalone meaning.
+
+    Only absolute http(s) targets are inlined. Relative and fragment hrefs are
+    meaningless without the base URL, and `mailto:`/`tel:` are recruiter PII
+    the pipeline is supposed to strip — inlining those would introduce it.
+    """
+    if not href.lower().startswith(("http://", "https://")):
+        return text
+    if not text:
+        return href
+    if text == href:
+        return text
+    return f"[{text}]({href})"
 
 
 def strip_html(html: str) -> str:
@@ -290,6 +385,7 @@ def strip_html(html: str) -> str:
     html = html_mod.unescape(html)
     s = _HTMLStripper()
     s.feed(html)
+    s.close()
     return s.get_text().strip()
 
 
