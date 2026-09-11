@@ -5,7 +5,7 @@ class docstrings — keep those accurate; the MCP wrapper does not re-document
 them.
 """
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class JobRow(BaseModel):
@@ -13,17 +13,26 @@ class JobRow(BaseModel):
 
     `posted` is an ISO date string when known; `snippet` is a ts_headline
     excerpt (when query is set) or a passive prefix of `short_jd` (when not).
+    `updated` is an ATS-side freshness signal; when both are present, prefer
+    `updated` over `posted` to judge whether a listing is current.
     """
 
     job_id: str
     title: str
     location: str | None = None
     posted: str | None = None
-    # ATS-side freshness signal (greenhouse/amazon/eightfold_v2/jibe/avature
-    # populate this; others leave it None). When the LLM sees `updated` and
-    # `posted` diverge sharply, that's the cue that an old `posted` date
-    # belongs to an actively-republished listing rather than a stale req.
-    updated: str | None = None
+    updated: str | None = Field(
+        default=None,
+        description=(
+            "ATS-side last-touch date (ISO date string). Populated by "
+            "Greenhouse, Amazon, Eightfold v2, Jibe, and Avature; None for "
+            "other platforms. When `updated` and `posted` both appear and "
+            "diverge, `posted` is the original publish date and `updated` is "
+            "the most recent ATS-side edit — the listing is old but actively "
+            "republished. Use `updated` (not `posted`) to judge freshness "
+            "when both are present."
+        ),
+    )
     snippet: str | None = None
     url: str | None = None
     salary: str | None = None
