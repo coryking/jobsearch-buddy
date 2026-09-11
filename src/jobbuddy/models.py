@@ -77,6 +77,16 @@ class Job(BaseModel):
     description: str | None = None
     ats_metadata: dict | None = Field(default=None, exclude=True)
 
+    @field_validator("location", mode="before")
+    @classmethod
+    def coerce_null_location(cls, v: str | None) -> str:
+        # ATSes occasionally emit an explicit "location": null. Fetchers guard
+        # the *missing* key with .get("location", "") but that returns None on
+        # an explicit null, which would reject here and fail the whole
+        # company's sync over one bad job. "" is the no-location representation
+        # everywhere downstream, so coerce rather than raise.
+        return v or ""
+
 
 class Company(BaseModel):
     """A company in the registry. Slug is normalized at construction time."""
