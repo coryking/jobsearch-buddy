@@ -107,6 +107,7 @@ jsb research-companies [--company NAME]... [--force]  # Fill companies.short_bio
 jsb list-jobs [company] [-f FILTER]         # List jobs
 jsb search [--query Q] [--posted-since S] [--limit N]  # FTS search across stored jobs
 jsb companies                               # List registered companies
+jsb check-boards [--ats X] [--company SLUG]... [--json]  # Live-probe every registered board; report ok/empty/error
 jsb save <company> <job_ids...> [-o DIR]    # Save listings as markdown
 jsb lookup <url>                            # Fetch single job details
 ```
