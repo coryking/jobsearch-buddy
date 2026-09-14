@@ -1,348 +1,76 @@
-"""One-shot migration of jsb's activity_log into HubSpot.
+"""Load the HubSpot migration company files into HubSpot.
 
-Modes:
-  dry-run   group rows into pursuits, classify, and print the report + merge list (no writes)
-  probe     create one throwaway deal to learn which date properties HubSpot lets us backdate
-  import    create companies, contacts, deals, notes, meetings via the batch APIs
-  wipe      delete every company/contact/deal/note/meeting in the portal (fresh-portal re-runs)
+The files (one per company, schema in the resume repo's data/hubspot-migration/SCHEMA.md) are the
+structured reading of jsb's old activity_log. This loader is deterministic: companies, contacts,
+deals, notes and meetings are created through the batch APIs, associated, and stamped with their
+provenance (file path and source row ids) in HubSpot's record-source detail fields.
 
-Run on a box that reaches the jsb Postgres and 1Password:
-  uv run python scripts/hubspot_export.py dry-run
-  uv run python scripts/hubspot_export.py import
+    uv run python scripts/hubspot_export.py dry-run <companies-dir>
+    uv run python scripts/hubspot_export.py load <companies-dir> [--skip-existing]
+    uv run python scripts/hubspot_export.py wipe --yes        # fresh-portal re-runs only
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import os
-import re
 import subprocess
 import sys
 import time
-from collections import Counter, defaultdict
-from datetime import date
+from pathlib import Path
 
 import httpx
 
-from jobbuddy.store import JobStore
-
-TODAY = date.today()
-OPEN_WINDOW_DAYS = 60
-REAPPLY_GAP_DAYS = 60
-KEYLESS_MERGE_DAYS = 30
-STAGE_IDS = {"Applied": "4305280713", "Screen": "4305280714", "Interview": "4305280715", "closedlost": "closedlost"}
-ALIASES = {"saloni": "saloni sonpal", "brad": "bradley johnson"}
-MEETING_URL = re.compile(r"linkedin\.com/in/|meet\.google|calendar|zoom\.us")
 BASE = "https://api.hubapi.com"
-
-SQL = """
-select a.id, a.log_date::text as date, a.company, a.role, coalesce(a.job_id,'') job_id,
-       coalesce(a.action,'') action, coalesce(a.person,'') person, coalesce(a.location,'') location,
-       coalesce(a.status,'') status, coalesce(a.url,'') url, coalesce(a.notes,'') notes,
-       coalesce(min(c.slug),'') reg_slug,
-       coalesce(min(j.title),'') j_title, coalesce(min(j.location),'') j_location,
-       coalesce(min(j.salary),'') j_salary, coalesce(min(j.url),'') j_url
-from activity_log a
-left join companies c on lower(c.name)=lower(a.company) or c.slug=lower(a.company)
-left join jobs j on j.job_id=a.job_id and j.job_id<>''
-group by a.id order by a.log_date, a.id
-"""
+STAGE = {"applied": "4305280713", "screen": "4305280714", "interview": "4305280715", "offer": "4305280716",
+         "accepted": "4305280717", "closed_lost": "closedlost"}
+LOST_REASON = {"rejected": "Rejected", "withdrawn": "Withdrawn", "req_closed": "Req closed", "no_response": "No response"}
+WRITER = "hubspot_export.py"
 
 
-def d(s: str) -> date:
-    return date.fromisoformat(s)
+def ts(day: str) -> str:
+    return f"{day}T19:00:00Z"  # noon Pacific, so the local date matches the file's date
 
 
-# ---------------------------------------------------------------- grouping
-
-def norm_role(s: str) -> str:
-    s = s.lower().replace("&amp;", "&").replace("senior+", "senior")
-    s = re.sub(r"\(r-?\d+\)|\[pipeline\]|\br\d+\b", " ", s)
-    s = re.sub(r"[^a-z0-9 ]", " ", s)
-    stripped = re.sub(r"\b(senior|sr|staff|principal|lead|ii|iii|technical|manager|product|the|of|and|a)\b", " ", s)
-    return " ".join(stripped.split()) or " ".join(s.split())
+def split_name(name: str) -> tuple[str, str]:
+    parts = name.split()
+    return (parts[0], " ".join(parts[1:])) if len(parts) > 1 else (name, "")
 
 
-def norm_url(u: str) -> str:
-    return u.split("?")[0].rstrip("/").lower()
+def lifecycle(person: dict, pursuits: list[dict]) -> str:
+    mine = [p for p in pursuits if person["id"] in p["people"]]
+    if any(p["status"] == "accepted" for p in mine):
+        return "customer"
+    if person["hiring_role"] == "referrer":
+        return "evangelist"
+    return "opportunity" if mine else "lead"
 
 
-def posting_url(r: dict) -> str:
-    return "" if (not r["url"] or MEETING_URL.search(r["url"])) else norm_url(r["url"])
-
-
-class Groups:
-    def __init__(self, rows: list[dict]):
-        self.rows = {r["id"]: r for r in rows}
-        self.parent = {r["id"]: r["id"] for r in rows}
-        self.merge_log: list[tuple[str, dict, dict]] = []
-
-    def find(self, x):
-        while self.parent[x] != x:
-            self.parent[x] = self.parent[self.parent[x]]
-            x = self.parent[x]
-        return x
-
-    def job_ids(self, x) -> set[str]:
-        root = self.find(x)
-        return {r["job_id"] for r in self.rows.values() if self.find(r["id"]) == root and r["job_id"]}
-
-    def keyless(self, x) -> bool:
-        root = self.find(x)
-        return not any(r["job_id"] or posting_url(r) for r in self.rows.values() if self.find(r["id"]) == root)
-
-    def union(self, a, b, why: str) -> None:
-        if self.find(a) == self.find(b):
-            return
-        ja, jb = self.job_ids(a), self.job_ids(b)
-        if ja and jb and ja != jb:
-            return  # two distinct reqs never merge, whatever the titles say
-        self.merge_log.append((why, self.rows[a], self.rows[b]))
-        self.parent[self.find(a)] = self.find(b)
-
-    def groups(self) -> list[list[dict]]:
-        g = defaultdict(list)
-        for r in self.rows.values():
-            g[self.find(r["id"])].append(r)
-        out = list(g.values())
-        for grp in out:
-            grp.sort(key=lambda r: (r["date"], int(r["id"])))
-        return out
-
-
-def group_rows(rows: list[dict]) -> Groups:
-    G = Groups(rows)
-    by_co = defaultdict(list)
-    for r in rows:
-        by_co[r["company"].lower().strip()].append(r)
-    for rs in by_co.values():
-        idx = defaultdict(list)
-        for r in rs:
-            if r["job_id"]:
-                idx[("id", r["job_id"])].append(r["id"])
-            if posting_url(r):
-                idx[("url", posting_url(r))].append(r["id"])
-        for ids in idx.values():
-            for i in ids[1:]:
-                G.union(ids[0], i, "same job_id/url")
-        ridx = defaultdict(list)
-        for r in rs:
-            nr = norm_role(r["role"])
-            if nr:
-                ridx[nr].append(r["id"])
-        for ids in ridx.values():
-            for i in ids[1:]:
-                G.union(ids[0], i, "same role title")
-        keyless = sorted((r for r in rs if not r["job_id"] and not posting_url(r)), key=lambda r: r["date"])
-        for a, b in zip(keyless, keyless[1:]):
-            both_apps = a["action"] == "Application" and b["action"] == "Application"
-            close = (d(b["date"]) - d(a["date"])).days <= KEYLESS_MERGE_DAYS
-            if close and not both_apps and G.keyless(a["id"]) and G.keyless(b["id"]):
-                G.union(a["id"], b["id"], f"keyless within {KEYLESS_MERGE_DAYS}d")
-    return G
-
-
-def split_episodes(group: list[dict]) -> list[list[dict]]:
-    out, cur, last_app = [], [], None
-    for r in group:
-        if r["action"] == "Application" and last_app and (d(r["date"]) - last_app).days > REAPPLY_GAP_DAYS:
-            out.append(cur)
-            cur = []
-        if r["action"] == "Application":
-            last_app = d(r["date"])
-        cur.append(r)
-    out.append(cur)
-    return out
-
-
-# ---------------------------------------------------------------- classification
-
-OUTCOMES = [
-    ("Withdrawn", r"withdr|i declined|declined the (offer|role|interview)|turned (it |them )?down|not interested|passed on (it|the role)|walked away"),
-    ("Req closed", r"req(uisition)? (is |was )?(closed|dead|gone|filled|pulled)|no longer (open|posted|available|accepting)|posting (was |has been )?(removed|taken down)|confirmed dead|closed the req|role (was )?(filled|closed)|position filled"),
-    ("Rejected", r"reject|\bdeclin(ed|e)\b(?! the)|not (be )?moving forward|other candidates|not selected|unsuccessful|won'?t be (moving|proceeding)|no longer under consideration|decided not to (move|proceed)|\bpass(ed)? on (me|my)|\bpass\b|not a fit|not the right fit"),
-]
-STAGE_ORD = {"Interview": 3, "Screen": 2, "Application": 1}
-
-
-def outcome(text: str) -> str:
-    for name, pat in OUTCOMES:
-        if re.search(pat, text, re.I):
-            return name
-    return ""
-
-
-def best_role(ep: list[dict]) -> str:
-    cands = [r["j_title"] for r in ep if r["j_title"]] + [r["role"] for r in ep if r["role"] and r["role"] != "ROLE_NOT_NAMED"]
-    return max(cands, key=len) if cands else ""
-
-
-def midpoint(s: str) -> float | None:
-    s = s.replace(",", "")
-    nums = []
-    for x, k in re.findall(r"(\d{5,6}(?:\.\d+)?|\d{2,3}(?:\.\d+)?)\s*(k|K)?", s):
-        v = float(x) * (1000 if k else 1)
-        if 50_000 <= v <= 1_000_000:
-            nums.append(v)
-    if len(nums) >= 2:
-        return round((nums[0] + nums[1]) / 2)
-    return round(nums[0]) if nums else None
-
-
-def role_type(title: str) -> str:
-    t = title.lower()
-    if re.search(r"director|head of|\bvp\b|vice president", t):
-        return "director"
-    if re.search(r"product manager|product lead|\bpm\b|program manager|product owner", t):
-        return "pm"
-    if re.search(r"engineer|developer|\bsde\b|software|member of technical staff", t):
-        return "swe"
-    return ""
-
-
-def source_channel(ep: list[dict]) -> str:
-    acts = {r["action"] for r in ep}
-    urls = " ".join(r["url"] + " " + r["j_url"] for r in ep).lower()
-    notes = " ".join(r["notes"] for r in ep).lower()
-    if "Referral" in acts:
-        return "referral"
-    if re.search(r"hacker ?news|\bhn\b|who is hiring|whoishiring", notes):
-        return "hn_email"
-    if re.search(r"recruiter reached out|reached out to me|inmail", notes):
-        return "inbound"
-    if re.search(r"\bdice\b|staffing|randstad|inspyr", notes):
-        return "agency"
-    if "linkedin.com" in urls:
-        return "linkedin"
-    if re.search(r"greenhouse|ashby|lever\.co|workday|rippling|jobvite|smartrecruiters|icims|bamboohr", urls):
-        return "ats"
-    return ""
-
-
-def resume_sent(ep: list[dict]) -> str:
-    for r in ep:
-        m = re.search(r"([\w/.-]+\.typ)(?:[^\n]{0,40}?\b([0-9a-f]{7,10})\b)?", r["notes"])
-        if m:
-            return m.group(1) + (f" @ {m.group(2)}" if m.group(2) else "")
-        m = re.search(r"output/[\w-]+\.pdf", r["notes"])
-        if m:
-            return m.group(0)
-    return ""
-
-
-def classify(ep: list[dict]) -> dict | None:
-    mx = max(STAGE_ORD.get(r["action"], 0) for r in ep)
-    if mx == 0:
+def midpoint(comp: dict | None) -> str | None:
+    if not comp or comp.get("low") is None or comp.get("high") is None:
         return None
-    stage = {3: "Interview", 2: "Screen", 1: "Applied"}[mx]
-    outs = [(r["date"], outcome(r["notes"] + " || " + r["status"])) for r in ep]
-    outs = [o for o in outs if o[1]]
-    last = d(ep[-1]["date"])
-    if outs:
-        disp = outs[-1][1]
-    elif (TODAY - last).days <= OPEN_WINDOW_DAYS:
-        disp = "OPEN"
-    else:
-        disp = "No response"
-    apps = [r for r in ep if r["action"] == "Application"]
-    title = best_role(ep)
-    company = ep[0]["company"]
-    sal = next((r["j_salary"] for r in ep if r["j_salary"]), "")
-    return {
-        "company": company,
-        "dealname": f"{company} — {title}" if title else f"{company} — (role not named)",
-        "stage": stage,
-        "disposition": disp,
-        "applied_date": apps[0]["date"] if apps else ep[0]["date"],
-        "closedate": ep[-1]["date"] if disp != "OPEN" else "",
-        "amount": midpoint(sal) if sal else None,
-        "job_url": next((r["url"] for r in ep if posting_url(r)), "") or next((r["j_url"] for r in ep if r["j_url"]), ""),
-        "job_id": next((r["job_id"] for r in ep if r["job_id"]), ""),
-        "source_channel": source_channel(ep),
-        "role_type": role_type(title),
-        "resume_sent": resume_sent(ep),
-        "rows": ep,
-    }
+    return str(round((comp["low"] + comp["high"]) / 2))
 
 
-# ---------------------------------------------------------------- people
-
-def split_people(p: str) -> list[str]:
-    p = re.sub(r"\s+", " ", p.strip())
-    if "(" in p:
-        return [p]
-    return [x.strip() for x in re.split(r"\s*/\s*|\s+and\s+|\s*&\s*", p) if x.strip()]
+FREEMAIL = {"gmail.com", "yahoo.com", "hotmail.com", "outlook.com", "icloud.com", "me.com", "live.com", "aol.com", "proton.me", "protonmail.com"}
+MAILERS = ("myworkday.com", "greenhouse", "lever.co", "ashbyhq", "smartrecruiters", "icims", "linkedin.com", "jobvite", "workablemail", "hire.")
 
 
-def parse_person(p: str) -> dict:
-    m = re.match(r'^"?(?P<name>[^("]+?)"?\s*(?:\((?P<paren>[^)]*)\))?\s*$', p)
-    name = (m.group("name") if m else p).strip()
-    paren = (m.group("paren") if m and m.group("paren") else "").strip()
-    email = re.search(r"[\w.+-]+@[\w.-]+\.\w+", p)
-    key = ALIASES.get(name.lower(), name.lower())
-    parts = key.split()
-    return {
-        "key": key,
-        "firstname": parts[0].title() if parts else "",
-        "lastname": " ".join(parts[1:]).title() if len(parts) > 1 else "",
-        "jobtitle": re.sub(r"[\w.+-]+@[\w.-]+\.\w+", "", paren).strip(" ,-—/") if paren else "",
-        "email": email.group(0) if email else "",
-        "hiring_role": "recruiter" if re.search(r"recruit|talent|sourcer", paren, re.I) else "",
-    }
+def company_domain(d: dict) -> str | None:
+    """The domain of a work email belonging to someone employed at this company (org null)."""
+    for p in d["people"]:
+        if p["email"] and not p["org"]:
+            dom = p["email"].split("@")[-1].lower()
+            if dom not in FREEMAIL and not any(m in dom for m in MAILERS):
+                return dom
+    return None
 
 
-# ---------------------------------------------------------------- pipeline
+def provenance(file: Path, rows: list[int] | None = None, evidence: list[str] | None = None) -> dict:
+    d3 = ", ".join([f"jsb #{r}" for r in (rows or [])] + list(evidence or []))
+    return {"hs_object_source_detail_2": f"{WRITER} {file.name}", **({"hs_object_source_detail_3": d3[:255]} if d3 else {})}
 
-def load_rows() -> list[dict]:
-    with JobStore() as s, s.conn.cursor() as cur:
-        cur.execute(SQL)
-        rows = [dict(r) for r in cur.fetchall()]
-    rows = [r for r in rows if r["company"].strip()]
-    for r in rows:
-        r["id"] = str(r["id"])
-    return rows
-
-
-def build(rows: list[dict]):
-    G = group_rows(rows)
-    deals, contact_only = [], []
-    for grp in G.groups():
-        for ep in split_episodes(grp):
-            c = classify(ep)
-            (deals if c else contact_only).append(c or ep)
-    people: dict[str, dict] = {}
-    for r in rows:
-        for p in split_people(r["person"]) if r["person"] else []:
-            info = parse_person(p)
-            h = people.setdefault(info["key"], {**info, "companies": set(), "spellings": set()})
-            for f in ("jobtitle", "email", "hiring_role"):
-                h[f] = h[f] or info[f]
-            h["companies"].add(r["company"])
-            h["spellings"].add(p)
-    return G, deals, contact_only, people
-
-
-def report(G, deals, contact_only, people) -> None:
-    print(f"rows: {len(G.rows)}  pursuits: {len(deals)}  contact-only episodes: {len(contact_only)}")
-    print("stage:", dict(Counter(x["stage"] for x in deals)))
-    print("disposition:", dict(Counter(x["disposition"] for x in deals)))
-    print(f"amount set on {sum(1 for x in deals if x['amount'])} deals; source_channel on {sum(1 for x in deals if x['source_channel'])}; resume_sent on {sum(1 for x in deals if x['resume_sent'])}")
-    print(f"companies: {len({x['company'] for x in deals} | {e[0]['company'] for e in contact_only})}  contacts: {len(people)}")
-    print("\nOPEN deals:")
-    for x in sorted((x for x in deals if x["disposition"] == "OPEN"), key=lambda x: x["applied_date"]):
-        print(f"  {x['applied_date']} {x['stage']:9s} {x['dealname'][:70]}")
-    print("\nrole-title / keyless merges to eyeball:")
-    for why, a, b in G.merge_log:
-        if why == "same job_id/url":
-            continue
-        print(f"  [{why}] {a['company']}: {a['date']} {a['action']} {a['role'][:35]!r}  +  {b['date']} {b['action']} {b['role'][:35]!r}")
-    print("\ncontacts with >1 spelling:")
-    for h in people.values():
-        if len(h["spellings"]) > 1:
-            print(f"  {h['firstname']} {h['lastname']}: {sorted(h['spellings'])}")
-
-
-# ---------------------------------------------------------------- hubspot client
 
 class Hub:
     def __init__(self):
@@ -350,17 +78,18 @@ class Hub:
             ["op", "read", "op://Automation/hubspot-jobsearch/credential"], text=True).strip()
         self.c = httpx.Client(base_url=BASE, headers={"Authorization": f"Bearer {tok}"}, timeout=60)
         self._assoc: dict[tuple[str, str], int] = {}
+        self.stamp = True
 
     def req(self, method: str, path: str, **kw):
-        for attempt in range(5):
+        for attempt in range(6):
             r = self.c.request(method, path, **kw)
             if r.status_code == 429:
                 time.sleep(2 * (attempt + 1))
                 continue
             if r.status_code >= 400:
-                sys.exit(f"{method} {path} -> {r.status_code}: {r.text[:800]}")
+                sys.exit(f"{method} {path} -> {r.status_code}: {r.text[:1000]}")
             return r.json() if r.content else {}
-        sys.exit("rate-limited five times in a row")
+        sys.exit("rate-limited six times in a row")
 
     def assoc_type(self, frm: str, to: str) -> int:
         k = (frm, to)
@@ -372,21 +101,50 @@ class Hub:
             self._assoc[k] = (primary or plain)[0]["typeId"]
         return self._assoc[k]
 
-    def batch_create(self, obj: str, inputs: list[dict]) -> list[dict]:
+    def link(self, frm: str, to: str, ids: list[str]) -> list[dict]:
+        return [{"to": {"id": i}, "types": [{"associationCategory": "HUBSPOT_DEFINED", "associationTypeId": self.assoc_type(frm, to)}]} for i in ids if i]
+
+    def create_each(self, obj: str, inputs: list[dict]) -> list[dict]:
+        """One POST per record, so the returned ids line up with `inputs`. Batch create returns
+        results in arbitrary order, which scrambled every id map built by zip() in v1."""
         out = []
-        for i in range(0, len(inputs), 100):
-            out += self.req("POST", f"/crm/v3/objects/{obj}/batch/create", json={"inputs": inputs[i:i + 100]})["results"]
-            time.sleep(0.5)
+        for x in inputs:
+            if not self.stamp:
+                x["properties"].pop("hs_object_source_detail_2", None)
+                x["properties"].pop("hs_object_source_detail_3", None)
+            out.append(self.req("POST", f"/crm/v3/objects/{obj}", json=x))
+            time.sleep(0.12)
         return out
 
-    def list_ids(self, obj: str) -> list[str]:
-        ids, after = [], None
+    def batch_create(self, obj: str, inputs: list[dict]) -> list[dict]:
+        """Order of results is NOT the order of inputs; only use when ids are not needed."""
+        out = []
+        for i in range(0, len(inputs), 100):
+            chunk = inputs[i:i + 100]
+            if not self.stamp:
+                for x in chunk:
+                    x["properties"].pop("hs_object_source_detail_2", None)
+                    x["properties"].pop("hs_object_source_detail_3", None)
+            out += self.req("POST", f"/crm/v3/objects/{obj}/batch/create", json={"inputs": chunk})["results"]
+            time.sleep(0.4)
+        return out
+
+    def probe_stamping(self) -> None:
+        r = self.c.post("/crm/v3/objects/companies", json={"properties": {"name": "PROBE delete me", "hs_object_source_detail_2": "probe"}})
+        if r.status_code >= 400:
+            self.stamp = False
+            print("record-source stamping not accepted by the API; loading without it:", r.text[:200])
+            return
+        self.req("DELETE", f"/crm/v3/objects/companies/{r.json()['id']}")
+
+    def list_ids(self, obj: str, props: list[str] | None = None) -> list[dict]:
+        out, after = [], None
         while True:
-            res = self.req("GET", f"/crm/v3/objects/{obj}", params={"limit": 100, **({"after": after} if after else {})})
-            ids += [x["id"] for x in res["results"]]
+            res = self.req("GET", f"/crm/v3/objects/{obj}", params={"limit": 100, **({"properties": ",".join(props)} if props else {}), **({"after": after} if after else {})})
+            out += res["results"]
             after = res.get("paging", {}).get("next", {}).get("after")
             if not after:
-                return ids
+                return out
 
     def batch_archive(self, obj: str, ids: list[str]) -> None:
         for i in range(0, len(ids), 100):
@@ -394,127 +152,113 @@ class Hub:
             time.sleep(0.3)
 
 
-def assoc(hub: Hub, frm: str, to: str, ids: list[str]) -> list[dict]:
-    return [{"to": {"id": i}, "types": [{"associationCategory": "HUBSPOT_DEFINED", "associationTypeId": hub.assoc_type(frm, to)}]} for i in ids if i]
+FACT_PROPS = ("domain", "city", "state", "country", "industry", "linkedin_company_page", "description", "website", "founded_year", "numberofemployees", "type")
 
 
-def ts(day: str) -> str:
-    return f"{day}T19:00:00Z"  # noon Pacific, so the local date matches the log date
+def load_file(hub: Hub, file: Path, facts: dict | None = None) -> dict:
+    d = json.loads(file.read_text())
+    co = d["company"]
+    extra = {k: v for k, v in (facts or {}).get(file.name, {}).items() if k in FACT_PROPS and v}
+    props = {"name": co["name"], "jsb_slug": co.get("jsb_slug") or "", "domain": company_domain(d), **provenance(file), **extra}
+    company = hub.create_each("companies", [{"properties": {k: v for k, v in props.items() if v}}])[0]
+    co_id = company["id"]
 
+    people = d["people"]
+    contact_inputs = []
+    for p in people:
+        first, last = split_name(p["name"])
+        props = {"firstname": first, "lastname": last, "jobtitle": p["title"], "email": p["email"], "hs_linkedin_url": p["linkedin_url"],
+                 "company": p["org"] or co["name"], "hiring_role": p["hiring_role"], "hs_lead_status": p.get("lead_status"),
+                 "lifecyclestage": lifecycle(p, d["pursuits"]), **provenance(file, p["source_rows"], p.get("evidence"))}
+        contact_inputs.append({"properties": {k: v for k, v in props.items() if v}, "associations": hub.link("contacts", "companies", [co_id])})
+    contacts = hub.create_each("contacts", contact_inputs)
+    pid = {p["id"]: c["id"] for p, c in zip(people, contacts)}
 
-# ---------------------------------------------------------------- modes
-
-def do_probe(hub: Hub) -> None:
-    props = {"dealname": "PROBE — delete me", "pipeline": "default", "dealstage": STAGE_IDS["Applied"],
-             "createdate": ts("2025-06-01"), "applied_date": "2025-06-01", "closedate": ts("2025-07-01")}
-    r = hub.req("POST", "/crm/v3/objects/deals", json={"properties": props})
-    got = hub.req("GET", f"/crm/v3/objects/deals/{r['id']}", params={"properties": "createdate,applied_date,closedate,hs_v2_date_entered_current_stage"})["properties"]
-    print({k: got.get(k) for k in ("createdate", "applied_date", "closedate", "hs_v2_date_entered_current_stage")})
-    hub.req("DELETE", f"/crm/v3/objects/deals/{r['id']}")
-    print("probe deal deleted")
-
-
-def do_wipe(hub: Hub) -> None:
-    for obj in ("notes", "meetings", "tasks", "deals", "contacts", "companies"):
-        ids = hub.list_ids(obj)
-        hub.batch_archive(obj, ids)
-        print(f"archived {len(ids)} {obj}")
-
-
-def do_import(hub: Hub, G, deals, contact_only, people, backdate_create: bool) -> None:
-    if hub.list_ids("deals"):
-        sys.exit("portal already has deals — run `wipe --yes` first (fresh portal only) or import into a clean portal")
-
-    companies = sorted({x["company"] for x in deals} | {e[0]["company"] for e in contact_only})
-    slug_of = {r["company"]: r["reg_slug"] for r in G.rows.values() if r["reg_slug"]}
-    res = hub.batch_create("companies", [{"properties": {"name": c, "jsb_slug": slug_of.get(c, "")}} for c in companies])
-    co_id = {c: r["id"] for c, r in zip(companies, res)}
-    print(f"companies: {len(co_id)}")
-
-    keys = list(people)
-    res = hub.batch_create("contacts", [{
-        "properties": {k: v for k, v in {"firstname": people[p]["firstname"], "lastname": people[p]["lastname"],
-                                          "jobtitle": people[p]["jobtitle"], "email": people[p]["email"],
-                                          "hiring_role": people[p]["hiring_role"]}.items() if v},
-        "associations": assoc(hub, "contacts", "companies", [co_id[c] for c in people[p]["companies"] if c in co_id]),
-    } for p in keys])
-    person_id = {p: r["id"] for p, r in zip(keys, res)}
-    print(f"contacts: {len(person_id)}")
-
-    def contacts_in(rows: list[dict]) -> list[str]:
-        ids = []
-        for r in rows:
-            for p in split_people(r["person"]) if r["person"] else []:
-                ids.append(person_id[parse_person(p)["key"]])
-        return list(dict.fromkeys(ids))
-
-    inputs = []
-    for x in deals:
-        props = {"dealname": x["dealname"], "pipeline": "default",
-                 "dealstage": STAGE_IDS[x["stage"]] if x["disposition"] == "OPEN" else STAGE_IDS["closedlost"],
-                 "applied_date": x["applied_date"], "job_url": x["job_url"], "job_id": x["job_id"],
-                 "source_channel": x["source_channel"], "role_type": x["role_type"], "resume_sent": x["resume_sent"]}
-        if x["amount"]:
-            props["amount"] = str(x["amount"])
-        if x["closedate"]:
-            props["closedate"] = ts(x["closedate"])
-        if x["disposition"] not in ("OPEN",):
-            props["closed_lost_reason"] = x["disposition"]
-        if backdate_create:
-            props["createdate"] = ts(x["rows"][0]["date"])
-        inputs.append({"properties": {k: v for k, v in props.items() if v},
-                       "associations": assoc(hub, "deals", "companies", [co_id[x["company"]]]) + assoc(hub, "deals", "contacts", contacts_in(x["rows"]))})
-    res = hub.batch_create("deals", inputs)
-    for x, r in zip(deals, res):
-        x["hs_id"] = r["id"]
-    print(f"deals: {len(res)}")
+    deal_inputs = []
+    for u in d["pursuits"]:
+        title = u["title"] or "(role not named)"
+        stage = STAGE[u["stage"]] if u["status"] == "open" else STAGE["accepted"] if u["status"] == "accepted" else STAGE["closed_lost"]
+        first_date = u["applied_date"] or min((e["date"] for e in d["events"] if e["pursuit"] == u["id"]), default=None)
+        props = {"dealname": f"{co['name']} — {title}", "pipeline": "default", "dealstage": stage,
+                 "applied_date": u["applied_date"], "closedate": ts(u["close_date"]) if u["close_date"] else None,
+                 "closed_lost_reason": LOST_REASON.get(u["closed_lost_reason"] or "", None),
+                 "amount": midpoint(u["comp_posted"]), "job_url": u["job_url"], "job_id": u["job_id"],
+                 "source_channel": u["source_channel"], "role_type": u["role_type"], "resume_sent": u["resume_sent"],
+                 "createdate": ts(first_date) if first_date else None,
+                 "description": f"[{u['confidence']}] {u['rationale']}"[:2000],
+                 **provenance(file, u["source_rows"], u.get("evidence"))}
+        deal_inputs.append({"properties": {k: v for k, v in props.items() if v},
+                            "associations": hub.link("deals", "companies", [co_id]) + hub.link("deals", "contacts", [pid[x] for x in u["people"]])})
+    deals = hub.create_each("deals", deal_inputs)
+    did = {u["id"]: dl["id"] for u, dl in zip(d["pursuits"], deals)}
 
     notes, meetings = [], []
-    def engagement(r: dict, deal_id: str | None):
-        body_bits = [f"[{r['action']}] {r['role']}".strip(), r["notes"]]
-        if r["person"]:
-            body_bits.append(f"Person: {r['person']}")
-        if r["url"]:
-            body_bits.append(f"URL: {r['url']}")
-        if r["location"]:
-            body_bits.append(f"Location: {r['location']}")
-        if r["status"]:
-            body_bits.append(f"Status: {r['status']}")
-        body = "\n".join(b for b in body_bits if b)
-        links = assoc(hub, "notes" if r["action"] not in ("Screen", "Interview") else "meetings", "companies", [co_id[r["company"]]])
-        links += assoc(hub, "notes" if r["action"] not in ("Screen", "Interview") else "meetings", "contacts", contacts_in([r]))
-        if deal_id:
-            links += assoc(hub, "notes" if r["action"] not in ("Screen", "Interview") else "meetings", "deals", [deal_id])
-        if r["action"] in ("Screen", "Interview"):
-            meetings.append({"properties": {"hs_timestamp": ts(r["date"]), "hs_meeting_title": f"{r['action']}: {r['company']} — {r['role']}".strip(" —"),
-                                            "hs_meeting_body": body, "hs_meeting_outcome": "COMPLETED"}, "associations": links})
+    for e in d["events"]:
+        obj = "meetings" if e["kind"] == "meeting" else "notes"
+        links = hub.link(obj, "companies", [co_id]) + hub.link(obj, "contacts", [pid[x] for x in e["people"]])
+        if e["pursuit"]:
+            links += hub.link(obj, "deals", [did[e["pursuit"]]])
+        prov = provenance(file, [e["source_row"]] if e["source_row"] is not None else None, e.get("evidence"))
+        if obj == "meetings":
+            meetings.append({"properties": {"hs_timestamp": ts(e["date"]), "hs_meeting_title": e["title"] or f"Meeting — {co['name']}",
+                                            "hs_meeting_body": e["body"], "hs_meeting_outcome": "COMPLETED", **prov}, "associations": links})
         else:
-            notes.append({"properties": {"hs_timestamp": ts(r["date"]), "hs_note_body": body}, "associations": links})
-    for x in deals:
-        for r in x["rows"]:
-            engagement(r, x["hs_id"])
-    for ep in contact_only:
-        for r in ep:
-            engagement(r, None)
-    print(f"notes: {len(hub.batch_create('notes', notes))}  meetings: {len(hub.batch_create('meetings', meetings))}")
+            notes.append({"properties": {"hs_timestamp": ts(e["date"]), "hs_note_body": (f"{e['title']}\n\n" if e["title"] else "") + e["body"], **prov}, "associations": links})
+    # standing relationship context becomes a pinned note on the contact
+    pinned = []
+    for p in people:
+        if p.get("relationship"):
+            pinned.append((p["id"], {"properties": {"hs_timestamp": ts(d["events"][-1]["date"]) if d["events"] else ts("2026-09-14"),
+                                                    "hs_note_body": f"Relationship: {p['relationship']}", **provenance(file, p["source_rows"], p.get("evidence"))},
+                                     "associations": hub.link("notes", "contacts", [pid[p["id"]]]) + hub.link("notes", "companies", [co_id])}))
+    hub.batch_create("notes", notes) if notes else []
+    made_meetings = hub.batch_create("meetings", meetings) if meetings else []
+    for (person_id, _), note in zip(pinned, hub.create_each("notes", [x for _, x in pinned])):
+        hub.req("PATCH", f"/crm/v3/objects/contacts/{pid[person_id]}", json={"properties": {"hs_pinned_engagement_id": note["id"]}})
+    return {"company": co["name"], "contacts": len(contacts), "deals": len(deals), "notes": len(notes), "meetings": len(made_meetings), "pinned": len(pinned)}
 
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("mode", choices=["dry-run", "probe", "import", "wipe"])
-    ap.add_argument("--yes", action="store_true", help="required for wipe")
-    ap.add_argument("--backdate-create", action="store_true", help="set deal createdate to the first row date (only if probe showed HubSpot honors it)")
+    ap.add_argument("mode", choices=["dry-run", "load", "wipe"])
+    ap.add_argument("companies_dir", nargs="?")
+    ap.add_argument("--skip-existing", action="store_true", help="skip files whose company name already exists in the portal")
+    ap.add_argument("--yes", action="store_true")
+    ap.add_argument("--exclude", action="append", default=[], help="file name to skip (repeatable)")
+    ap.add_argument("--facts", help="JSON map of company file name -> company properties (domain, city, industry, ...) to set at creation")
     a = ap.parse_args()
-    if a.mode == "probe":
-        return do_probe(Hub())
     if a.mode == "wipe":
         if not a.yes:
             sys.exit("wipe needs --yes")
-        return do_wipe(Hub())
-    G, deals, contact_only, people = build(load_rows())
+        hub = Hub()
+        for obj in ("notes", "meetings", "tasks", "deals", "contacts", "companies"):
+            ids = [x["id"] for x in hub.list_ids(obj)]
+            hub.batch_archive(obj, ids)
+            print(f"archived {len(ids)} {obj}")
+        return
+    files = [f for f in sorted(Path(a.companies_dir).glob("*.json")) if f.name not in a.exclude]
     if a.mode == "dry-run":
-        return report(G, deals, contact_only, people)
-    do_import(Hub(), G, deals, contact_only, people, a.backdate_create)
+        tot = {"companies": len(files), "people": 0, "pursuits": 0, "events": 0, "pinned": 0}
+        for f in files:
+            d = json.loads(f.read_text())
+            tot["people"] += len(d["people"]); tot["pursuits"] += len(d["pursuits"]); tot["events"] += len(d["events"])
+            tot["pinned"] += sum(1 for p in d["people"] if p.get("relationship"))
+        print(tot)
+        return
+    hub = Hub()
+    hub.probe_stamping()
+    facts = json.loads(Path(a.facts).read_text()) if a.facts else {}
+    existing = {x["properties"]["name"] for x in hub.list_ids("companies", ["name", "hs_object_source_detail_2"])
+                if (x["properties"].get("hs_object_source_detail_2") or "").startswith(WRITER)} if a.skip_existing else set()
+    done = 0
+    for f in files:
+        name = json.loads(f.read_text())["company"]["name"]
+        if name in existing:
+            continue
+        r = load_file(hub, f, facts)
+        done += 1
+        print(f"{r['company']:40s} contacts={r['contacts']} deals={r['deals']} notes={r['notes']} meetings={r['meetings']} pinned={r['pinned']}")
+    print(f"loaded {done} companies ({len(files) - done} skipped)")
 
 
 if __name__ == "__main__":
