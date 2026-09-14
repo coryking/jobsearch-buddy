@@ -245,4 +245,4 @@ class TestListCompanyJobsTool:
 
         with patch("jobbuddy.core.list_company_jobs_live", return_value={"rows": []}) as m:
             live_module.list_company_jobs(company="acme", posted_since="1w", limit=10, offset=5)
-        m.assert_called_once_with("acme", posted_since="1w", limit=10, offset=5)
+        m.assert_called_once_with("acme", query="", posted_since="1w", limit=10, offset=5)

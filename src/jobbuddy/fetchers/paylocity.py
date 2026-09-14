@@ -72,7 +72,7 @@ class PaylocityFetcher(ATSFetcher):
             description=description.strip() if description else None,
         )
 
-    def list_jobs(self, *, on_progress: ProgressCallback | None = None, on_retry: RetryCallback | None = None) -> list[Job]:
+    def list_jobs(self, *, query: str = "", on_progress: ProgressCallback | None = None, on_retry: RetryCallback | None = None) -> list[Job]:
         resp = self.client.get(self._listing_url())
         resp.raise_for_status()
         page_data = self._extract_page_data(resp.text)

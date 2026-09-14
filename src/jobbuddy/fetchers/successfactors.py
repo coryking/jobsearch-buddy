@@ -44,6 +44,7 @@ def _parse_date(value: str | None) -> date | None:
 class SuccessFactorsFetcher(ATSFetcher):
     ats_type = "successfactors"
     descriptions_in_listing = False
+    supports_query = True
     enrich_delay = 0.0
 
     def __init__(
@@ -65,8 +66,10 @@ class SuccessFactorsFetcher(ATSFetcher):
                 "This is normally set from the company registry."
             )
 
-    def _search_url(self, page: int) -> str:
+    def _search_url(self, page: int, query: str = "") -> str:
         params = f"CurrentPage={page}&RecordsPerPage={_RECORDS_PER_PAGE}"
+        if query:
+            params += f"&Keywords={query}"
         for k, v in self.search_params.items():
             params += f"&{k}={v}"
         return f"{self.careers_url}/search-jobs/results?{params}"
@@ -172,13 +175,14 @@ class SuccessFactorsFetcher(ATSFetcher):
     def list_jobs(
         self,
         *,
+        query: str = "",
         on_progress: ProgressCallback | None = None,
         on_retry: RetryCallback | None = None,
     ) -> JobList:
         self._require_config()
 
         def _fetch_page1():
-            resp = self.client.get(self._search_url(1))
+            resp = self.client.get(self._search_url(1, query=query))
             resp.raise_for_status()
             return resp
 
@@ -197,7 +201,7 @@ class SuccessFactorsFetcher(ATSFetcher):
 
         def _fetch_page(page: int) -> list[Job]:
             def _do_fetch():
-                resp = self.client.get(self._search_url(page))
+                resp = self.client.get(self._search_url(page, query=query))
                 resp.raise_for_status()
                 return resp
             page_resp = self._retry_request(_do_fetch, on_retry=on_retry)

@@ -33,6 +33,7 @@ def _parse_date(value: str | None) -> date | None:
 
 class JobSyncFetcher(ATSFetcher):
     ats_type = "jobsync"
+    supports_query = True
 
     def __init__(
         self,
@@ -75,6 +76,7 @@ class JobSyncFetcher(ATSFetcher):
     def list_jobs(
         self,
         *,
+        query: str = "",
         on_progress: ProgressCallback | None = None,
         on_retry: RetryCallback | None = None,
     ) -> JobList:
@@ -90,9 +92,12 @@ class JobSyncFetcher(ATSFetcher):
                     jobs.append(self._parse_job(raw))
 
         def _fetch_page(page: int):
+            params: dict = {"page": page, "num_items": PAGE_SIZE}
+            if query:
+                params["q"] = query
             resp = self.client.get(
                 SEARCH_URL,
-                params={"page": page, "num_items": PAGE_SIZE},
+                params=params,
             )
             resp.raise_for_status()
             return resp.json()

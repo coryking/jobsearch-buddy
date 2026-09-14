@@ -32,14 +32,30 @@ def job_freshness(j: Job) -> date | None:
     return max(dates) if dates else None
 
 
+def _matches_query(job: Job, terms: list[str]) -> bool:
+    """Check if a job matches all query terms (case-insensitive AND).
+
+    Searches across title + location + department.
+    """
+    haystack = " ".join(
+        s for s in (job.title, job.location, job.department or "") if s
+    ).lower()
+    return all(term in haystack for term in terms)
+
+
 def list_company_jobs_live(
     company: str,
     *,
+    query: str = "",
     posted_since: str = "",
     limit: int = 50,
     offset: int = 0,
 ) -> dict:
     """Live-fetch a company's job board and return compact listing rows.
+
+    `query` is a keyword search — shipped to the ATS's native search where
+    supported, otherwise matched client-side against title + location +
+    department (all terms must match, case-insensitive).
 
     `posted_since` (e.g. '3d', '1w') keeps rows whose freshness — publish
     date or most recent ATS listing update, whichever is later — falls on
@@ -73,14 +89,25 @@ def list_company_jobs_live(
         )
 
     with get_fetcher(resolved) as fetcher:
-        jobs = fetcher.list_jobs()
+        native_query = query and fetcher.supports_query
+        if query:
+            jobs = fetcher.list_jobs(query=query)
+        else:
+            jobs = fetcher.list_jobs()
     total = len(jobs)
 
+    # Apply posted_since filter first (date-based, fast)
     if cutoff is not None:
         jobs = [
             j for j in jobs
             if (fresh := job_freshness(j)) is None or fresh >= cutoff
         ]
+
+    # Client-side query filter for ATSes without native search
+    if query and not native_query:
+        terms = query.lower().split()
+        jobs = [j for j in jobs if _matches_query(j, terms)]
+
     matched = len(jobs)
 
     # Newest first by publish date; undated rows land last.
@@ -110,4 +137,6 @@ def list_company_jobs_live(
     }
     if offset:
         envelope["offset"] = offset
+    if query:
+        envelope["query_mode"] = "server" if native_query else "client"
     return envelope

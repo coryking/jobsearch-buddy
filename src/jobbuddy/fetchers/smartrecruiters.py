@@ -73,6 +73,7 @@ def _extract_description(job_ad: dict) -> str | None:
 class SmartRecruitersFetcher(ATSFetcher):
     ats_type = "smartrecruiters"
     descriptions_in_listing = False
+    supports_query = True
     enrich_delay = 0.0
 
     def __init__(
@@ -117,13 +118,17 @@ class SmartRecruitersFetcher(ATSFetcher):
     def list_jobs(
         self,
         *,
+        query: str = "",
         on_progress: ProgressCallback | None = None,
         on_retry: RetryCallback | None = None,
     ) -> JobList:
         url = self._list_url()
 
         def _fetch_page(offset: int):
-            resp = self.client.get(url, params=self._list_params(offset))
+            params = self._list_params(offset)
+            if query:
+                params["q"] = query
+            resp = self.client.get(url, params=params)
             resp.raise_for_status()
             return resp.json()
 
@@ -143,7 +148,10 @@ class SmartRecruitersFetcher(ATSFetcher):
 
         def _fetch_remaining(offset: int) -> list[Job]:
             def _do_fetch():
-                page_data = self.client.get(url, params=self._list_params(offset))
+                params = self._list_params(offset)
+                if query:
+                    params["q"] = query
+                page_data = self.client.get(url, params=params)
                 page_data.raise_for_status()
                 return [self._parse_listing(j) for j in page_data.json().get("content", [])]
             return self._retry_request(_do_fetch, on_retry=on_retry)

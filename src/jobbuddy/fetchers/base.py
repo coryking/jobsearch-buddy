@@ -51,6 +51,12 @@ class ATSFetcher(ABC):
     # pipeline knows to run a post-sync enrichment phase.
     descriptions_in_listing: bool = True
 
+    # Whether list_jobs() ships a non-empty `query` to the ATS's native
+    # keyword search. Override to True in fetchers that wire `query` to
+    # an API parameter; False means the caller must do client-side
+    # filtering on the returned rows.
+    supports_query: bool = False
+
     # Job columns this fetcher can populate during the enrich phase. The
     # enrich phase polls jobs where any of these columns are NULL, so a
     # fetcher should only declare a column it can plausibly fill from a
@@ -89,6 +95,7 @@ class ATSFetcher(ABC):
     def list_jobs(
         self,
         *,
+        query: str = "",
         on_progress: ProgressCallback | None = None,
         on_retry: RetryCallback | None = None,
     ) -> JobList: ...

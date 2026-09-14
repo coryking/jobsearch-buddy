@@ -113,6 +113,7 @@ def _depth_extract(html: str, start_marker: str) -> str | None:
 class TaleoFetcher(ATSFetcher):
     ats_type = "taleo"
     descriptions_in_listing = False
+    supports_query = True
     enrich_delay = 0.0
 
     def __init__(
@@ -180,9 +181,11 @@ class TaleoFetcher(ATSFetcher):
                 self._portal_id = portal_id
             return self._portal_id
 
-    def _list_body(self, page: int) -> dict:
+    def _list_body(self, page: int, query: str = "") -> dict:
         body = copy.deepcopy(_LIST_BODY_TEMPLATE)
         body["pageNo"] = page
+        if query:
+            body["fieldData"]["fields"]["KEYWORD"] = query
         return body
 
     def _parse_requisition(self, item: dict) -> Job | None:
@@ -214,10 +217,11 @@ class TaleoFetcher(ATSFetcher):
         page: int,
         portal_id: str,
         *,
+        query: str = "",
         on_retry: RetryCallback | None = None,
     ) -> tuple[list[Job], int]:
         url = self._search_url(portal_id)
-        body = self._list_body(page)
+        body = self._list_body(page, query=query)
 
         def _do():
             resp = self.client.post(url, json=body)
@@ -234,18 +238,19 @@ class TaleoFetcher(ATSFetcher):
     def list_jobs(
         self,
         *,
+        query: str = "",
         on_progress: ProgressCallback | None = None,
         on_retry: RetryCallback | None = None,
     ) -> JobList:
         portal_id = self._get_portal_id(on_retry=on_retry)
 
-        jobs, total = self._fetch_page(1, portal_id, on_retry=on_retry)
+        jobs, total = self._fetch_page(1, portal_id, query=query, on_retry=on_retry)
         if on_progress:
             on_progress(len(jobs), total)
 
         page = 2
         while len(jobs) < total and page <= MAX_PAGES:
-            page_jobs, _ = self._fetch_page(page, portal_id, on_retry=on_retry)
+            page_jobs, _ = self._fetch_page(page, portal_id, query=query, on_retry=on_retry)
             if not page_jobs:
                 break
             jobs.extend(page_jobs)

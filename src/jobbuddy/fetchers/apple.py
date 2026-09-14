@@ -101,6 +101,7 @@ class AppleFetcher(ATSFetcher):
     def list_jobs(
         self,
         *,
+        query: str = "",
         on_progress: ProgressCallback | None = None,
         on_retry: RetryCallback | None = None,
     ) -> JobList:

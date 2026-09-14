@@ -59,6 +59,7 @@ def _slugify_title(title: str) -> str:
 
 class AmazonFetcher(ATSFetcher):
     ats_type = "amazon"
+    supports_query = True
 
     def __init__(
         self,
@@ -76,7 +77,7 @@ class AmazonFetcher(ATSFetcher):
             "Referer": "https://amazon.jobs/",
         })
 
-    def _build_request_body(self, start: int, size: int) -> dict:
+    def _build_request_body(self, start: int, size: int, query: str = "") -> dict:
         filter_facets = []
         if self.categories:
             filter_facets.append({
@@ -106,7 +107,7 @@ class AmazonFetcher(ATSFetcher):
                 {"name": "normalizedStateName", "requestedFacetCount": 9999},
                 {"name": "normalizedCityName", "requestedFacetCount": 9999},
             ]],
-            "query": "",
+            "query": query,
             "size": size,
             "start": start,
             "treatment": "OM",
@@ -153,13 +154,14 @@ class AmazonFetcher(ATSFetcher):
     def list_jobs(
         self,
         *,
+        query: str = "",
         on_progress: ProgressCallback | None = None,
         on_retry: RetryCallback | None = None,
     ) -> JobList:
         def _fetch_page(start: int) -> dict:
             resp = self.client.post(
                 SEARCH_URL,
-                json=self._build_request_body(start, PAGE_SIZE),
+                json=self._build_request_body(start, PAGE_SIZE, query=query),
                 params={"is_als": "true"},
             )
             resp.raise_for_status()

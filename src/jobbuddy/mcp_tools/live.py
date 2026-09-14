@@ -74,6 +74,13 @@ def list_company_jobs(
         "Company slug or display name from the registry (see the "
         "ats://companies resource for what's registered)."
     ))],
+    query: Annotated[str, Field(description=(
+        "Keyword search — role type, skill, or domain (e.g. 'product manager', "
+        "'infrastructure', 'identity'). Shipped to the ATS's native search "
+        "where supported; otherwise matched client-side against title, "
+        "location, and department. Check `query_mode` in the response to "
+        "see which happened."
+    ))] = "",
     posted_since: Annotated[str, Field(description=(
         "Only rows with ATS activity in this window (e.g. '24h', '3d', "
         "'1w') — publish date OR most recent listing update, whichever is "
@@ -110,7 +117,7 @@ def list_company_jobs(
 
     try:
         return list_company_jobs_live(
-            company, posted_since=posted_since, limit=limit, offset=offset,
+            company, query=query, posted_since=posted_since, limit=limit, offset=offset,
         )
     except ValueError as e:
         return {"error": str(e)}

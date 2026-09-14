@@ -40,6 +40,7 @@ def _wd_base(wd_company: str, wd_instance: int) -> str:
 class WorkdayFetcher(ATSFetcher):
     ats_type = "workday"
     descriptions_in_listing = False
+    supports_query = True
     enrich_delay = 0.0
 
     def __init__(self, board: str, name: str | None = None, *, wd_company: str = "", wd_instance: int = 0, default_filters: dict | None = None):
@@ -56,7 +57,7 @@ class WorkdayFetcher(ATSFetcher):
                 "These are normally set from the company registry."
             )
 
-    def list_jobs(self, *, on_progress: ProgressCallback | None = None, on_retry: RetryCallback | None = None) -> JobList:
+    def list_jobs(self, *, query: str = "", on_progress: ProgressCallback | None = None, on_retry: RetryCallback | None = None) -> JobList:
         self._require_config()
         base = _wd_base(self.wd_company, self.wd_instance)
         api_url = f"{base}/wday/cxs/{self.wd_company}/{self.board}/jobs"
@@ -77,9 +78,14 @@ class WorkdayFetcher(ATSFetcher):
                 ats_metadata={"ext_path": ext_path} if ext_path else None,
             )
 
+        def _build_body(offset: int) -> dict:
+            body: dict = {"limit": limit, "offset": offset, **self.default_filters}
+            if query:
+                body["searchText"] = query
+            return body
+
         # Fetch page 0 to learn total
-        body: dict = {"limit": limit, "offset": 0, **self.default_filters}
-        resp = self.client.post(api_url, json=body)
+        resp = self.client.post(api_url, json=_build_body(0))
         resp.raise_for_status()
         data = resp.json()
         total = data.get("total", 0)
@@ -94,8 +100,7 @@ class WorkdayFetcher(ATSFetcher):
         lock = threading.Lock()
 
         def _fetch_page(offset: int) -> list[Job]:
-            page_body: dict = {"limit": limit, "offset": offset, **self.default_filters}
-            page_resp = self.client.post(api_url, json=page_body)
+            page_resp = self.client.post(api_url, json=_build_body(offset))
             page_resp.raise_for_status()
             return [_parse_posting(p) for p in page_resp.json().get("jobPostings", [])]
 

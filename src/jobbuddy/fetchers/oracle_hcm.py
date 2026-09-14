@@ -10,6 +10,7 @@ MAX_RESULTS = 75  # cap per keyword query — relevancy drops fast past ~50 resu
 class OracleHCMFetcher(ATSFetcher):
     ats_type = "oracle_hcm"
     descriptions_in_listing = False
+    supports_query = True
     enrich_delay = 0.0
 
     def __init__(
@@ -117,7 +118,7 @@ class OracleHCMFetcher(ATSFetcher):
 
         return jobs
 
-    def list_jobs(self, *, on_progress: ProgressCallback | None = None, on_retry: RetryCallback | None = None) -> list[Job]:
+    def list_jobs(self, *, query: str = "", on_progress: ProgressCallback | None = None, on_retry: RetryCallback | None = None) -> list[Job]:
         location = self.default_filters.get("location", "")
 
         # keywords can be a list (multiple queries merged + deduped) or a single string
@@ -126,6 +127,10 @@ class OracleHCMFetcher(ATSFetcher):
             keywords = [keywords_raw] if keywords_raw else [""]
         else:
             keywords = list(keywords_raw)
+
+        # Runtime query overrides default keywords when provided
+        if query:
+            keywords = [query]
 
         # categories filter by Oracle HCM category facet IDs
         categories_raw = self.default_filters.get("categories", [])

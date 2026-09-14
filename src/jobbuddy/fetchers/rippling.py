@@ -52,6 +52,7 @@ def _parse_created_on(raw: str | None) -> date | None:
 class RipplingFetcher(ATSFetcher):
     ats_type = "rippling"
     descriptions_in_listing = False
+    supports_query = True
     enrichment_fills = ("description", "published_at")
 
     def _parse_job(self, j: dict) -> Job:
@@ -110,9 +111,10 @@ class RipplingFetcher(ATSFetcher):
             description=description,
         )
 
-    def list_jobs(self, *, on_progress: ProgressCallback | None = None, on_retry: RetryCallback | None = None) -> list[Job]:
+    def list_jobs(self, *, query: str = "", on_progress: ProgressCallback | None = None, on_retry: RetryCallback | None = None) -> list[Job]:
         url = f"{_BASE}/board/{self.board}/jobs"
-        resp = self.client.get(url)
+        params = {"searchTerm": query} if query else None
+        resp = self.client.get(url, params=params)
         resp.raise_for_status()
         return [self._parse_job(j) for j in resp.json()]
 

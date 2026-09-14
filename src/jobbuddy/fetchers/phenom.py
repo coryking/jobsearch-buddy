@@ -31,6 +31,7 @@ def _parse_posted_date(value: str | None) -> date | None:
 class PhenomFetcher(ATSFetcher):
     ats_type = "phenom"
     descriptions_in_listing = False
+    supports_query = True
     enrich_delay = 0.0
 
     def __init__(
@@ -71,7 +72,7 @@ class PhenomFetcher(ATSFetcher):
     def _job_url(self, job_id: str) -> str:
         return f"{self.careers_url}/{self.country}/{self._locale_short()}/job/{job_id}"
 
-    def _refine_search_body(self, offset: int) -> dict:
+    def _refine_search_body(self, offset: int, query: str = "") -> dict:
         body = {
             "lang": self.locale,
             "deviceType": "desktop",
@@ -90,7 +91,7 @@ class PhenomFetcher(ATSFetcher):
             "isSlider": False,
             "pageId": self.page_id,
             "siteType": "external",
-            "keywords": "",
+            "keywords": query,
         }
         if self.selected_fields:
             body["selected_fields"] = self.selected_fields
@@ -124,6 +125,7 @@ class PhenomFetcher(ATSFetcher):
     def list_jobs(
         self,
         *,
+        query: str = "",
         on_progress: ProgressCallback | None = None,
         on_retry: RetryCallback | None = None,
     ) -> JobList:
@@ -131,7 +133,7 @@ class PhenomFetcher(ATSFetcher):
         url = self._widgets_url()
 
         def _fetch_page0():
-            resp = self.client.post(url, json=self._refine_search_body(0))
+            resp = self.client.post(url, json=self._refine_search_body(0, query=query))
             resp.raise_for_status()
             return resp.json()
 
@@ -153,7 +155,7 @@ class PhenomFetcher(ATSFetcher):
 
         def _fetch_page(offset: int) -> list[Job]:
             def _do_fetch():
-                page_resp = self.client.post(url, json=self._refine_search_body(offset))
+                page_resp = self.client.post(url, json=self._refine_search_body(offset, query=query))
                 page_resp.raise_for_status()
                 page_data = page_resp.json()
                 page_refine = page_data.get("refineSearch", {})

@@ -42,7 +42,7 @@ class AshbyFetcher(ATSFetcher):
             pass
         return None
 
-    def list_jobs(self, *, on_progress: ProgressCallback | None = None, on_retry: RetryCallback | None = None) -> list[Job]:
+    def list_jobs(self, *, query: str = "", on_progress: ProgressCallback | None = None, on_retry: RetryCallback | None = None) -> list[Job]:
         url = f"https://api.ashbyhq.com/posting-api/job-board/{self.board}?includeCompensation=true"
         resp = self.client.get(url)
         resp.raise_for_status()
