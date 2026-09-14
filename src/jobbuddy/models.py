@@ -170,7 +170,7 @@ AGING_BUCKET_DEFS: list[tuple[str, int, int | None]] = [
     ("0-30 days", 0, 30),
     ("31-60 days", 31, 60),
     ("61-90 days", 61, 90),
-    ("90+ days", 90, None),
+    ("90+ days", 91, None),
 ]
 
 

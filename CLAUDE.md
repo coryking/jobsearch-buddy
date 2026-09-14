@@ -112,7 +112,7 @@ jsb lookup <url>                            # Fetch single job details
 ```
 
 Application logging and review (`log_job_application`,
-`log_job_activity`, `review_activity_log`) are MCP-only — every row in
+`log_job_activity`, `job_activity`) are MCP-only — every row in
 `activity_log` is owned by an authenticated account, so both the write
 and read paths are gated behind a verified OAuth token.
 

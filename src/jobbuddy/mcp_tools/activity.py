@@ -12,7 +12,7 @@ from jobbuddy.core import (
     parse_duration_to_date,
     save_job_listing,
 )
-from jobbuddy.job_log import append_row, find_by_company, find_duplicates, read_log, unique_companies
+from jobbuddy.job_log import append_row, find_duplicates, read_log, unique_companies
 from jobbuddy.mcp_auth import CurrentAccount
 from jobbuddy.mcp_tools.app import mcp
 from jobbuddy.mcp_tools.helpers import VALID_ACTIONS, compact_json
