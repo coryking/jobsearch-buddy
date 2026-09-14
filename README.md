@@ -126,7 +126,7 @@ Connect via `pg_service.conf` (recommended) or explicit connection parameters:
 
 | Setting              | Env Var                          | Default                        |
 |----------------------|----------------------------------|--------------------------------|
-| `pg_service`         | `JOBBUDDY_PG_SERVICE`            | `job-search-buddy-azure`       |
+| `pg_service`         | `JOBBUDDY_PG_SERVICE`            | `jobsearchbuddy`               |
 | `postgres_host`      | `JOBBUDDY_POSTGRES_HOST`         | `None` *(enables Entra auth)*  |
 | `postgres_database`  | `JOBBUDDY_POSTGRES_DATABASE`     | `None`                         |
 | `postgres_user`      | `JOBBUDDY_POSTGRES_USER`         | `None` *(managed identity)*    |

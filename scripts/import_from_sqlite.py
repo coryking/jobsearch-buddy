@@ -160,7 +160,7 @@ def main():
     )
     parser = argparse.ArgumentParser()
     parser.add_argument("--sqlite-path", default=default_sqlite)
-    parser.add_argument("--pg-service", default="job-search-buddy-remote")
+    parser.add_argument("--pg-service", default="jobsearchbuddy-remote")
     args = parser.parse_args()
     run(args.sqlite_path, f"service={args.pg_service}")
 
