@@ -131,40 +131,6 @@ def _to_csv(headers: list[str], rows: list[list[Any]]) -> str:
     return buf.getvalue()
 
 
-class ActivitySummary(BaseModel):
-    """All-company activity summary. `rows` is header+rows table."""
-
-    count: int
-    rows: list[list[Any]]
-
-    @classmethod
-    def from_log(cls, by_company: dict[str, list[dict]]) -> "ActivitySummary":
-        headers = ["company", "total", "last", "first", "actions", "people", "status"]
-        summaries = []
-        for name, co_rows in by_company.items():
-            actions = Counter(r.get("action", "") for r in co_rows if r.get("action"))
-            dates = [r.get("date", "") for r in co_rows if r.get("date")]
-            people = sorted({r.get("person", "") for r in co_rows if r.get("person", "").strip()})
-            statuses = [r.get("status", "") for r in co_rows if r.get("status", "").strip()]
-            summaries.append((
-                max(dates) if dates else "",
-                [
-                    name,
-                    len(co_rows),
-                    max(dates) if dates else "",
-                    min(dates) if dates else "",
-                    " ".join(f"{a}:{c}" for a, c in actions.items()),
-                    ", ".join(people),
-                    statuses[-1] if statuses else "",
-                ],
-            ))
-        summaries.sort(key=lambda s: s[0], reverse=True)
-        data_rows = [s[1] for s in summaries]
-        return cls(count=len(by_company), rows=[headers] + data_rows)
-
-    def to_mcp_result(self) -> str:
-        return f"{self.count} companies\n" + _to_csv(self.rows[0], self.rows[1:])
-
 
 AGING_BUCKET_DEFS: list[tuple[str, int, int | None]] = [
     ("0-30 days", 0, 30),

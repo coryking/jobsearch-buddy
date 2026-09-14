@@ -240,15 +240,27 @@ def job_activity(
         except ValueError as e:
             return f"Error: {e}"
 
+    company = company.strip()
+
     # Route by view
     if view == "company":
         if not company:
             return "Error: view='company' requires the company parameter."
         return _company_view(account, company, since_date, action or None)
     elif view == "timeline":
-        return _timeline_view(account, since_date, action or None, company.strip() or None)
+        return _timeline_view(account, since_date, action or None, company or None)
     else:
-        return _aging_view(account, since_date, action or None, company.strip() or None)
+        return _aging_view(account, since_date, action or None, company or None)
+
+
+def _filter_by_company(rows: list[dict], company_filter: str) -> list[dict]:
+    """Filter rows to one company, trying registry-resolved name first, raw string as fallback."""
+    resolved = lookup_by_name(company_filter)
+    display_name = resolved.name if resolved else company_filter
+    filtered = [r for r in rows if r.get("company", "").lower() == display_name.lower()]
+    if not filtered:
+        filtered = [r for r in rows if r.get("company", "").lower() == company_filter.lower()]
+    return filtered
 
 
 def _aging_view(
@@ -260,15 +272,10 @@ def _aging_view(
     rows = read_log(account.id, since=since_date, action=action_filter)
 
     if company_filter:
-        resolved = lookup_by_name(company_filter)
-        display_name = resolved.name if resolved else company_filter
-        rows = [r for r in rows if r.get("company", "").lower() == display_name.lower()]
-        if not rows:
-            rows = [r for r in read_log(account.id, since=since_date, action=action_filter)
-                    if r.get("company", "").lower() == company_filter.lower()]
-
-    for name in unique_companies(account.id):
-        ensure_company(name)
+        rows = _filter_by_company(rows, company_filter)
+    else:
+        for name in unique_companies(account.id):
+            ensure_company(name)
 
     by_company: dict[str, list[dict]] = {}
     for row in rows:
@@ -288,12 +295,7 @@ def _timeline_view(
     rows = read_log(account.id, since=since_date, action=action_filter)
 
     if company_filter:
-        resolved = lookup_by_name(company_filter)
-        display_name = resolved.name if resolved else company_filter
-        rows = [r for r in rows if r.get("company", "").lower() == display_name.lower()]
-        if not rows:
-            rows = [r for r in read_log(account.id, since=since_date, action=action_filter)
-                    if r.get("company", "").lower() == company_filter.lower()]
+        rows = _filter_by_company(rows, company_filter)
 
     return ActivityTimeline.from_rows(rows).to_mcp_result()
 
@@ -305,16 +307,12 @@ def _company_view(
     action_filter: str | None,
 ) -> str:
     rows = read_log(account.id, since=since_date, action=action_filter)
-
-    resolved = lookup_by_name(company)
-    display_name = resolved.name if resolved else company
-
-    company_rows = [r for r in rows if r.get("company", "").lower() == display_name.lower()]
-    if not company_rows:
-        company_rows = [r for r in rows if r.get("company", "").lower() == company.lower()]
+    company_rows = _filter_by_company(rows, company)
 
     if not company_rows:
         return f"No activity found for '{company}'. Try job_activity() with no company to see all."
 
+    resolved = lookup_by_name(company)
+    display_name = resolved.name if resolved else company
     ensure_company(display_name)
     return ActivityDetail.from_company(display_name, company_rows).to_mcp_result()

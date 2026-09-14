@@ -14,7 +14,7 @@ from jobbuddy.registry import list_companies, lookup_by_name
 @mcp.resource("ats://log")
 def get_log(account: Account = CurrentAccount()) -> str:
     """Raw job search activity log for the current account, as JSON. Prefer
-    review_activity_log tool instead — it provides per-company summaries,
+    job_activity tool instead — it provides per-company summaries,
     filtering, and pivot stats. This resource returns unprocessed rows."""
     return json.dumps(read_log(account.id), indent=2)
 

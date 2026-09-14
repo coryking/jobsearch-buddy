@@ -354,6 +354,30 @@ class TestActivityAging:
         result = aging.to_mcp_result()
         assert "0 activities across 0 companies" in result
 
+    def test_bucket_boundaries(self):
+        """Exact boundary days land in the correct bucket (no overlap)."""
+        today = date(2026, 9, 14)
+        by_company = {
+            "Day30": [{"date": "2026-08-15", "action": "Application", "company": "Day30"}],
+            "Day31": [{"date": "2026-08-14", "action": "Application", "company": "Day31"}],
+            "Day60": [{"date": "2026-07-16", "action": "Application", "company": "Day60"}],
+            "Day61": [{"date": "2026-07-15", "action": "Application", "company": "Day61"}],
+            "Day90": [{"date": "2026-06-16", "action": "Application", "company": "Day90"}],
+            "Day91": [{"date": "2026-06-15", "action": "Application", "company": "Day91"}],
+        }
+        aging = ActivityAging.from_log(by_company, today=today)
+        result = aging.to_mcp_result()
+        bucket_0_30 = result.split("## 0-30 days")[1].split("##")[0]
+        bucket_31_60 = result.split("## 31-60 days")[1].split("##")[0]
+        bucket_61_90 = result.split("## 61-90 days")[1].split("##")[0]
+        bucket_90_plus = result.split("## 90+ days")[1]
+        assert "Day30" in bucket_0_30
+        assert "Day31" in bucket_31_60
+        assert "Day60" in bucket_31_60
+        assert "Day61" in bucket_61_90
+        assert "Day90" in bucket_61_90
+        assert "Day91" in bucket_90_plus
+
 
 class TestActivityTimeline:
     """Flat reverse-chron timeline with 5 columns."""
