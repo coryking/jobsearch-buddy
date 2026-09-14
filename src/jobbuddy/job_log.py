@@ -7,6 +7,7 @@ Every read/write is scoped to a single account_id — the FK on activity_log
 is NOT NULL, and there is no cross-account view at this layer.
 """
 
+from datetime import date
 from uuid import UUID
 
 from jobbuddy.store import JobStore
@@ -18,10 +19,12 @@ def _store() -> JobStore:
     return JobStore()
 
 
-def read_log(account_id: UUID) -> list[dict]:
-    """Read all rows from one account's activity log."""
+def read_log(
+    account_id: UUID, *, since: date | None = None, action: str | None = None,
+) -> list[dict]:
+    """Read rows from one account's activity log, with optional filters."""
     with _store() as s:
-        return s.read_activity_log(account_id)
+        return s.read_activity_log(account_id, since=since, action=action)
 
 
 def append_row(

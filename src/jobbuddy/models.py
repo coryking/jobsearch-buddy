@@ -166,6 +166,102 @@ class ActivitySummary(BaseModel):
         return f"{self.count} companies\n" + _to_csv(self.rows[0], self.rows[1:])
 
 
+AGING_BUCKET_DEFS: list[tuple[str, int, int | None]] = [
+    ("0-30 days", 0, 30),
+    ("31-60 days", 31, 60),
+    ("61-90 days", 61, 90),
+    ("90+ days", 90, None),
+]
+
+
+class ActivityAging(BaseModel):
+    """Companies grouped into time-range buckets by days since last touch.
+
+    Bucket labels are neutral time ranges — no judgment words. The calling
+    LLM decides what the recency means for the seeker.
+    """
+
+    total_activities: int
+    total_companies: int
+    buckets: list[tuple[str, list[list[Any]]]]
+
+    @classmethod
+    def from_log(
+        cls, by_company: dict[str, list[dict]], today: date | None = None,
+    ) -> "ActivityAging":
+        if today is None:
+            today = date.today()
+
+        total_activities = sum(len(rows) for rows in by_company.values())
+
+        # Per-company summary: (company, count, last_activity_date, last_action)
+        company_summaries: list[tuple[str, int, str, str]] = []
+        for name, co_rows in by_company.items():
+            dated = [(r.get("date", ""), r.get("action", "")) for r in co_rows if r.get("date")]
+            if not dated:
+                continue
+            dated.sort(key=lambda x: x[0], reverse=True)
+            last_date, last_action = dated[0]
+            company_summaries.append((name, len(co_rows), last_date, last_action))
+
+        # Assign to buckets
+        buckets: list[tuple[str, list[list[Any]]]] = []
+        for label, lo, hi in AGING_BUCKET_DEFS:
+            bucket_rows = []
+            for name, count, last_date, last_action in company_summaries:
+                try:
+                    days_ago = (today - date.fromisoformat(last_date)).days
+                except (ValueError, TypeError):
+                    continue
+                in_bucket = (
+                    (hi is None and days_ago >= lo)
+                    or (hi is not None and lo <= days_ago <= hi)
+                )
+                if in_bucket:
+                    bucket_rows.append((last_date, [name, count, last_date, last_action]))
+            # Sort by last_activity desc within bucket
+            bucket_rows.sort(key=lambda x: x[0], reverse=True)
+            if bucket_rows:
+                buckets.append((label, [r[1] for r in bucket_rows]))
+
+        return cls(
+            total_activities=total_activities,
+            total_companies=len(by_company),
+            buckets=buckets,
+        )
+
+    def to_mcp_result(self) -> str:
+        parts = [f"{self.total_activities} activities across {self.total_companies} companies"]
+        for label, rows in self.buckets:
+            parts.append(f"\n## {label} — {len(rows)} {'company' if len(rows) == 1 else 'companies'}")
+            parts.append(_to_csv(
+                ["company", "count", "last_activity", "last_action"],
+                rows,
+            ))
+        return "\n".join(parts)
+
+
+class ActivityTimeline(BaseModel):
+    """Flat reverse-chron timeline for audit. 5 columns."""
+
+    count: int
+    rows: list[list[Any]]
+
+    @classmethod
+    def from_rows(cls, rows: list[dict]) -> "ActivityTimeline":
+        headers = ["date", "company", "role", "action", "person"]
+        data = [[r.get(h, "") for h in headers] for r in rows]
+        return cls(count=len(rows), rows=data)
+
+    def to_mcp_result(self) -> str:
+        if not self.rows:
+            return "0 activities"
+        return f"{self.count} activities\n" + _to_csv(
+            ["date", "company", "role", "action", "person"],
+            self.rows,
+        )
+
+
 class ActivityDetail(BaseModel):
     """Single-company activity detail. `rows` is header+rows table."""
 

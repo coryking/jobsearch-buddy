@@ -1,5 +1,6 @@
 """Activity-log tools: log applications, log freeform activity, review history."""
 
+from datetime import date
 from typing import Annotated
 
 from pydantic import Field
@@ -8,14 +9,22 @@ from jobbuddy.core import (
     fetch_by_id,
     fetch_from_url,
     is_supported_ats_url,
+    parse_duration_to_date,
     save_job_listing,
 )
-from jobbuddy.job_log import append_row, find_duplicates, read_log, unique_companies
+from jobbuddy.job_log import append_row, find_by_company, find_duplicates, read_log, unique_companies
 from jobbuddy.mcp_auth import CurrentAccount
 from jobbuddy.mcp_tools.app import mcp
 from jobbuddy.mcp_tools.helpers import VALID_ACTIONS, compact_json
-from jobbuddy.models import Account, ActivityDetail, ActivitySummary
+from jobbuddy.models import (
+    Account,
+    ActivityAging,
+    ActivityDetail,
+    ActivityTimeline,
+)
 from jobbuddy.registry import ensure_company, lookup_by_name
+
+_VALID_VIEWS = {"aging", "company", "timeline"}
 
 
 @mcp.tool(annotations={
@@ -171,35 +180,92 @@ def log_job_activity(
 
 
 @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": False})
-def review_activity_log(
-    company: Annotated[str, Field(default="", description="Company name or slug to filter by. Omit for summary of all companies.")] = "",
+def job_activity(
+    view: Annotated[str, Field(
+        default="aging",
+        description=(
+            "Which view to return. "
+            "'aging' (default): companies grouped by time since last activity — "
+            "0-30 days, 31-60, 61-90, 90+. "
+            "'company': full chronological detail for one company (requires the company param). "
+            "'timeline': flat reverse-chronological log of all activities."
+        ),
+    )] = "aging",
+    since: Annotated[str, Field(
+        default="",
+        description=(
+            "Only include activity from this date forward. "
+            "Accepts durations (24h, 3d, 2w, 6m, 1y) or ISO dates (YYYY-MM-DD). "
+            "Omit for all time."
+        ),
+    )] = "",
+    action: Annotated[str, Field(
+        default="",
+        description=(
+            "Filter to one activity type: Application, Contact, Screen, "
+            "Interview, Referral, Reach-out, or Inquery. Omit for all types."
+        ),
+    )] = "",
+    company: Annotated[str, Field(
+        default="",
+        description="Company name or slug. Required for view='company'; narrows other views to one company.",
+    )] = "",
     account: Account = CurrentAccount(),
 ) -> str:
-    """Review job search history — applications, screens, interviews, contacts — for one or all companies.
+    """Review job search activity — applications, screens, interviews, contacts.
 
-    Use when the user asks "what have I done with [company]", "show my history with",
-    "who have I talked to at", "any contacts at", "what companies should I follow up with",
-    "what have I applied to", or "show my application log".
+    Use when the user asks about their job search history: "what have I applied to",
+    "who should I follow up with", "show my activity", "what's my history with X",
+    "any companies I haven't touched in a while".
 
-    Without a company: returns a summary of all companies sorted by most recent activity.
-    With a company: returns full chronological activity detail for that company."""
-    rows = read_log(account.id)
+    Views:
+    - aging (default): companies grouped by recency of last activity
+    - company: full detail for one company
+    - timeline: flat reverse-chronological event log
 
-    if company:
-        resolved = lookup_by_name(company)
-        display_name = resolved.name if resolved else company
+    All views accept since and action filters to narrow the result."""
+    view = view.strip().lower()
+    if view not in _VALID_VIEWS:
+        return f"Error: Invalid view '{view}'. Must be one of: {', '.join(sorted(_VALID_VIEWS))}"
 
-        # Match by display name (case-insensitive)
-        company_rows = [r for r in rows if r.get("company", "").lower() == display_name.lower()]
+    action = action.strip()
+    if action and action not in VALID_ACTIONS:
+        return f"Error: Invalid action '{action}'. Must be one of: {', '.join(sorted(VALID_ACTIONS))}"
 
-        if not company_rows:
-            company_rows = [r for r in rows if r.get("company", "").lower() == company.lower()]
+    # Parse since → date
+    since_date: date | None = None
+    if since.strip():
+        try:
+            since_date = date.fromisoformat(parse_duration_to_date(since))
+        except ValueError as e:
+            return f"Error: {e}"
 
-        if not company_rows:
-            return f"No activity found for '{company}'. Check spelling or try review_activity_log() with no args to see all companies."
+    # Route by view
+    if view == "company":
+        if not company:
+            return "Error: view='company' requires the company parameter."
+        return _company_view(account, company, since_date, action or None)
+    elif view == "timeline":
+        return _timeline_view(account, since_date, action or None, company.strip() or None)
+    else:
+        return _aging_view(account, since_date, action or None, company.strip() or None)
 
-        ensure_company(display_name)
-        return ActivityDetail.from_company(display_name, company_rows).to_mcp_result()
+
+def _aging_view(
+    account: Account,
+    since_date: date | None,
+    action_filter: str | None,
+    company_filter: str | None,
+) -> str:
+    rows = read_log(account.id, since=since_date, action=action_filter)
+
+    if company_filter:
+        resolved = lookup_by_name(company_filter)
+        display_name = resolved.name if resolved else company_filter
+        rows = [r for r in rows if r.get("company", "").lower() == display_name.lower()]
+        if not rows:
+            rows = [r for r in read_log(account.id, since=since_date, action=action_filter)
+                    if r.get("company", "").lower() == company_filter.lower()]
 
     for name in unique_companies(account.id):
         ensure_company(name)
@@ -210,4 +276,45 @@ def review_activity_log(
         if co:
             by_company.setdefault(co, []).append(row)
 
-    return ActivitySummary.from_log(by_company).to_mcp_result()
+    return ActivityAging.from_log(by_company).to_mcp_result()
+
+
+def _timeline_view(
+    account: Account,
+    since_date: date | None,
+    action_filter: str | None,
+    company_filter: str | None,
+) -> str:
+    rows = read_log(account.id, since=since_date, action=action_filter)
+
+    if company_filter:
+        resolved = lookup_by_name(company_filter)
+        display_name = resolved.name if resolved else company_filter
+        rows = [r for r in rows if r.get("company", "").lower() == display_name.lower()]
+        if not rows:
+            rows = [r for r in read_log(account.id, since=since_date, action=action_filter)
+                    if r.get("company", "").lower() == company_filter.lower()]
+
+    return ActivityTimeline.from_rows(rows).to_mcp_result()
+
+
+def _company_view(
+    account: Account,
+    company: str,
+    since_date: date | None,
+    action_filter: str | None,
+) -> str:
+    rows = read_log(account.id, since=since_date, action=action_filter)
+
+    resolved = lookup_by_name(company)
+    display_name = resolved.name if resolved else company
+
+    company_rows = [r for r in rows if r.get("company", "").lower() == display_name.lower()]
+    if not company_rows:
+        company_rows = [r for r in rows if r.get("company", "").lower() == company.lower()]
+
+    if not company_rows:
+        return f"No activity found for '{company}'. Try job_activity() with no company to see all."
+
+    ensure_company(display_name)
+    return ActivityDetail.from_company(display_name, company_rows).to_mcp_result()

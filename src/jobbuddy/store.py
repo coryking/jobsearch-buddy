@@ -1249,11 +1249,27 @@ class JobStore:
         assert row is not None  # INSERT ... RETURNING * always yields the inserted row
         return self._activity_row_to_dict(row)
 
-    def read_activity_log(self, account_id: UUID) -> list[dict]:
-        """Read all activity log rows for one account, most recent first."""
+    def read_activity_log(
+        self, account_id: UUID, *, since: date | None = None, action: str | None = None,
+    ) -> list[dict]:
+        """Read activity log rows for one account, most recent first.
+
+        Optional filters narrow the result set:
+        - since: only rows with log_date >= since (inclusive)
+        - action: only rows matching this action value
+        """
+        conditions: list[LiteralString] = ["account_id = %s"]
+        params: list = [account_id]
+        if since:
+            conditions.append("log_date >= %s")
+            params.append(since)
+        if action:
+            conditions.append("action = %s")
+            params.append(action)
+        where = " AND ".join(conditions)
         rows = self.conn.execute(
-            "SELECT * FROM activity_log WHERE account_id = %s ORDER BY log_date DESC, id DESC",
-            (account_id,),
+            f"SELECT * FROM activity_log WHERE {where} ORDER BY log_date DESC, id DESC",
+            params,
         ).fetchall()
         return [self._activity_row_to_dict(r) for r in rows]
 
