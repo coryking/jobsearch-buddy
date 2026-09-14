@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from jobbuddy.fetchers import has_descriptions_in_listing
 from jobbuddy.models import Company
 from jobbuddy.registry import list_companies, lookup_by_name
-from jobbuddy.settings import Settings, get_settings, pg_conninfo_with_token
+from jobbuddy.settings import Settings, get_settings
 from jobbuddy.store import JobStore
 from jobbuddy.sync.display import SyncDisplayState
 from jobbuddy.sync.distill import DistillPhase
@@ -94,7 +94,7 @@ def validate_sync_config(
 
     return SyncConfig(
         phases=resolved_phases,
-        conninfo=pg_conninfo_with_token(settings),
+        conninfo=settings.pg_conninfo,
         targets=targets,
         company_slugs=company_slugs,
         stale_hours=stale_hours,
@@ -138,12 +138,9 @@ def sync_jobs(
     registry = list_companies()
 
     if conninfo is None:
-        conninfo = pg_conninfo_with_token()
+        conninfo = get_settings().pg_conninfo
 
-    # Factory used by WriteQueue for transparent reconnect on connection-level
-    # failures (Azure Entra token expiry, idle timeout, server reset). Each
-    # invocation refreshes the bearer token in Azure mode.
-    conninfo_factory = pg_conninfo_with_token
+    conninfo_factory = lambda: get_settings().pg_conninfo
 
     resolved_slugs: list[str] | None = None
     if company_slugs:

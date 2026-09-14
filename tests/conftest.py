@@ -11,7 +11,7 @@ from jobbuddy.models import Company, Job
 from jobbuddy.settings import Settings
 from jobbuddy.store import JobStore
 
-TEST_CONNINFO = "service=job-search-buddy-test"
+TEST_CONNINFO = "service=jobsearchbuddy-test"
 
 # Standard test companies — every test that touches jobs/sync_status gets these
 TEST_COMPANIES = [
@@ -39,17 +39,17 @@ def block_prod_db():
     """
     import jobbuddy.settings as settings_mod
     settings_mod._settings = Settings(
-        pg_service="job-search-buddy-test",
+        pg_service="jobsearchbuddy-test",
         research_endpoint="https://test.openai.azure.com/",
     )
 
     original_connect = psycopg.connect
 
-    _PROD_SERVICES = {"job-search-buddy-remote", "job-search-buddy-azure"}
+    import re
+    _PROD_RE = re.compile(r"service=(jobsearchbuddy-remote|jobsearchbuddy)(?![-\w])")
 
     def guarded_connect(conninfo="", **kwargs):
-        conn_str = str(conninfo) + str(kwargs)
-        if any(svc in conn_str for svc in _PROD_SERVICES):
+        if _PROD_RE.search(str(conninfo)):
             raise RuntimeError(
                 f"Test tried to connect to PRODUCTION database! conninfo={conninfo}"
             )

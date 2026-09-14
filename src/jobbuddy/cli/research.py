@@ -43,7 +43,7 @@ def research_companies(
     """
     from jobbuddy.cli.sync import _configure_logging
     from jobbuddy.registry import lookup_by_name
-    from jobbuddy.settings import pg_conninfo_with_token
+    from jobbuddy.settings import get_settings
     from jobbuddy.store import JobStore
     from jobbuddy.sync import validate_sync_config
     from jobbuddy.sync.display import SyncDisplayState
@@ -66,7 +66,7 @@ def research_companies(
         log.error("%s", e)
         raise SystemExit(1)
 
-    conninfo = pg_conninfo_with_token()
+    conninfo = get_settings().pg_conninfo
     target_slugs: list[str] | None = None
 
     if company:

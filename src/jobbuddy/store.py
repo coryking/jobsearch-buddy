@@ -77,8 +77,8 @@ class JobStore:
 
     def _connect(self, conninfo: str | None) -> psycopg.Connection[DictRow]:
         if conninfo is None:
-            from jobbuddy.settings import pg_conninfo_with_token
-            conninfo = pg_conninfo_with_token()
+            from jobbuddy.settings import get_settings
+            conninfo = get_settings().pg_conninfo
 
         return psycopg.Connection[DictRow].connect(
             conninfo, autocommit=True, row_factory=dict_row,

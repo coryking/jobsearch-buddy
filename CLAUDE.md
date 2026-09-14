@@ -144,10 +144,7 @@ Override defaults with env vars (prefix `JOBBUDDY_`) or a `.env` file:
 | Setting                    | Env Var                              | Default                                    |
 |----------------------------|--------------------------------------|--------------------------------------------|
 | `data_dir`                 | `JOBBUDDY_DATA_DIR`                  | platformdirs `user_data_dir/data`          |
-| `pg_service`               | `JOBBUDDY_PG_SERVICE`                | `job-search-buddy-remote`                  |
-| `postgres_host`            | `JOBBUDDY_POSTGRES_HOST`             | `None` *(set to enable Azure Entra auth)*  |
-| `postgres_database`        | `JOBBUDDY_POSTGRES_DATABASE`         | `None`                                     |
-| `postgres_user`            | `JOBBUDDY_POSTGRES_USER`             | `None` *(managed identity name)*           |
+| `pg_service`               | `JOBBUDDY_PG_SERVICE`                | `jobsearchbuddy` *(pg_service.conf entry)* |
 | `listings_dir`             | `JOBBUDDY_LISTINGS_DIR`              | platformdirs `user_data_dir/listings`      |
 | `openai_api_key`           | `JOBBUDDY_OPENAI_API_KEY`            | `None` *(required for the distill phase)*  |
 | `openai_base_url`          | `JOBBUDDY_OPENAI_BASE_URL`           | `None` *(omit for api.openai.com)*         |

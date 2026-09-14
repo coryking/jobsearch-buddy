@@ -3,8 +3,7 @@
 Priority (highest to lowest):
   explicit kwargs > env vars (JOBBUDDY_*) > defaults
 
-Settings are inert data — no network calls, no side effects. Token fetching
-for Azure Entra auth happens at connection time via get_azure_token().
+Settings are inert data — no network calls, no side effects.
 """
 
 from __future__ import annotations
@@ -32,11 +31,8 @@ class Settings(BaseSettings):
     data_dir: Path = Path(user_data_dir(_APP_NAME)) / "data"
     listings_dir: Path = Path(user_data_dir(_APP_NAME)) / "listings"
 
-    # PostgreSQL connection via pg_service.conf (local) or Entra token (Azure)
-    pg_service: str = "job-search-buddy-azure"
-    postgres_host: Optional[str] = None  # Set to enable Azure Entra token auth
-    postgres_database: Optional[str] = None
-    postgres_user: Optional[str] = None  # Managed identity name (not client ID)
+    # PostgreSQL connection via pg_service.conf entry
+    pg_service: str = "jobsearchbuddy"
 
     # OpenAI API (for the distill phase)
     openai_api_key: Optional[str] = None
@@ -92,22 +88,8 @@ class Settings(BaseSettings):
         )
 
     @property
-    def needs_azure_token(self) -> bool:
-        """Whether this config requires an Azure Entra token for DB auth."""
-        return bool(self.postgres_host) or "azure" in self.pg_service
-
-    @property
     def pg_conninfo(self) -> str:
-        """Base connection info string (no credentials).
-
-        Returns the pg_service reference or host-based URI template.
-        For Azure auth, use pg_conninfo_with_token() which adds the Entra token.
-        """
-        if self.postgres_host:
-            return (
-                f"postgresql://{self.postgres_user}@{self.postgres_host}"
-                f":5432/{self.postgres_database}?sslmode=require"
-            )
+        """Connection string for psycopg — delegates to pg_service.conf."""
         return f"service={self.pg_service}"
 
     @field_validator("data_dir", "listings_dir", mode="after")
@@ -130,7 +112,7 @@ def get_settings() -> Settings:
 
 
 # ---------------------------------------------------------------------------
-# Azure Entra credential + token helpers
+# Azure Entra credential + token helpers (for Azure OpenAI, not PG)
 # ---------------------------------------------------------------------------
 
 _azure_credential = None
@@ -139,9 +121,8 @@ _azure_credential = None
 def get_azure_credential():
     """Return a singleton DefaultAzureCredential.
 
-    One instance shared across all Azure auth (DB, OpenAI, Redis, etc.)
-    so MSAL's in-memory token cache persists for the process lifetime.
-    Tokens are valid ~60 min; MSAL auto-refreshes within 5 min of expiry.
+    Used by openai_client.py and research.py for Azure OpenAI endpoints.
+    MSAL's in-memory token cache persists for the process lifetime.
     """
     global _azure_credential
     if _azure_credential is None:
@@ -151,28 +132,5 @@ def get_azure_credential():
 
 
 def get_azure_token(scope: str) -> str:
-    """Fetch an Azure Entra token for the given resource scope.
-
-    Uses the singleton credential so repeated calls for the same scope
-    return a cached token until near expiry.
-    """
+    """Fetch an Azure Entra token for the given resource scope."""
     return get_azure_credential().get_token(scope).token
-
-
-def pg_conninfo_with_token(settings: Settings | None = None) -> str:
-    """Build a connection string, adding an Azure Entra token if needed.
-
-    Called at connection time by store._connect().
-    """
-    s = settings or get_settings()
-    if not s.needs_azure_token:
-        return s.pg_conninfo
-
-    token = get_azure_token("https://ossrdbms-aad.database.windows.net/.default")
-    if s.postgres_host:
-        return (
-            f"postgresql://{s.postgres_user}:{token}"
-            f"@{s.postgres_host}:5432/{s.postgres_database}"
-            f"?sslmode=require"
-        )
-    return f"service={s.pg_service} password={token}"

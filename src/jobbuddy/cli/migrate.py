@@ -12,11 +12,11 @@ from jobbuddy.cli import app, console
 def migrate():
     """Apply pending database migrations."""
     from jobbuddy.migrations import MIGRATIONS_DIR, MigrationError, apply_migrations
-    from jobbuddy.settings import pg_conninfo_with_token
+    from jobbuddy.settings import get_settings
     from jobbuddy.store import JobStore
 
     conn = psycopg.Connection[DictRow].connect(
-        pg_conninfo_with_token(), autocommit=True, row_factory=dict_row,
+        get_settings().pg_conninfo, autocommit=True, row_factory=dict_row,
     )
     try:
         # Show state before applying

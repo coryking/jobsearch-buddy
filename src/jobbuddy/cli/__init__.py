@@ -14,8 +14,7 @@ def main():
     from jobbuddy.settings import get_settings
 
     s = get_settings()
-    db = s.postgres_host or f"service={s.pg_service}"
-    print(f"db: {db}", file=sys.stderr)
+    print(f"db: service={s.pg_service}", file=sys.stderr)
 
 
 # Import submodules — each adds its commands to `app` via @app.command()

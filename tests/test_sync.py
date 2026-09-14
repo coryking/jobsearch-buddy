@@ -405,7 +405,7 @@ class TestValidateSyncConfig:
         """
         return Settings(
             _env_file=None,  # type: ignore[call-arg]
-            pg_service="job-search-buddy-test",
+            pg_service="jobsearchbuddy-test",
             openai_api_key="test-key" if has_openai else None,
             research_endpoint="https://test.openai.azure.com/",
         )
@@ -467,7 +467,7 @@ class TestValidateSyncConfig:
             phases={"fetch", "enrich"},
             settings=settings,
         )
-        assert "job-search-buddy-test" in config.conninfo
+        assert "jobsearchbuddy-test" in config.conninfo
 
     def test_default_phases_is_all(self):
         """phases=None resolves to all four phases."""
