@@ -67,12 +67,16 @@ class SuccessFactorsFetcher(ATSFetcher):
             )
 
     def _search_url(self, page: int, query: str = "") -> str:
-        params = f"CurrentPage={page}&RecordsPerPage={_RECORDS_PER_PAGE}"
+        from urllib.parse import urlencode
+
+        params: dict[str, str | int] = {
+            "CurrentPage": page,
+            "RecordsPerPage": _RECORDS_PER_PAGE,
+        }
         if query:
-            params += f"&Keywords={query}"
-        for k, v in self.search_params.items():
-            params += f"&{k}={v}"
-        return f"{self.careers_url}/search-jobs/results?{params}"
+            params["Keywords"] = query
+        params.update(self.search_params)
+        return f"{self.careers_url}/search-jobs/results?{urlencode(params)}"
 
     def _parse_search_html(self, html: str) -> tuple[list[Job], int]:
         """Parse search results HTML. Returns (jobs, total)."""

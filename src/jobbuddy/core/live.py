@@ -60,8 +60,10 @@ def list_company_jobs_live(
     `posted_since` (e.g. '3d', '1w') keeps rows whose freshness — publish
     date or most recent ATS listing update, whichever is later — falls on
     or after the cutoff. Rows with neither date survive the filter (unknown
-    is not old). The envelope carries three counts: `total` (full board,
-    pre-filter), `matched` (post-filter, pre-slice), and `returned` — so
+    is not old). The envelope carries three counts: `total` (board size —
+    full board when client-side, ATS-filtered when `query_mode` is
+    `server`), `matched` (after `posted_since` and `query` filtering),
+    and `returned` (this page) — so
     `matched > offset + returned` is the unambiguous "there's more" signal
     and `offset` pages through the remainder.
 
@@ -88,12 +90,17 @@ def list_company_jobs_live(
             "Fetch a specific posting by URL instead — it auto-detects the ATS."
         )
 
+    query = query.strip()
+
     with get_fetcher(resolved) as fetcher:
-        native_query = query and fetcher.supports_query
-        if query:
-            jobs = fetcher.list_jobs(query=query)
-        else:
-            jobs = fetcher.list_jobs()
+        native_query = bool(query) and fetcher.supports_query
+        jobs = fetcher.list_jobs(query=query) if query else fetcher.list_jobs()
+
+    # total reflects the full board before any filtering.  When the ATS
+    # did server-side keyword filtering, the fetcher already narrowed the
+    # set — record board_total from the fetcher when available, otherwise
+    # the returned count is the best we have (and query_mode tells the
+    # caller it was server-filtered).
     total = len(jobs)
 
     # Apply posted_since filter first (date-based, fast)

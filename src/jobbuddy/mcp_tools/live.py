@@ -108,9 +108,11 @@ def list_company_jobs(
     is fetched at call time: no staleness, and an error means the fetch
     failed rather than silently serving old rows.
 
-    The envelope reports `total` (whole board), `matched` (after
-    posted_since), and `returned` (this page). Rows carry enough to rank
-    and filter in-context — do that yourself rather than re-calling.
+    The envelope reports `total` (board size — full board when
+    `query_mode` is absent or `client`, ATS-filtered when `server`),
+    `matched` (after `posted_since` and `query`), and `returned` (this
+    page). Rows carry enough to rank and filter in-context — do that
+    yourself rather than re-calling.
     Descriptions are deliberately excluded; call `get_job` for the handful
     of rows the user cares about."""
     from jobbuddy.core import list_company_jobs_live
