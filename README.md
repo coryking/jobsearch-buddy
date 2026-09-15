@@ -1,5 +1,10 @@
 # jobsearch-buddy
 
+> **This repository is an archived snapshot.** Development continues in a
+> private repo. This public copy is preserved as a portfolio artifact — a
+> working, tested MCP server you can read and clone. No further commits will
+> land here.
+
 A CLI tool and MCP server for job searching. Its core trick is normalizing
 a dozen-plus ATS dialects (Greenhouse, Ashby, Lever, Workday, and others —
 see the platform table below) into clean, structured JSON. The MCP surface
